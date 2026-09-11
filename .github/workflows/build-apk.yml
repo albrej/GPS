@@ -1,0 +1,28 @@
+name: Build APK Android
+
+# Se déclenche à chaque envoi (push) sur la branche main,
+# et aussi manuellement depuis l'onglet "Actions" de GitHub.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Récupérer le code du dépôt
+        uses: actions/checkout@v4
+
+      - name: Compiler l'APK avec Buildozer
+        uses: ArtemSBulgakov/buildozer-action@v1
+        id: buildozer
+        with:
+          command: buildozer android debug
+          buildozer_version: stable
+
+      - name: Mettre l'APK à disposition en téléchargement
+        uses: actions/upload-artifact@v4
+        with:
+          name: outilstraces-apk
+          path: ${{ steps.buildozer.outputs.filename }}
