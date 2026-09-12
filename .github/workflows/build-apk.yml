@@ -28,7 +28,12 @@ jobs:
           echo "JAVA_HOME=$(dirname $(dirname $(readlink -f $(which javac))))" >> "$GITHUB_ENV"
 
       - name: Installer Buildozer
-        run: pip install --upgrade Cython virtualenv buildozer
+        # IMPORTANT : Kivy 2.3.0 a été conçu et testé avec des versions
+        # de Cython antérieures à 3.1. La dernière version de Cython
+        # génère un code C légèrement différent qui provoque justement
+        # l'erreur de pointeur de fonction incompatible (glShaderSource)
+        # rencontrée jusqu'ici, quel que soit le NDK utilisé.
+        run: pip install "Cython==3.0.11" virtualenv buildozer
 
       - name: Compiler l'APK (accepte automatiquement les licences Android)
         run: yes | buildozer -v android debug
