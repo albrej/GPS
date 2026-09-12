@@ -129,6 +129,12 @@ KV = """
                 width: dp(48)
                 active: root.garder_temps
                 on_active: root.garder_temps = self.active
+                canvas.before:
+                    Color:
+                        rgba: 0, 0, 0, 1
+                    Line:
+                        width: 1.2
+                        rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
             Label:
                 text: "Conserver les heures / temps de passage"
                 color: 0, 0, 0, 1
@@ -196,6 +202,12 @@ KV = """
                     disabled: not root.trace_chargee
                     active: root.inverser
                     on_active: root.inverser = self.active
+                    canvas.before:
+                        Color:
+                            rgba: 0, 0, 0, 1
+                        Line:
+                            width: 1.2
+                            rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
                 Label:
                     text: "Inverser le sens de la trace (premier <-> dernier point)"
                     text_size: self.width, self.height
@@ -222,6 +234,12 @@ KV = """
                     disabled: not root.trace_chargee
                     active: root.mode == "aucun"
                     on_active: if self.active: root.mode = "aucun"
+                    canvas.before:
+                        Color:
+                            rgba: 0, 0, 0, 1
+                        Line:
+                            width: 1.2
+                            rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
                 Label:
                     text: "Aucune action sur les numéros (garder tel quel)"
                     text_size: self.width, self.height
@@ -240,6 +258,12 @@ KV = """
                     disabled: not root.trace_chargee or root.deja_numerote
                     active: root.mode == "numeroter"
                     on_active: if self.active: root.mode = "numeroter"
+                    canvas.before:
+                        Color:
+                            rgba: 0, 0, 0, 1
+                        Line:
+                            width: 1.2
+                            rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
                 Label:
                     text: "Numéroter les points de trace (1, 2, 3...)"
                     text_size: self.width, self.height
@@ -258,6 +282,12 @@ KV = """
                     disabled: not root.trace_chargee or not root.deja_numerote
                     active: root.mode == "denumero"
                     on_active: if self.active: root.mode = "denumero"
+                    canvas.before:
+                        Color:
+                            rgba: 0, 0, 0, 1
+                        Line:
+                            width: 1.2
+                            rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
                 Label:
                     text: "Tout dénuméroter (conserver tous les points sans numéro)"
                     text_size: self.width, self.height
@@ -276,6 +306,12 @@ KV = """
                     disabled: not root.trace_chargee or not root.deja_numerote
                     active: root.mode == "supprimer_points"
                     on_active: if self.active: root.mode = "supprimer_points"
+                    canvas.before:
+                        Color:
+                            rgba: 0, 0, 0, 1
+                        Line:
+                            width: 1.2
+                            rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
                 Label:
                     text: "Supprimer des numéros précis (et leurs points GPS)"
                     text_size: self.width, self.height
@@ -546,7 +582,7 @@ class EcranAVenir(Screen):
 
 
 class OutilsTracesApp(App):
-    title = "Outils Traces et Photos"
+    title = "Bubu GPS"
 
     def build(self):
         # Par défaut, Kivy affiche un fond NOIR uni tant qu'on ne le
@@ -563,21 +599,23 @@ class OutilsTracesApp(App):
             self.sm.add_widget(EcranAVenir(nom, name=nom))
 
         # --- Barre du haut : menu déroulant (gauche) + titre + Quitter (droite) ---
-        barre = BoxLayout(size_hint_y=None, height=56, padding=(8, 4), spacing=dp(8))
+        barre = BoxLayout(size_hint_y=None, height=dp(112), padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
-        ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation")]
-        ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
-        for nom_ecran, libelle in ecrans_menu:
+        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation")]
+        self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
+        self._boutons_menu = {}
+        for nom_ecran, libelle in self._ecrans_menu:
             btn = Button(text=libelle, size_hint_y=None, height=dp(48), font_size="16sp")
             btn.bind(on_release=lambda b, n=nom_ecran: self._changer_ecran(n))
             self.dropdown.add_widget(btn)
+            self._boutons_menu[nom_ecran] = btn
 
-        btn_menu = Button(text="Menu \u25be", size_hint_x=None, width=dp(110))
-        btn_menu.bind(on_release=self.dropdown.open)
+        btn_menu = Button(text="Menu", size_hint_x=None, width=dp(110))
+        btn_menu.bind(on_release=self._ouvrir_menu)
         barre.add_widget(btn_menu)
 
-        barre.add_widget(Label(text="Outils Traces et Photos", bold=True, color=(1, 1, 1, 1)))
+        barre.add_widget(Label(text="Bubu GPS", bold=True, color=(1, 1, 1, 1)))
 
         btn_quitter = Button(text="Quitter", size_hint_x=None, width=dp(110))
         btn_quitter.bind(on_release=lambda inst: self.stop())
@@ -602,6 +640,15 @@ class OutilsTracesApp(App):
             self._demander_permissions_android()
 
         return racine
+
+    def _ouvrir_menu(self, instance):
+        for nom_ecran, libelle in self._ecrans_menu:
+            btn = self._boutons_menu[nom_ecran]
+            if nom_ecran == self.sm.current:
+                btn.text = f"{libelle} (écran actuel)"
+            else:
+                btn.text = libelle
+        self.dropdown.open(instance)
 
     def _changer_ecran(self, nom_ecran):
         self.dropdown.dismiss()

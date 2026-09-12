@@ -1,5 +1,5 @@
 [app]
-title = Bubu GPS
+title = Outils Traces et Photos
 package.name = outilstraces
 package.domain = org.perso
 
