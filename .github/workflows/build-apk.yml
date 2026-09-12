@@ -31,14 +31,6 @@ jobs:
         run: pip install --upgrade Cython virtualenv buildozer
 
       - name: Compiler l'APK (accepte automatiquement les licences Android)
-        env:
-          # Le Clang du NDK récent transforme CETTE erreur précise en
-          # erreur bloquante PAR DÉFAUT (pas via -Werror), sur du code
-          # plus ancien (SDL2/OpenGL) utilisé par Kivy 2.3.0. La syntaxe
-          # -Wno-... ne suffit pas ici : il faut -Wno-error=... pour la
-          # rétrograder explicitement en simple avertissement.
-          CFLAGS: "-Wno-error=incompatible-function-pointer-types -Wno-error=implicit-function-declaration"
-          CXXFLAGS: "-Wno-error=incompatible-function-pointer-types -Wno-error=implicit-function-declaration"
         run: yes | buildozer -v android debug
 
       - name: Mettre l'APK à disposition en téléchargement
