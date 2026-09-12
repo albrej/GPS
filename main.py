@@ -124,9 +124,9 @@ KV = """
             height: dp(64)
             spacing: dp(8)
             CheckBox:
-                id: chk_temps
-                size_hint_x: None
-                width: dp(48)
+                size_hint: None, None
+                size: dp(24), dp(24)
+                pos_hint: {"center_y": 0.5}
                 active: root.garder_temps
                 on_active: root.garder_temps = self.active
                 canvas.before:
@@ -134,7 +134,7 @@ KV = """
                         rgba: 0, 0, 0, 1
                     Line:
                         width: 1.2
-                        rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
+                        rectangle: (self.x, self.y, self.width, self.height)
             Label:
                 text: "Conserver les heures / temps de passage"
                 color: 0, 0, 0, 1
@@ -197,8 +197,9 @@ KV = """
                 height: dp(56)
                 spacing: dp(8)
                 CheckBox:
-                    size_hint_x: None
-                    width: dp(48)
+                    size_hint: None, None
+                    size: dp(24), dp(24)
+                    pos_hint: {"center_y": 0.5}
                     disabled: not root.trace_chargee
                     active: root.inverser
                     on_active: root.inverser = self.active
@@ -207,7 +208,7 @@ KV = """
                             rgba: 0, 0, 0, 1
                         Line:
                             width: 1.2
-                            rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
+                            rectangle: (self.x, self.y, self.width, self.height)
                 Label:
                     text: "Inverser le sens de la trace (premier <-> dernier point)"
                     text_size: self.width, self.height
@@ -228,8 +229,9 @@ KV = """
                 height: dp(56)
                 spacing: dp(8)
                 CheckBox:
-                    size_hint_x: None
-                    width: dp(48)
+                    size_hint: None, None
+                    size: dp(24), dp(24)
+                    pos_hint: {"center_y": 0.5}
                     group: "mode_num"
                     disabled: not root.trace_chargee
                     active: root.mode == "aucun"
@@ -239,7 +241,7 @@ KV = """
                             rgba: 0, 0, 0, 1
                         Line:
                             width: 1.2
-                            rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
+                            rectangle: (self.x, self.y, self.width, self.height)
                 Label:
                     text: "Aucune action sur les numéros (garder tel quel)"
                     text_size: self.width, self.height
@@ -252,8 +254,9 @@ KV = """
                 height: dp(56)
                 spacing: dp(8)
                 CheckBox:
-                    size_hint_x: None
-                    width: dp(48)
+                    size_hint: None, None
+                    size: dp(24), dp(24)
+                    pos_hint: {"center_y": 0.5}
                     group: "mode_num"
                     disabled: not root.trace_chargee or root.deja_numerote
                     active: root.mode == "numeroter"
@@ -263,7 +266,7 @@ KV = """
                             rgba: 0, 0, 0, 1
                         Line:
                             width: 1.2
-                            rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
+                            rectangle: (self.x, self.y, self.width, self.height)
                 Label:
                     text: "Numéroter les points de trace (1, 2, 3...)"
                     text_size: self.width, self.height
@@ -276,8 +279,9 @@ KV = """
                 height: dp(56)
                 spacing: dp(8)
                 CheckBox:
-                    size_hint_x: None
-                    width: dp(48)
+                    size_hint: None, None
+                    size: dp(24), dp(24)
+                    pos_hint: {"center_y": 0.5}
                     group: "mode_num"
                     disabled: not root.trace_chargee or not root.deja_numerote
                     active: root.mode == "denumero"
@@ -287,7 +291,7 @@ KV = """
                             rgba: 0, 0, 0, 1
                         Line:
                             width: 1.2
-                            rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
+                            rectangle: (self.x, self.y, self.width, self.height)
                 Label:
                     text: "Tout dénuméroter (conserver tous les points sans numéro)"
                     text_size: self.width, self.height
@@ -300,8 +304,9 @@ KV = """
                 height: dp(56)
                 spacing: dp(8)
                 CheckBox:
-                    size_hint_x: None
-                    width: dp(48)
+                    size_hint: None, None
+                    size: dp(24), dp(24)
+                    pos_hint: {"center_y": 0.5}
                     group: "mode_num"
                     disabled: not root.trace_chargee or not root.deja_numerote
                     active: root.mode == "supprimer_points"
@@ -311,7 +316,7 @@ KV = """
                             rgba: 0, 0, 0, 1
                         Line:
                             width: 1.2
-                            rectangle: (self.x + dp(9), self.y + dp(9), self.width - dp(18), self.height - dp(18))
+                            rectangle: (self.x, self.y, self.width, self.height)
                 Label:
                     text: "Supprimer des numéros précis (et leurs points GPS)"
                     text_size: self.width, self.height
@@ -357,10 +362,11 @@ KV = """
                 markup: True
                 text: root.legende_text
                 size_hint_y: None
-                height: dp(150)
-                text_size: self.width, self.height
+                height: self.texture_size[1] + dp(20)
+                text_size: self.width, None
                 halign: "left"
                 valign: "top"
+                color: 0, 0, 0, 1
 """
 
 
@@ -433,6 +439,10 @@ class NumerotationScreen(Screen):
 
     en_cours = BooleanProperty(False)
 
+    def on_enter(self, *args):
+        # Force la mise à jour dès que l'écran devient visible
+        self._maj_etat()
+
     def on_mode(self, *args):
         self._maj_etat()
 
@@ -480,14 +490,17 @@ class NumerotationScreen(Screen):
 
     def _maj_etat(self):
         if not self.trace_chargee or self.total_points == 0:
+            self.legende_text = ""
             return
+
+        # On calcule toujours la légende dès qu'une trace est chargée
+        self._maj_legende()
 
         if not self.inverser and self.mode == "aucun":
             self.btn_executer_actif = False
             self.btn_executer_text = "Exécuter"
             self.status_text = "Sélectionnez au moins une action (Inverser ou Traitement)."
             self.status_color = [0.33, 0.33, 0.33, 1]
-            self._maj_legende()
             return
 
         self.btn_executer_actif = True
@@ -505,19 +518,29 @@ class NumerotationScreen(Screen):
         self.btn_executer_text = titre
         self.status_text = f"Prêt à effectuer : {titre}."
         self.status_color = [0.15, 0.5, 0.15, 1]
-        self._maj_legende()
 
     def _maj_legende(self):
-        compteurs = gps_logic.calculer_legende_numerotation(
-            self.segments_lus, self.mode, self.inverser, self.texte_suppr
-        )
-        lignes = []
-        for cle, couleur, libelle in gps_logic.LEGENDE_NUMEROTATION:
-            nb = compteurs.get(cle, 0)
-            valeur = ("Oui" if nb else "Non") if cle == "inverse" else str(nb)
-            lignes.append(f"[color={couleur}]\u25cf[/color] {libelle} : {valeur}")
-        self.legende_text = "\n".join(lignes)
+        try:
+            compteurs = gps_logic.calculer_legende_numerotation(
+                self.segments_lus, self.mode, self.inverser, self.texte_suppr
+            )
+            lignes = []
+            for cle, couleur, libelle in gps_logic.LEGENDE_NUMEROTATION:
+                nb = compteurs.get(cle, 0)
+                valeur = ("Oui" if nb else "Non") if cle == "inverse" else str(nb)
 
+                # Nettoyage / normalisation du code couleur pour le Markup Kivy
+                c_hex = str(couleur).lstrip("#")
+                if len(c_hex) == 6:
+                    c_hex += "ff"  # Ajout du canal Alpha (opacité) si absent
+
+                # Formate la puce colorée (cercle Unicode \u25cf) avec sa couleur
+                lignes.append(f"[color={c_hex}]●[/color] {libelle} : [b]{valeur}[/b]")
+
+            self.legende_text = "\n".join(lignes)
+        except Exception as e:
+            self.legende_text = f"Erreur de calcul du résumé : {e}"
+            
     def executer(self):
         if not self.fichier_source or not self.segments_lus or self.en_cours:
             return
@@ -537,7 +560,7 @@ class NumerotationScreen(Screen):
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
             message = f"Échec du traitement : {e}"
-            couleur = [0.8, 0.1, 0.1, 1]
+            couleur = [0.8, 0.1, 0.8, 1]
 
         def _maj_ui(dt):
             self.en_cours = False
@@ -545,8 +568,7 @@ class NumerotationScreen(Screen):
             self.status_color = couleur
 
         Clock.schedule_once(_maj_ui, 0)
-
-
+        
 def _construire_selecteur_fichier(callback):
     """Sélecteur de fichier basé sur FileChooserListView (aucune dépendance
     supplémentaire, fonctionne pareil sur desktop et Android une fois la
@@ -599,7 +621,7 @@ class OutilsTracesApp(App):
             self.sm.add_widget(EcranAVenir(nom, name=nom))
 
         # --- Barre du haut : menu déroulant (gauche) + titre + Quitter (droite) ---
-        barre = BoxLayout(size_hint_y=None, height=dp(112), padding=(8, 4), spacing=dp(8))
+        barre = BoxLayout(size_hint_y=None, height=dp(60), padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
         self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation")]
@@ -642,12 +664,17 @@ class OutilsTracesApp(App):
         return racine
 
     def _ouvrir_menu(self, instance):
+        BLEU_KIVY = (0.12, 0.58, 0.95, 1)
+        COULEUR_NORMAL = (1, 1, 1, 1)
+        
         for nom_ecran, libelle in self._ecrans_menu:
             btn = self._boutons_menu[nom_ecran]
+            btn.text = libelle
+            
             if nom_ecran == self.sm.current:
-                btn.text = f"{libelle} (écran actuel)"
+                btn.background_color = BLEU_KIVY
             else:
-                btn.text = libelle
+                btn.background_color = COULEUR_NORMAL
         self.dropdown.open(instance)
 
     def _changer_ecran(self, nom_ecran):
