@@ -32,12 +32,13 @@ jobs:
 
       - name: Compiler l'APK (accepte automatiquement les licences Android)
         env:
-          # Le NDK Android récent utilise un Clang plus strict qui transforme
-          # en erreur bloquante ce qui n'était qu'un avertissement avant,
-          # sur du code plus ancien (SDL2/OpenGL) utilisé par Kivy 2.3.0.
-          # On repasse ces erreurs précises en simples avertissements.
-          CFLAGS: "-Wno-incompatible-function-pointer-types -Wno-implicit-function-declaration"
-          CXXFLAGS: "-Wno-incompatible-function-pointer-types -Wno-implicit-function-declaration"
+          # Le Clang du NDK récent transforme CETTE erreur précise en
+          # erreur bloquante PAR DÉFAUT (pas via -Werror), sur du code
+          # plus ancien (SDL2/OpenGL) utilisé par Kivy 2.3.0. La syntaxe
+          # -Wno-... ne suffit pas ici : il faut -Wno-error=... pour la
+          # rétrograder explicitement en simple avertissement.
+          CFLAGS: "-Wno-error=incompatible-function-pointer-types -Wno-error=implicit-function-declaration"
+          CXXFLAGS: "-Wno-error=incompatible-function-pointer-types -Wno-error=implicit-function-declaration"
         run: yes | buildozer -v android debug
 
       - name: Mettre l'APK à disposition en téléchargement
