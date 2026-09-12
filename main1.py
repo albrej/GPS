@@ -4,11 +4,11 @@
  OUTILS TRACES ET PHOTOS — Application Android (Kivy)
  Réécriture de start.py (tkinter) pour fonctionner en APK autonome.
 
- - Onglets "Conversion" et "Numérotation" : entièrement fonctionnels.
- - Les 5 autres fonctionnalités (Fusion, Carte/Découpe, Statistiques,
-   Photos, Live) sont déjà présentes dans le menu déroulant mais
-   affichent un écran "à venir" tant que leur code n'est pas fourni et
-   intégré. Voir SCREENS_A_VENIR ci-dessous.
+ - Onglet "Conversion" : entièrement fonctionnel.
+ - Les 6 autres fonctionnalités (Numérotation, Fusion, Carte/Découpe,
+   Statistiques, Photos, Live) sont déjà présentes dans le menu déroulant
+   mais affichent un écran "à venir" tant que leur code n'est pas fourni
+   et intégré. Voir screens/a_venir.py et SCREENS_A_VENIR ci-dessous.
 ============================================================================
 """
 
@@ -47,6 +47,7 @@ DOSSIER_SORTIE = os.path.join(DOSSIER_RACINE, "TracesConverties")
 # Fonctionnalités qui restent à intégrer (affichées dans le menu déroulant
 # avec un écran "à venir" en attendant leur code Python).
 SCREENS_A_VENIR = [
+    "Numérotation",
     "Fusion",
     "Carte / Découpe",
     "Statistiques",
@@ -558,7 +559,6 @@ class OutilsTracesApp(App):
 
         self.sm = ScreenManager()
         self.sm.add_widget(ConversionScreen(name="conversion"))
-        self.sm.add_widget(NumerotationScreen(name="numerotation"))
         for nom in SCREENS_A_VENIR:
             self.sm.add_widget(EcranAVenir(nom, name=nom))
 
@@ -566,9 +566,8 @@ class OutilsTracesApp(App):
         barre = BoxLayout(size_hint_y=None, height=56, padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
-        ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation")]
-        ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
-        for nom_ecran, libelle in ecrans_menu:
+        for nom_ecran in ["conversion"] + SCREENS_A_VENIR:
+            libelle = "Conversion" if nom_ecran == "conversion" else nom_ecran
             btn = Button(text=libelle, size_hint_y=None, height=dp(48), font_size="16sp")
             btn.bind(on_release=lambda b, n=nom_ecran: self._changer_ecran(n))
             self.dropdown.add_widget(btn)
