@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ============================================================================
- OUTILS TRACES ET PHOTOS — Application Android (Kivy)
+ OUTILS TRACES et PHOTOS — Application Android (Kivy)
  Réécriture de start.py (tkinter) pour fonctionner en APK autonome.
 
  - Onglet "Conversion" : entièrement fonctionnel.
@@ -25,7 +25,6 @@ from kivy.uix.button import Button
 from kivy.uix.popup import Popup
 from kivy.uix.filechooser import FileChooserListView
 from kivy.clock import Clock
-from kivy.metrics import dp
 from kivy.properties import StringProperty, BooleanProperty
 from kivy.utils import platform
 
@@ -86,42 +85,32 @@ KV = """
             halign: "left"
             valign: "top"
 
-        Label:
-            text: "Format de sortie :"
-            size_hint_y: None
-            height: dp(28)
-            color: 0, 0, 0, 1
-
-        AnchorLayout:
+        BoxLayout:
             size_hint_y: None
             height: dp(48)
-            anchor_x: "center"
-            BoxLayout:
-                size_hint: None, None
-                size: dp(240), dp(48)
-                spacing: dp(6)
-                ToggleButton:
-                    text: "GPX"
-                    group: "format"
-                    state: "down"
-                    on_state: if self.state == "down": root.format_sortie = "gpx"
-                ToggleButton:
-                    text: "KML"
-                    group: "format"
-                    on_state: if self.state == "down": root.format_sortie = "kml"
-                ToggleButton:
-                    text: "KMZ"
-                    group: "format"
-                    on_state: if self.state == "down": root.format_sortie = "kmz"
+            spacing: dp(6)
+            Label:
+                text: "Format de sortie :"
+                color: 0, 0, 0, 1
+            ToggleButton:
+                text: "GPX"
+                group: "format"
+                state: "down"
+                on_state: if self.state == "down": root.format_sortie = "gpx"
+            ToggleButton:
+                text: "KML"
+                group: "format"
+                on_state: if self.state == "down": root.format_sortie = "kml"
+            ToggleButton:
+                text: "KMZ"
+                group: "format"
+                on_state: if self.state == "down": root.format_sortie = "kmz"
 
         BoxLayout:
             size_hint_y: None
-            height: dp(64)
-            spacing: dp(8)
+            height: dp(48)
             CheckBox:
                 id: chk_temps
-                size_hint_x: None
-                width: dp(48)
                 active: root.garder_temps
                 on_active: root.garder_temps = self.active
             Label:
@@ -129,7 +118,6 @@ KV = """
                 color: 0, 0, 0, 1
                 text_size: self.width, None
                 halign: "left"
-                valign: "middle"
 
         Button:
             text: "Convertir et enregistrer"
@@ -248,10 +236,10 @@ class OutilsTracesApp(App):
         barre = BoxLayout(size_hint_y=None, height=56, padding=(8, 4))
         barre.add_widget(Label(text="Outils Traces et Photos", bold=True, color=(1, 1, 1, 1)))
 
-        self.dropdown = DropDown(auto_width=False, width=dp(220))
+        self.dropdown = DropDown()
         for nom_ecran in ["conversion"] + SCREENS_A_VENIR:
             libelle = "Conversion" if nom_ecran == "conversion" else nom_ecran
-            btn = Button(text=libelle, size_hint_y=None, height=dp(48), font_size="16sp")
+            btn = Button(text=libelle, size_hint_y=None, height=44)
             btn.bind(on_release=lambda b, n=nom_ecran: self._changer_ecran(n))
             self.dropdown.add_widget(btn)
 
