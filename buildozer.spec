@@ -21,7 +21,7 @@ version = 0.1
 requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,gpxpy
 
 orientation = portrait
-icon.filename = %(source.dir)s/icone.png
+icon.filename = %(source.dir)s/Icone.png
 fullscreen = 0
 
 # Permissions : accès large au stockage (comme le faisait le script
