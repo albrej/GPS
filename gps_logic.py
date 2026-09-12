@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ============================================================================
- LOGIQUE MÉTIER — OUTILS TRACES & PHOTOS
+ LOGIQUE MÉTIER — OUTILS TRACES et PHOTOS
  Repris depuis start.py : aucune dépendance tkinter/matplotlib ici.
  Utilisable tel quel sur desktop ET sur Android (via Kivy).
 ============================================================================

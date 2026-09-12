@@ -1,5 +1,5 @@
 [app]
-title = Outils Traces & Photos
+title = Outils Traces et Photos
 package.name = outilstraces
 package.domain = org.perso
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ============================================================================
- OUTILS TRACES & PHOTOS — Application Android (Kivy)
+ OUTILS TRACES et PHOTOS — Application Android (Kivy)
  Réécriture de start.py (tkinter) pour fonctionner en APK autonome.
 
  - Onglet "Conversion" : entièrement fonctionnel.
@@ -120,7 +120,7 @@ KV = """
                 halign: "left"
 
         Button:
-            text: "Convertir & enregistrer"
+            text: "Convertir et enregistrer"
             size_hint_y: None
             height: dp(56)
             disabled: not root.fichier_source
@@ -222,7 +222,7 @@ class EcranAVenir(Screen):
 
 
 class OutilsTracesApp(App):
-    title = "Outils Traces & Photos"
+    title = "Outils Traces et Photos"
 
     def build(self):
         Builder.load_string(KV)
@@ -234,7 +234,7 @@ class OutilsTracesApp(App):
 
         # --- Barre du haut : titre + bouton menu déroulant ---
         barre = BoxLayout(size_hint_y=None, height=56, padding=(8, 4))
-        barre.add_widget(Label(text="Outils Traces & Photos", bold=True, color=(1, 1, 1, 1)))
+        barre.add_widget(Label(text="Outils Traces et Photos", bold=True, color=(1, 1, 1, 1)))
 
         self.dropdown = DropDown()
         for nom_ecran in ["conversion"] + SCREENS_A_VENIR:
