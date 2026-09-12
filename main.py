@@ -25,8 +25,9 @@ from kivy.uix.button import Button
 from kivy.uix.popup import Popup
 from kivy.uix.filechooser import FileChooserListView
 from kivy.clock import Clock
+from kivy.core.window import Window
 from kivy.metrics import dp
-from kivy.properties import StringProperty, BooleanProperty
+from kivy.properties import StringProperty, BooleanProperty, ListProperty
 from kivy.utils import platform
 
 import gps_logic
@@ -86,11 +87,16 @@ KV = """
             halign: "left"
             valign: "top"
 
-        Label:
-            text: "Format de sortie :"
+        AnchorLayout:
             size_hint_y: None
-            height: dp(28)
-            color: 0, 0, 0, 1
+            height: dp(32)
+            anchor_x: "center"
+            Label:
+                text: "Format de sortie :"
+                size_hint: None, None
+                size: self.texture_size
+                bold: True
+                color: 0, 0, 0, 1
 
         AnchorLayout:
             size_hint_y: None
@@ -127,7 +133,7 @@ KV = """
             Label:
                 text: "Conserver les heures / temps de passage"
                 color: 0, 0, 0, 1
-                text_size: self.width, None
+                text_size: self.width, self.height
                 halign: "left"
                 valign: "middle"
 
@@ -147,6 +153,179 @@ KV = """
             color: 0.15, 0.5, 0.15, 1
 
         Widget:
+
+<NumerotationScreen>:
+    ScrollView:
+        BoxLayout:
+            orientation: "vertical"
+            size_hint_y: None
+            height: self.minimum_height
+            padding: dp(16)
+            spacing: dp(10)
+
+            Label:
+                text: "Numérotation et nettoyage"
+                font_size: "20sp"
+                bold: True
+                size_hint_y: None
+                height: dp(40)
+                color: 0, 0, 0, 1
+
+            Button:
+                text: "Charger une trace (GPX, KMZ, KML)"
+                size_hint_y: None
+                height: dp(56)
+                background_color: 0.2, 0.6, 0.86, 1
+                on_release: root.ouvrir_selecteur_fichier()
+
+            Label:
+                text: root.info_fichier
+                size_hint_y: None
+                height: dp(50)
+                text_size: self.width, self.height
+                halign: "left"
+                valign: "middle"
+                color: 0.2, 0.5, 0.2, 1
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(56)
+                spacing: dp(8)
+                CheckBox:
+                    size_hint_x: None
+                    width: dp(48)
+                    disabled: not root.trace_chargee
+                    active: root.inverser
+                    on_active: root.inverser = self.active
+                Label:
+                    text: "Inverser le sens de la trace (premier <-> dernier point)"
+                    text_size: self.width, self.height
+                    halign: "left"
+                    valign: "middle"
+                    color: 0.18, 0.49, 0.2, 1
+                    bold: True
+
+            Label:
+                text: "Action sur les numéros :"
+                size_hint_y: None
+                height: dp(26)
+                color: 0, 0, 0, 1
+                bold: True
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(56)
+                spacing: dp(8)
+                CheckBox:
+                    size_hint_x: None
+                    width: dp(48)
+                    group: "mode_num"
+                    disabled: not root.trace_chargee
+                    active: root.mode == "aucun"
+                    on_active: if self.active: root.mode = "aucun"
+                Label:
+                    text: "Aucune action sur les numéros (garder tel quel)"
+                    text_size: self.width, self.height
+                    halign: "left"
+                    valign: "middle"
+                    color: 0, 0, 0, 1
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(56)
+                spacing: dp(8)
+                CheckBox:
+                    size_hint_x: None
+                    width: dp(48)
+                    group: "mode_num"
+                    disabled: not root.trace_chargee or root.deja_numerote
+                    active: root.mode == "numeroter"
+                    on_active: if self.active: root.mode = "numeroter"
+                Label:
+                    text: "Numéroter les points de trace (1, 2, 3...)"
+                    text_size: self.width, self.height
+                    halign: "left"
+                    valign: "middle"
+                    color: 0, 0, 0, 1
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(56)
+                spacing: dp(8)
+                CheckBox:
+                    size_hint_x: None
+                    width: dp(48)
+                    group: "mode_num"
+                    disabled: not root.trace_chargee or not root.deja_numerote
+                    active: root.mode == "denumero"
+                    on_active: if self.active: root.mode = "denumero"
+                Label:
+                    text: "Tout dénuméroter (conserver tous les points sans numéro)"
+                    text_size: self.width, self.height
+                    halign: "left"
+                    valign: "middle"
+                    color: 0, 0, 0, 1
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(56)
+                spacing: dp(8)
+                CheckBox:
+                    size_hint_x: None
+                    width: dp(48)
+                    group: "mode_num"
+                    disabled: not root.trace_chargee or not root.deja_numerote
+                    active: root.mode == "supprimer_points"
+                    on_active: if self.active: root.mode = "supprimer_points"
+                Label:
+                    text: "Supprimer des numéros précis (et leurs points GPS)"
+                    text_size: self.width, self.height
+                    halign: "left"
+                    valign: "middle"
+                    color: 0, 0, 0, 1
+
+            TextInput:
+                id: entree_suppr
+                hint_text: "Numéros à supprimer (ex: 5, 12, 20-35)"
+                multiline: False
+                size_hint_y: None
+                height: dp(44)
+                disabled: root.mode != "supprimer_points"
+                text: root.texte_suppr
+                on_text: root.texte_suppr = self.text
+
+            Label:
+                text: root.status_text
+                size_hint_y: None
+                height: dp(44)
+                text_size: self.width, self.height
+                halign: "left"
+                valign: "middle"
+                color: root.status_color
+
+            Button:
+                text: root.btn_executer_text
+                size_hint_y: None
+                height: dp(56)
+                disabled: not root.btn_executer_actif
+                background_color: 0.15, 0.68, 0.38, 1
+                on_release: root.executer()
+
+            Label:
+                text: "Résumé des changements (avant exécution)"
+                size_hint_y: None
+                height: dp(30)
+                bold: True
+                color: 0, 0, 0, 1
+
+            Label:
+                markup: True
+                text: root.legende_text
+                size_hint_y: None
+                height: dp(150)
+                text_size: self.width, self.height
+                halign: "left"
+                valign: "top"
 """
 
 
@@ -199,6 +378,140 @@ class ConversionScreen(Screen):
         Clock.schedule_once(_maj_ui, 0)
 
 
+class NumerotationScreen(Screen):
+    fichier_source = StringProperty("")
+    info_fichier = StringProperty("Aucune trace chargée.")
+    trace_chargee = BooleanProperty(False)
+    deja_numerote = BooleanProperty(False)
+    total_points = 0  # attribut simple (pas besoin d'être une Property Kivy)
+    segments_lus = []
+
+    mode = StringProperty("aucun")
+    inverser = BooleanProperty(False)
+    texte_suppr = StringProperty("")
+
+    status_text = StringProperty("Chargez une trace pour commencer.")
+    status_color = ListProperty([0.33, 0.33, 0.33, 1])
+    btn_executer_text = StringProperty("Exécuter")
+    btn_executer_actif = BooleanProperty(False)
+    legende_text = StringProperty("")
+
+    en_cours = BooleanProperty(False)
+
+    def on_mode(self, *args):
+        self._maj_etat()
+
+    def on_inverser(self, *args):
+        self._maj_etat()
+
+    def on_texte_suppr(self, *args):
+        self._maj_etat()
+
+    def ouvrir_selecteur_fichier(self):
+        contenu = _construire_selecteur_fichier(self._fichier_choisi)
+        self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
+
+    def _fichier_choisi(self, chemin):
+        self._popup.dismiss()
+        if not chemin:
+            return
+        try:
+            self.segments_lus, deja_num = gps_logic.extraire_donnees_gpx_kmz(chemin)
+            self.fichier_source = chemin
+            self.deja_numerote = deja_num
+            self.total_points = sum(len(seg) for seg in self.segments_lus)
+            nom_f = os.path.basename(chemin)
+            statut_str = "déjà numéroté" if deja_num else "non numéroté"
+            self.info_fichier = f"Trace : {nom_f}\n({statut_str})"
+
+            if self.total_points == 0:
+                self.trace_chargee = False
+                self.status_text = "Aucun point GPS détecté."
+                self.status_color = [0.8, 0.1, 0.1, 1]
+                self.btn_executer_actif = False
+                self.legende_text = ""
+                return
+
+            self.trace_chargee = True
+            self.mode = "denumero" if deja_num else "numeroter"
+            self.inverser = False
+            self.texte_suppr = ""
+            self._maj_etat()
+        except Exception as e:
+            self.trace_chargee = False
+            self.status_text = f"Erreur de lecture : {e}"
+            self.status_color = [0.8, 0.1, 0.1, 1]
+
+    def _maj_etat(self):
+        if not self.trace_chargee or self.total_points == 0:
+            return
+
+        if not self.inverser and self.mode == "aucun":
+            self.btn_executer_actif = False
+            self.btn_executer_text = "Exécuter"
+            self.status_text = "Sélectionnez au moins une action (Inverser ou Traitement)."
+            self.status_color = [0.33, 0.33, 0.33, 1]
+            self._maj_legende()
+            return
+
+        self.btn_executer_actif = True
+        actions = []
+        if self.inverser:
+            actions.append("Inverser")
+        if self.mode == "numeroter":
+            actions.append("Numéroter")
+        elif self.mode == "denumero":
+            actions.append("Dénuméroter")
+        elif self.mode == "supprimer_points":
+            actions.append("Supprimer et renuméroter")
+
+        titre = " et ".join(actions)
+        self.btn_executer_text = titre
+        self.status_text = f"Prêt à effectuer : {titre}."
+        self.status_color = [0.15, 0.5, 0.15, 1]
+        self._maj_legende()
+
+    def _maj_legende(self):
+        compteurs = gps_logic.calculer_legende_numerotation(
+            self.segments_lus, self.mode, self.inverser, self.texte_suppr
+        )
+        lignes = []
+        for cle, couleur, libelle in gps_logic.LEGENDE_NUMEROTATION:
+            nb = compteurs.get(cle, 0)
+            valeur = ("Oui" if nb else "Non") if cle == "inverse" else str(nb)
+            lignes.append(f"[color={couleur}]\u25cf[/color] {libelle} : {valeur}")
+        self.legende_text = "\n".join(lignes)
+
+    def executer(self):
+        if not self.fichier_source or not self.segments_lus or self.en_cours:
+            return
+        if not self.inverser and self.mode == "aucun":
+            return
+        self.en_cours = True
+        self.status_text = "Traitement en cours..."
+        self.status_color = [0.33, 0.33, 0.33, 1]
+        threading.Thread(target=self._traitement_thread, daemon=True).start()
+
+    def _traitement_thread(self):
+        try:
+            chemin_sortie, resume = gps_logic.traiter_numerotation(
+                self.fichier_source, self.segments_lus, self.mode, self.inverser, self.texte_suppr
+            )
+            message = f"{resume}.\nFichier généré : {os.path.basename(chemin_sortie)}"
+            couleur = [0.15, 0.5, 0.15, 1]
+        except Exception as e:
+            message = f"Échec du traitement : {e}"
+            couleur = [0.8, 0.1, 0.1, 1]
+
+        def _maj_ui(dt):
+            self.en_cours = False
+            self.status_text = message
+            self.status_color = couleur
+
+        Clock.schedule_once(_maj_ui, 0)
+
+
 def _construire_selecteur_fichier(callback):
     """Sélecteur de fichier basé sur FileChooserListView (aucune dépendance
     supplémentaire, fonctionne pareil sur desktop et Android une fois la
@@ -237,6 +550,11 @@ class OutilsTracesApp(App):
     title = "Outils Traces et Photos"
 
     def build(self):
+        # Par défaut, Kivy affiche un fond NOIR uni tant qu'on ne le
+        # change pas explicitement : tous les libellés en texte noir
+        # étaient donc invisibles dessus. On passe à un fond clair.
+        Window.clearcolor = (0.96, 0.97, 0.98, 1)
+
         Builder.load_string(KV)
 
         self.sm = ScreenManager()
@@ -244,9 +562,8 @@ class OutilsTracesApp(App):
         for nom in SCREENS_A_VENIR:
             self.sm.add_widget(EcranAVenir(nom, name=nom))
 
-        # --- Barre du haut : titre + bouton menu déroulant ---
-        barre = BoxLayout(size_hint_y=None, height=56, padding=(8, 4))
-        barre.add_widget(Label(text="Outils Traces et Photos", bold=True, color=(1, 1, 1, 1)))
+        # --- Barre du haut : menu déroulant (gauche) + titre + Quitter (droite) ---
+        barre = BoxLayout(size_hint_y=None, height=56, padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
         for nom_ecran in ["conversion"] + SCREENS_A_VENIR:
@@ -255,9 +572,15 @@ class OutilsTracesApp(App):
             btn.bind(on_release=lambda b, n=nom_ecran: self._changer_ecran(n))
             self.dropdown.add_widget(btn)
 
-        btn_menu = Button(text="Menu \u25be", size_hint_x=None, width=110)
+        btn_menu = Button(text="Menu \u25be", size_hint_x=None, width=dp(110))
         btn_menu.bind(on_release=self.dropdown.open)
         barre.add_widget(btn_menu)
+
+        barre.add_widget(Label(text="Outils Traces et Photos", bold=True, color=(1, 1, 1, 1)))
+
+        btn_quitter = Button(text="Quitter", size_hint_x=None, width=dp(110))
+        btn_quitter.bind(on_release=lambda inst: self.stop())
+        barre.add_widget(btn_quitter)
 
         from kivy.graphics import Color, Rectangle
         with barre.canvas.before:
