@@ -9,9 +9,11 @@ source.include_exts = py,kv,png,jpg,ttf
 version = 0.1
 
 # Dépendances Python nécessaires à l'onglet Conversion.
+# lxml a été remplacé par xml.etree.ElementTree (bibliothèque standard) :
+# aucune compilation C nécessaire, beaucoup plus fiable sur Android.
 # Ajoute pillow, piexif quand tu intègres l'onglet Photos ;
 # tkintermapview n'a pas d'équivalent direct sous Kivy (voir README).
-requirements = python3,kivy==2.3.0,gpxpy,lxml
+requirements = python3,kivy==2.3.0,gpxpy
 
 orientation = portrait
 fullscreen = 0

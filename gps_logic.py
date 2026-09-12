@@ -14,7 +14,29 @@ from datetime import datetime, timezone
 
 import gpxpy
 import gpxpy.gpx
-from lxml import etree
+import xml.etree.ElementTree as ET
+
+KML_NS = "http://www.opengis.net/kml/2.2"
+GX_NS = "http://www.google.com/kml/ext/2.2"
+ET.register_namespace("", KML_NS)
+ET.register_namespace("gx", GX_NS)
+
+
+def _localname(tag):
+    """Nom d'une balise XML sans son préfixe de namespace (équivalent à
+    local-name() en XPath, mais sans dépendre de lxml)."""
+    return tag.split('}', 1)[-1] if '}' in tag else tag
+
+
+def _findall_localname(root, name):
+    """Cherche tous les éléments d'un nom donné, quel que soit le
+    namespace/préfixe utilisé dans le fichier source."""
+    return [el for el in root.iter() if _localname(el.tag) == name]
+
+
+def _children_localname(el, name):
+    """Enfants directs d'un élément correspondant à un nom donné."""
+    return [c for c in el if _localname(c.tag) == name]
 
 
 def calculer_distance_haversine(lat1, lon1, lat2, lon2):
@@ -139,22 +161,26 @@ def lire_fichier_pour_conversion(chemin_fichier):
                 kml_name = next((nom for nom in z.namelist() if nom.lower().endswith('.kml')), None)
                 if not kml_name:
                     return []
-                tree = etree.fromstring(z.read(kml_name))
+                root = ET.fromstring(z.read(kml_name))
         else:
-            tree = etree.parse(chemin_fichier).getroot()
+            root = ET.parse(chemin_fichier).getroot()
 
-        namespaces = {'kml': 'http://www.opengis.net/kml/2.2', 'gx': 'http://www.google.com/kml/ext/2.2'}
-        tracks = tree.xpath('//gx:Track', namespaces=namespaces) or tree.xpath('//*[local-name()="Track"]')
+        # Recherche par nom local de balise (indépendant du préfixe de
+        # namespace utilisé dans le fichier source), équivalent à
+        # local-name() en XPath mais sans dépendre de lxml.
+        tracks = _findall_localname(root, 'Track')
         if tracks:
             for track in tracks:
-                whens = track.xpath('./kml:when/text()', namespaces=namespaces) or track.xpath('./*[local-name()="when"]/text()')
-                coords = track.xpath('./gx:coord/text()', namespaces=namespaces) or track.xpath('./*[local-name()="coord"]/text()')
+                whens = [c.text for c in _children_localname(track, 'when')]
+                coords = [c.text for c in _children_localname(track, 'coord')]
                 for idx, c_text in enumerate(coords):
+                    if not c_text:
+                        continue
                     parts = c_text.strip().split()
                     if len(parts) >= 2:
                         lon, lat = float(parts[0]), float(parts[1])
                         ele = round(float(parts[2]), 1) if len(parts) >= 3 else None
-                        t_str = whens[idx].strip() if idx < len(whens) else None
+                        t_str = whens[idx].strip() if idx < len(whens) and whens[idx] else None
                         t_val = None
                         if t_str:
                             try:
@@ -168,7 +194,7 @@ def lire_fichier_pour_conversion(chemin_fichier):
                         points.append({'lat': lat, 'lon': lon, 'ele': ele, 'time': t_val, 'name': None})
 
         if not points:
-            coord_nodes = tree.xpath('//kml:coordinates', namespaces=namespaces) or tree.xpath('//*[local-name()="coordinates"]')
+            coord_nodes = _findall_localname(root, 'coordinates')
             meilleur_noeud = None
             max_pts = 0
             for node in coord_nodes:
@@ -203,46 +229,45 @@ def exporter_vers_gpx(points, chemin_sortie, garder_temps=True):
 
 
 def exporter_vers_kml(points, chemin_sortie, garder_temps=True):
-    kml_ns = "http://www.opengis.net/kml/2.2"
-    gx_ns = "http://www.google.com/kml/ext/2.2"
-    kml = etree.Element("{%s}kml" % kml_ns, nsmap={None: kml_ns, "gx": gx_ns})
-    doc = etree.SubElement(kml, "{%s}Document" % kml_ns)
+    kml = ET.Element("{%s}kml" % KML_NS)
+    doc = ET.SubElement(kml, "{%s}Document" % KML_NS)
 
     style_id = "customTrackStyle"
-    style = etree.SubElement(doc, "{%s}Style" % kml_ns, id=style_id)
-    line_style = etree.SubElement(style, "{%s}LineStyle" % kml_ns)
-    etree.SubElement(line_style, "{%s}color" % kml_ns).text = "99ffac59"
-    etree.SubElement(line_style, "{%s}width" % kml_ns).text = "6"
+    style = ET.SubElement(doc, "{%s}Style" % KML_NS, id=style_id)
+    line_style = ET.SubElement(style, "{%s}LineStyle" % KML_NS)
+    ET.SubElement(line_style, "{%s}color" % KML_NS).text = "99ffac59"
+    ET.SubElement(line_style, "{%s}width" % KML_NS).text = "6"
 
-    pm = etree.SubElement(doc, "{%s}Placemark" % kml_ns)
-    etree.SubElement(pm, "{%s}name" % kml_ns).text = os.path.splitext(os.path.basename(chemin_sortie))[0]
-    etree.SubElement(pm, "{%s}styleUrl" % kml_ns).text = f"#{style_id}"
+    pm = ET.SubElement(doc, "{%s}Placemark" % KML_NS)
+    ET.SubElement(pm, "{%s}name" % KML_NS).text = os.path.splitext(os.path.basename(chemin_sortie))[0]
+    ET.SubElement(pm, "{%s}styleUrl" % KML_NS).text = f"#{style_id}"
 
     a_temps = garder_temps and any(p['time'] is not None for p in points)
     a_altitudes = any(p['ele'] is not None for p in points)
 
     if a_temps:
-        track = etree.SubElement(pm, "{%s}Track" % gx_ns)
+        track = ET.SubElement(pm, "{%s}Track" % GX_NS)
         mode_alt = "absolute" if a_altitudes else "clampToGround"
-        etree.SubElement(track, "{%s}altitudeMode" % gx_ns).text = mode_alt
+        ET.SubElement(track, "{%s}altitudeMode" % GX_NS).text = mode_alt
         for p in points:
             if p['time']:
                 t_str = p['time'].strftime("%Y-%m-%dT%H:%M:%SZ")
-                etree.SubElement(track, "{%s}when" % kml_ns).text = t_str
+                ET.SubElement(track, "{%s}when" % KML_NS).text = t_str
             ele_str = str(round(p['ele'], 1)) if p['ele'] is not None else "0"
-            etree.SubElement(track, "{%s}coord" % gx_ns).text = f"{p['lon']} {p['lat']} {ele_str}"
+            ET.SubElement(track, "{%s}coord" % GX_NS).text = f"{p['lon']} {p['lat']} {ele_str}"
     else:
-        ls = etree.SubElement(pm, "{%s}LineString" % kml_ns)
+        ls = ET.SubElement(pm, "{%s}LineString" % KML_NS)
         mode_alt = "absolute" if a_altitudes else "clampToGround"
-        etree.SubElement(ls, "{%s}altitudeMode" % gx_ns).text = mode_alt
+        ET.SubElement(ls, "{%s}altitudeMode" % GX_NS).text = mode_alt
         coords_str = []
         for p in points:
             ele_str = str(round(p['ele'], 1)) if p['ele'] is not None else "0"
             coords_str.append(f"{p['lon']},{p['lat']},{ele_str}")
-        etree.SubElement(ls, "{%s}coordinates" % kml_ns).text = "\n".join(coords_str)
+        ET.SubElement(ls, "{%s}coordinates" % KML_NS).text = "\n".join(coords_str)
 
-    tree = etree.ElementTree(kml)
-    tree.write(chemin_sortie, xml_declaration=True, encoding="UTF-8", pretty_print=True)
+    tree = ET.ElementTree(kml)
+    ET.indent(tree, space="  ")
+    tree.write(chemin_sortie, xml_declaration=True, encoding="UTF-8")
 
 
 def exporter_vers_kmz(points, chemin_sortie, garder_temps=True):
