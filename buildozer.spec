@@ -11,9 +11,13 @@ version = 0.1
 # Dépendances Python nécessaires à l'onglet Conversion.
 # lxml a été remplacé par xml.etree.ElementTree (bibliothèque standard) :
 # aucune compilation C nécessaire, beaucoup plus fiable sur Android.
+# python3==3.11.8 : on fige la version Python EMBARQUÉE DANS L'APK
+# (différente du Python du serveur de build). Sans ce pin, buildozer
+# prend la dernière version disponible (3.14), trop récente pour le
+# code Cython généré par Kivy 2.3.0 -> plantage à la compilation.
 # Ajoute pillow, piexif quand tu intègres l'onglet Photos ;
 # tkintermapview n'a pas d'équivalent direct sous Kivy (voir README).
-requirements = python3,kivy==2.3.0,gpxpy
+requirements = python3==3.11.8,kivy==2.3.0,gpxpy
 
 orientation = portrait
 fullscreen = 0
