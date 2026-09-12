@@ -15,9 +15,10 @@ version = 0.1
 # (différente du Python du serveur de build). Sans ce pin, buildozer
 # prend la dernière version disponible (3.14), trop récente pour le
 # code Cython généré par Kivy 2.3.0 -> plantage à la compilation.
-# Ajoute pillow, piexif quand tu intègres l'onglet Photos ;
-# tkintermapview n'a pas d'équivalent direct sous Kivy (voir README).
-requirements = python3==3.11.8,kivy==2.3.0,gpxpy
+# hostpython3 doit être fixé À LA MÊME VERSION EXACTE que python3 :
+# python-for-android utilise ce second interpréteur en interne pendant
+# la compilation croisée, et refuse de continuer si les deux diffèrent.
+requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.0,gpxpy
 
 orientation = portrait
 fullscreen = 0
