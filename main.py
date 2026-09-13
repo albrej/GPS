@@ -27,7 +27,7 @@ from kivy.uix.filechooser import FileChooserListView
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.metrics import dp
-from kivy.properties import StringProperty, BooleanProperty, ListProperty
+from kivy.properties import StringProperty, BooleanProperty, ListProperty, ObjectProperty
 from kivy.utils import platform
 
 import gps_logic
@@ -47,7 +47,6 @@ DOSSIER_SORTIE = os.path.join(DOSSIER_RACINE, "TracesConverties")
 # Fonctionnalités qui restent à intégrer (affichées dans le menu déroulant
 # avec un écran "à venir" en attendant leur code Python).
 SCREENS_A_VENIR = [
-    "Fusion",
     "Carte / Découpe",
     "Statistiques",
     "Photos",
@@ -367,6 +366,97 @@ KV = """
                 halign: "left"
                 valign: "top"
                 color: 0, 0, 0, 1
+
+<FusionScreen>:
+    ScrollView:
+        BoxLayout:
+            orientation: "vertical"
+            size_hint_y: None
+            height: self.minimum_height
+            padding: dp(16)
+            spacing: dp(10)
+
+            Label:
+                text: "Fusion de traces"
+                font_size: "20sp"
+                bold: True
+                size_hint_y: None
+                height: dp(40)
+                color: 0, 0, 0, 1
+
+            Button:
+                text: "Charger les traces a fusionner"
+                size_hint_y: None
+                height: dp(56)
+                background_color: 0.2, 0.6, 0.86, 1
+                on_release: root.ajouter_fichiers()
+
+            ScrollView:
+                size_hint_y: None
+                height: dp(180)
+                BoxLayout:
+                    id: box_liste
+                    orientation: "vertical"
+                    size_hint_y: None
+                    height: self.minimum_height
+                    spacing: dp(4)
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(48)
+                spacing: dp(6)
+                Button:
+                    text: "^ Monter"
+                    on_release: root.monter()
+                Button:
+                    text: "v Descendre"
+                    on_release: root.descendre()
+                Button:
+                    text: "Retirer"
+                    color: 1, 1, 1, 1
+                    background_color: 0.8, 0.2, 0.2, 1
+                    on_release: root.retirer()
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(56)
+                spacing: dp(8)
+                CheckBox:
+                    size_hint: None, None
+                    size: dp(24), dp(24)
+                    pos_hint: {"center_y": 0.5}
+                    disabled: root.index_selectionne is None
+                    active: root.inverser_selection
+                    on_active: root.basculer_inversion(self.active)
+                    canvas.before:
+                        Color:
+                            rgba: 0, 0, 0, 1
+                        Line:
+                            width: 1.2
+                            rectangle: (self.x, self.y, self.width, self.height)
+                Label:
+                    text: "Inverser le sens de cette trace (premier <-> dernier point)"
+                    text_size: self.width, self.height
+                    halign: "left"
+                    valign: "middle"
+                    color: 0, 0, 0, 1
+
+            Label:
+                text: root.status_text
+                size_hint_y: None
+                height: dp(40)
+                color: root.status_color
+                text_size: self.width, self.height
+                halign: "left"
+                valign: "middle"
+
+            Button:
+                text: "Fusionner et enregistrer"
+                size_hint_y: None
+                height: dp(56)
+                disabled: not root.peut_fusionner or root.en_cours
+                background_color: 0.15, 0.68, 0.38, 1
+                on_release: root.executer()
 """
 
 
@@ -598,6 +688,144 @@ def _construire_selecteur_fichier(callback):
     return layout
 
 
+def _construire_selecteur_fichiers_multiples(callback):
+    """Variante du sélecteur ci-dessus permettant de choisir plusieurs
+    fichiers d'un coup (nécessaire pour l'onglet Fusion)."""
+    layout = BoxLayout(orientation="vertical", spacing=6, padding=6)
+    chooser = FileChooserListView(path=DOSSIER_RACINE, filters=["*.gpx", "*.kmz", "*.kml"], multiselect=True)
+    layout.add_widget(chooser)
+
+    boutons = BoxLayout(size_hint_y=None, height=48, spacing=6)
+    btn_annuler = Button(text="Annuler")
+    btn_valider = Button(text="Valider")
+    boutons.add_widget(btn_annuler)
+    boutons.add_widget(btn_valider)
+    layout.add_widget(boutons)
+
+    btn_valider.bind(on_release=lambda inst: callback(list(chooser.selection) if chooser.selection else None))
+    btn_annuler.bind(on_release=lambda inst: callback(None))
+    return layout
+
+
+class FusionScreen(Screen):
+    inverser_selection = BooleanProperty(False)
+    status_text = StringProperty("Aucune trace chargée.")
+    status_color = ListProperty([0.33, 0.33, 0.33, 1])
+    peut_fusionner = BooleanProperty(False)
+    en_cours = BooleanProperty(False)
+    index_selectionne = ObjectProperty(None, allownone=True)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.fichiers_fusion = []
+
+    def ajouter_fichiers(self):
+        contenu = _construire_selecteur_fichiers_multiples(self._fichiers_choisis)
+        self._popup = Popup(title="Choisir les traces à fusionner", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
+
+    def _fichiers_choisis(self, chemins):
+        self._popup.dismiss()
+        if not chemins:
+            return
+        chemins_existants = {item["path"] for item in self.fichiers_fusion}
+        for f in chemins:
+            if f not in chemins_existants:
+                self.fichiers_fusion.append({"path": f, "inverser": False})
+        self.fichiers_fusion.sort(key=lambda x: os.path.basename(x["path"]).lower())
+        self.index_selectionne = None
+        self.inverser_selection = False
+        self._rafraichir_liste()
+
+    def _rafraichir_liste(self):
+        box = self.ids.box_liste
+        box.clear_widgets()
+        for i, item in enumerate(self.fichiers_fusion):
+            nom = os.path.basename(item["path"])
+            if item["inverser"]:
+                nom += "  [INVERSÉ]"
+            selectionne = (i == self.index_selectionne)
+            btn = Button(
+                text=nom,
+                size_hint_y=None,
+                height=dp(40),
+                background_color=(0.2, 0.6, 0.86, 1) if selectionne else (0.9, 0.9, 0.9, 1),
+                color=(1, 1, 1, 1) if selectionne else (0, 0, 0, 1),
+            )
+            btn.bind(on_release=lambda inst, idx=i: self._selectionner(idx))
+            box.add_widget(btn)
+
+        nb = len(self.fichiers_fusion)
+        if nb >= 2:
+            self.status_text = f"{nb} fichiers prêts à être fusionnés."
+            self.status_color = [0.15, 0.5, 0.15, 1]
+            self.peut_fusionner = True
+        else:
+            self.status_text = "Ajoutez au moins 2 fichiers pour fusionner."
+            self.status_color = [0.33, 0.33, 0.33, 1]
+            self.peut_fusionner = False
+
+    def _selectionner(self, idx):
+        self.index_selectionne = idx
+        self.inverser_selection = self.fichiers_fusion[idx]["inverser"]
+        self._rafraichir_liste()
+
+    def basculer_inversion(self, actif):
+        if self.index_selectionne is None:
+            return
+        self.fichiers_fusion[self.index_selectionne]["inverser"] = actif
+        self._rafraichir_liste()
+
+    def monter(self):
+        i = self.index_selectionne
+        if i is None or i == 0:
+            return
+        self.fichiers_fusion[i], self.fichiers_fusion[i - 1] = self.fichiers_fusion[i - 1], self.fichiers_fusion[i]
+        self.index_selectionne = i - 1
+        self._rafraichir_liste()
+
+    def descendre(self):
+        i = self.index_selectionne
+        if i is None or i >= len(self.fichiers_fusion) - 1:
+            return
+        self.fichiers_fusion[i], self.fichiers_fusion[i + 1] = self.fichiers_fusion[i + 1], self.fichiers_fusion[i]
+        self.index_selectionne = i + 1
+        self._rafraichir_liste()
+
+    def retirer(self):
+        i = self.index_selectionne
+        if i is None:
+            return
+        del self.fichiers_fusion[i]
+        self.index_selectionne = None
+        self.inverser_selection = False
+        self._rafraichir_liste()
+
+    def executer(self):
+        if not self.peut_fusionner or self.en_cours:
+            return
+        self.en_cours = True
+        self.status_text = "Fusion en cours..."
+        self.status_color = [0.33, 0.33, 0.33, 1]
+        threading.Thread(target=self._fusion_thread, daemon=True).start()
+
+    def _fusion_thread(self):
+        try:
+            chemin_sortie = gps_logic.traiter_fusion(list(self.fichiers_fusion), DOSSIER_SORTIE)
+            message = f"Fusion réussie !\nFichier généré : {os.path.basename(chemin_sortie)}"
+            couleur = [0.15, 0.5, 0.15, 1]
+        except Exception as e:
+            message = f"Échec de la fusion : {e}"
+            couleur = [0.8, 0.1, 0.8, 1]
+
+        def _maj_ui(dt):
+            self.en_cours = False
+            self.status_text = message
+            self.status_color = couleur
+
+        Clock.schedule_once(_maj_ui, 0)
+
+
 class EcranAVenir(Screen):
     """Écran affiché pour les fonctionnalités pas encore intégrées."""
 
@@ -626,6 +854,7 @@ class OutilsTracesApp(App):
         self.sm = ScreenManager()
         self.sm.add_widget(ConversionScreen(name="conversion"))
         self.sm.add_widget(NumerotationScreen(name="numerotation"))
+        self.sm.add_widget(FusionScreen(name="fusion"))
         for nom in SCREENS_A_VENIR:
             self.sm.add_widget(EcranAVenir(nom, name=nom))
 
@@ -633,7 +862,7 @@ class OutilsTracesApp(App):
         barre = BoxLayout(size_hint_y=None, height=dp(60), padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
-        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation")]
+        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion")]
         self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
         self._boutons_menu = {}
         for nom_ecran, libelle in self._ecrans_menu:

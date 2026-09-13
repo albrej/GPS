@@ -590,3 +590,128 @@ def traiter_numerotation(fichier_entree, segments_lus, mode_choisi, est_inverse,
 
     msg = " - ".join(detail_msg) if detail_msg else "Traitement effectué"
     return fichier_sortie, msg
+
+
+# ----------------------------------------------------------------------
+# FUSION DE TRACES (onglet 3)
+# ----------------------------------------------------------------------
+
+def nettoyer_points_fusion(points):
+    resultat = []
+    precedent = None
+    for p in points:
+        if precedent == p:
+            continue
+        resultat.append(p)
+        precedent = p
+    return resultat
+
+
+def signature_segment(segment):
+    return tuple(
+        (round(p[0], 6), round(p[1], 6), round(p[2], 1) if p[2] is not None else None)
+        for p in segment
+    )
+
+
+def supprimer_doublons_segments(segments):
+    vus = set()
+    resultat = []
+    for s in segments:
+        sig = signature_segment(s)
+        if sig not in vus:
+            vus.add(sig)
+            resultat.append(s)
+    return resultat
+
+
+def lire_gpx_fusion(fichier):
+    segments = []
+    with open(fichier, encoding="utf-8") as f:
+        gpx = gpxpy.parse(f)
+    for trk in gpx.tracks:
+        for seg in trk.segments:
+            pts = [(p.latitude, p.longitude, round(p.elevation, 1) if p.elevation is not None else None) for p in seg.points]
+            pts = nettoyer_points_fusion(pts)
+            if len(pts) > 1:
+                segments.append(pts)
+    return supprimer_doublons_segments(segments)
+
+
+def lire_kmz_fusion(fichier):
+    pts = lire_fichier_pour_conversion(fichier)
+    if len(pts) > 1:
+        segment = [(p['lat'], p['lon'], p['ele']) for p in pts]
+        return [segment]
+    return []
+
+
+def charger_segment_fusion(fichier, inverser=False):
+    if os.path.splitext(fichier)[1].lower() == ".gpx":
+        segments = lire_gpx_fusion(fichier)
+    else:
+        segments = lire_kmz_fusion(fichier)
+
+    if inverser:
+        segments_inverses = []
+        for seg in reversed(segments):
+            segments_inverses.append(list(reversed(seg)))
+        return segments_inverses
+    return segments
+
+
+def fusionner_tous_segments(segments):
+    if not segments:
+        return []
+    fusion = []
+    for seg in segments:
+        if not fusion:
+            fusion.extend(seg)
+            continue
+        if fusion[-1] == seg[0]:
+            fusion.extend(seg[1:])
+        else:
+            fusion.extend(seg)
+    return [fusion]
+
+
+def sauver_fusion_gpx(segments, sortie):
+    gpx = gpxpy.gpx.GPX()
+    trk = gpxpy.gpx.GPXTrack()
+    gpx.tracks.append(trk)
+
+    for segment in segments:
+        seg = gpxpy.gpx.GPXTrackSegment()
+        trk.segments.append(seg)
+        for lat, lon, ele in segment:
+            pt = gpxpy.gpx.GPXTrackPoint(lat, lon, elevation=ele)
+            pt.time = None
+            seg.points.append(pt)
+
+    with open(sortie, "w", encoding="utf-8") as f:
+        f.write(gpx.to_xml())
+
+
+def traiter_fusion(fichiers_fusion, dossier_sortie, nom_sortie="fusion.gpx"):
+    """Fonction de haut niveau utilisée par l'interface Kivy :
+    fichiers_fusion est une liste de dicts {"path": ..., "inverser": bool}.
+    Retourne le chemin du fichier GPX fusionné créé."""
+    if len(fichiers_fusion) < 2:
+        raise ValueError("Ajoute au moins 2 fichiers pour fusionner.")
+
+    tous_segments = []
+    for item in fichiers_fusion:
+        tous_segments.extend(charger_segment_fusion(item["path"], inverser=item["inverser"]))
+
+    final_segments = fusionner_tous_segments(tous_segments)
+
+    os.makedirs(dossier_sortie, exist_ok=True)
+    sortie = os.path.join(dossier_sortie, nom_sortie)
+    c = 1
+    base, ext = os.path.splitext(sortie)
+    while os.path.exists(sortie):
+        sortie = f"{base}_{c}{ext}"
+        c += 1
+
+    sauver_fusion_gpx(final_segments, sortie)
+    return sortie
