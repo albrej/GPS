@@ -13,29 +13,29 @@
 """
 
 import os
+import sys
+import subprocess
 import threading
 
 from kivy.app import App
-from kivy.lang import Builder
-from kivy.uix.screenmanager import ScreenManager, Screen
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.label import Label
-from kivy.uix.dropdown import DropDown
-from kivy.uix.button import Button
-from kivy.uix.popup import Popup
-from kivy.uix.filechooser import FileChooserListView
 from kivy.clock import Clock
 from kivy.core.window import Window
+from kivy.lang import Builder
 from kivy.metrics import dp
-from kivy.properties import StringProperty, BooleanProperty, ListProperty, ObjectProperty
+from kivy.properties import BooleanProperty, ListProperty, ObjectProperty, StringProperty
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.button import Button
+from kivy.uix.dropdown import DropDown
+from kivy.uix.filechooser import FileChooserListView
+from kivy.uix.label import Label
+from kivy.uix.popup import Popup
+from kivy.uix.screenmanager import Screen, ScreenManager
 from kivy.utils import platform
 
 import gps_logic
 
 # ----------------------------------------------------------------------
 # Dossier racine utilisé pour parcourir/enregistrer les fichiers.
-# Sur Android, nécessite la permission "Accès à tous les fichiers"
-# (voir README.md + buildozer.spec).
 # ----------------------------------------------------------------------
 if platform == "android":
     DOSSIER_RACINE = "/storage/emulated/0"
@@ -44,6 +44,58 @@ else:
 
 DOSSIER_SORTIE = os.path.join(DOSSIER_RACINE, "TracesConverties")
 
+
+def ouvrir_dossier_sortie(chemin_fichier=None):
+    """Ouvre le dossier de sortie ou le fichier généré selon le système."""
+    target = (
+        chemin_fichier
+        if chemin_fichier and os.path.exists(chemin_fichier)
+        else DOSSIER_SORTIE
+    )
+    if not os.path.exists(target):
+        os.makedirs(target, exist_ok=True)
+
+    if platform == "android":
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass("org.kivy.android.PythonActivity")
+            Intent = autoclass("android.content.Intent")
+            File = autoclass("java.io.File")
+            FileProvider = autoclass("androidx.core.content.FileProvider")
+
+            context = PythonActivity.mActivity
+            fichier = File(target)
+            package_name = context.getPackageName()
+
+            intent = Intent()
+            if fichier.isFile():
+                uri = FileProvider.getUriForFile(context, f"{package_name}.fileprovider", fichier)
+                intent.setAction(Intent.ACTION_VIEW)
+                intent.setDataAndType(uri, "*/*")
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            else:
+                DocumentsContract = autoclass("android.provider.DocumentsContract")
+                intent.setAction(Intent.ACTION_VIEW)
+                intent.setDataAndType(
+                    DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:TracesConverties"),
+                    "*/*"
+                )
+            context.startActivity(intent)
+        except Exception as e:
+            print(f"Erreur d'ouverture Android : {e}")
+
+    elif sys.platform == "win32" or os.name == "nt":
+        # Correction pour Windows : ouverture du dossier ou sélection du fichier
+        dossier = target if os.path.isdir(target) else os.path.dirname(target)
+        os.startfile(os.path.normpath(dossier))
+
+    elif platform == "darwin":
+        subprocess.run(["open", os.path.dirname(target) if os.path.isfile(target) else target])
+
+    else:
+        # Linux uniquement
+        subprocess.run(["xdg-open", os.path.dirname(target) if os.path.isfile(target) else target])
+        
 # Fonctionnalités qui restent à intégrer (affichées dans le menu déroulant
 # avec un écran "à venir" en attendant leur code Python).
 SCREENS_A_VENIR = [
@@ -111,10 +163,12 @@ KV = """
                 ToggleButton:
                     text: "KML"
                     group: "format"
+                    state: "down"
                     on_state: if self.state == "down": root.format_sortie = "kml"
                 ToggleButton:
                     text: "KMZ"
                     group: "format"
+                    state: "down"
                     on_state: if self.state == "down": root.format_sortie = "kmz"
 
         BoxLayout:
@@ -147,6 +201,14 @@ KV = """
             disabled: not root.fichier_source
             background_color: 0.15, 0.68, 0.38, 1
             on_release: root.lancer_conversion()
+
+        Button:
+            text: Emplacement du fichier généré"
+            size_hint_y: None
+            height: dp(48)
+            disabled: not root.dernier_fichier_genere
+            background_color: 0.9, 0.55, 0.1, 1
+            on_release: root.ouvrir_fichier()
 
         Label:
             id: lbl_status
@@ -349,6 +411,14 @@ KV = """
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer()
 
+            Button:
+                text: Emplacement du fichier généré"
+                size_hint_y: None
+                height: dp(48)
+                disabled: not root.dernier_fichier_genere
+                background_color: 0.9, 0.55, 0.1, 1
+                on_release: root.ouvrir_fichier()
+
             Label:
                 text: "Résumé des changements (avant exécution)"
                 size_hint_y: None
@@ -457,6 +527,14 @@ KV = """
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer()
 
+            Button:
+                text: Emplacement du fichier généré"
+                size_hint_y: None
+                height: dp(48)
+                disabled: not root.dernier_fichier_genere
+                background_color: 0.9, 0.55, 0.1, 1
+                on_release: root.ouvrir_fichier()
+
 <CarteScreen>:
     ScrollView:
         BoxLayout:
@@ -534,6 +612,14 @@ KV = """
                 disabled: not root.trace_chargee or root.en_cours
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer_decoupe()
+
+            Button:
+                text: Emplacement du fichier généré"
+                size_hint_y: None
+                height: dp(48)
+                disabled: not root.dernier_fichier_genere
+                background_color: 0.9, 0.55, 0.1, 1
+                on_release: root.ouvrir_fichier()
 """
 
 
@@ -544,7 +630,11 @@ class ConversionScreen(Screen):
     garder_temps = BooleanProperty(True)
     status_text = StringProperty("")
     en_cours = BooleanProperty(False)
+    dernier_fichier_genere = StringProperty("")
 
+    def ouvrir_fichier(self):
+        ouvrir_dossier_sortie(self.dernier_fichier_genere)
+    
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
         self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
@@ -573,6 +663,8 @@ class ConversionScreen(Screen):
                 self.garder_temps,
                 dossier_sortie=DOSSIER_SORTIE,
             )
+            self.dernier_fichier_genere = chemin_sortie
+            
             message = f"Conversion réussie !\nEnregistré dans :\n{chemin_sortie}"
             erreur = False
         except Exception as e:
@@ -605,7 +697,12 @@ class NumerotationScreen(Screen):
     legende_text = StringProperty("")
 
     en_cours = BooleanProperty(False)
+    
+    dernier_fichier_genere = StringProperty("")
 
+    def ouvrir_fichier(self):
+        ouvrir_dossier_sortie(self.dernier_fichier_genere)
+        
     def on_enter(self, *args):
         # Force la mise à jour dès que l'écran devient visible
         self._maj_etat()
@@ -732,6 +829,7 @@ class NumerotationScreen(Screen):
             chemin_sortie, resume = gps_logic.traiter_numerotation(
                 self.fichier_source, self.segments_lus, self.mode, self.inverser, self.texte_suppr
             )
+            self.dernier_fichier_genere = chemin_sortie
             message = f"{resume}.\nFichier généré : {os.path.basename(chemin_sortie)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
@@ -791,7 +889,12 @@ class FusionScreen(Screen):
     peut_fusionner = BooleanProperty(False)
     en_cours = BooleanProperty(False)
     index_selectionne = ObjectProperty(None, allownone=True)
+    
+    dernier_fichier_genere = StringProperty("")
 
+    def ouvrir_fichier(self):
+        ouvrir_dossier_sortie(self.dernier_fichier_genere)
+        
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.fichiers_fusion = []
@@ -911,7 +1014,12 @@ class CarteScreen(Screen):
     status_text = StringProperty("")
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     en_cours = BooleanProperty(False)
+    
+    dernier_fichier_genere = StringProperty("")
 
+    def ouvrir_fichier(self):
+        ouvrir_dossier_sortie(self.dernier_fichier_genere)
+        
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.points_courants = []
@@ -963,6 +1071,11 @@ class CarteScreen(Screen):
             c1, c2 = gps_logic.decouper_trace(
                 self.fichier_source, self.points_courants, point_coupure, dossier_sortie=DOSSIER_SORTIE
             )
+            
+            # --- CORRECTION ICI ---
+            # On enregistre la destination du premier fichier généré
+            self.dernier_fichier_genere = c1
+            
             message = f"Découpe réussie en 2 fichiers :\n{os.path.basename(c1)}\n{os.path.basename(c2)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
@@ -975,7 +1088,6 @@ class CarteScreen(Screen):
             self.status_color = couleur
 
         Clock.schedule_once(_maj_ui, 0)
-
 
 class EcranAVenir(Screen):
     """Écran affiché pour les fonctionnalités pas encore intégrées."""

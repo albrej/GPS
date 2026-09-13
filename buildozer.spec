@@ -39,7 +39,8 @@ android.api = 34
 android.minapi = 24
 android.ndk = 25b
 android.ndk_api = 24
-android.archs = arm64-v8a
+android.archs = arm64-v8a, armeabi-v7a
+android.gradle_dependencies = androidx.core:core:1.6.0
 
 [buildozer]
 log_level = 2
