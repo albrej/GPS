@@ -47,7 +47,6 @@ DOSSIER_SORTIE = os.path.join(DOSSIER_RACINE, "TracesConverties")
 # Fonctionnalités qui restent à intégrer (affichées dans le menu déroulant
 # avec un écran "à venir" en attendant leur code Python).
 SCREENS_A_VENIR = [
-    "Carte / Découpe",
     "Statistiques",
     "Photos",
     "Live",
@@ -336,10 +335,10 @@ KV = """
             Label:
                 text: root.status_text
                 size_hint_y: None
-                height: dp(44)
-                text_size: self.width, self.height
+                height: max(dp(30), self.texture_size[1] + dp(10))
+                text_size: self.width, None
                 halign: "left"
-                valign: "middle"
+                valign: "top"
                 color: root.status_color
 
             Button:
@@ -444,11 +443,11 @@ KV = """
             Label:
                 text: root.status_text
                 size_hint_y: None
-                height: dp(40)
+                height: max(dp(30), self.texture_size[1] + dp(10))
                 color: root.status_color
-                text_size: self.width, self.height
+                text_size: self.width, None
                 halign: "left"
-                valign: "middle"
+                valign: "top"
 
             Button:
                 text: "Fusionner et enregistrer"
@@ -457,6 +456,84 @@ KV = """
                 disabled: not root.peut_fusionner or root.en_cours
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer()
+
+<CarteScreen>:
+    ScrollView:
+        BoxLayout:
+            orientation: "vertical"
+            size_hint_y: None
+            height: self.minimum_height
+            padding: dp(16)
+            spacing: dp(10)
+
+            Label:
+                text: "Carte / Decoupe"
+                font_size: "20sp"
+                bold: True
+                size_hint_y: None
+                height: dp(40)
+                color: 0, 0, 0, 1
+
+            Label:
+                text: "(carte interactive et graphique altitude/vitesse a venir - decoupe deja disponible)"
+                size_hint_y: None
+                height: dp(30)
+                text_size: self.width, self.height
+                halign: "left"
+                valign: "middle"
+                color: 0.4, 0.4, 0.4, 1
+                font_size: "12sp"
+
+            Button:
+                text: "Charger une trace (GPX, KMZ, KML)"
+                size_hint_y: None
+                height: dp(56)
+                background_color: 0.2, 0.6, 0.86, 1
+                on_release: root.ouvrir_selecteur_fichier()
+
+            Label:
+                text: root.info_fichier
+                size_hint_y: None
+                height: dp(50)
+                text_size: self.width, self.height
+                halign: "left"
+                valign: "middle"
+                color: 0.2, 0.5, 0.2, 1
+
+            Label:
+                text: "Decoupe de trace"
+                size_hint_y: None
+                height: dp(26)
+                color: 0, 0, 0, 1
+                bold: True
+
+            TextInput:
+                id: entree_coupure
+                hint_text: "Numero du point de coupure (ex: 42)"
+                multiline: False
+                input_filter: "int"
+                size_hint_y: None
+                height: dp(44)
+                disabled: not root.trace_chargee
+                text: root.point_coupure_text
+                on_text: root.point_coupure_text = self.text
+
+            Label:
+                text: root.status_text
+                size_hint_y: None
+                height: max(dp(30), self.texture_size[1] + dp(10))
+                color: root.status_color
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+
+            Button:
+                text: "Couper ici"
+                size_hint_y: None
+                height: dp(56)
+                disabled: not root.trace_chargee or root.en_cours
+                background_color: 0.15, 0.68, 0.38, 1
+                on_release: root.executer_decoupe()
 """
 
 
@@ -826,6 +903,80 @@ class FusionScreen(Screen):
         Clock.schedule_once(_maj_ui, 0)
 
 
+class CarteScreen(Screen):
+    fichier_source = StringProperty("")
+    info_fichier = StringProperty("Aucune trace chargée.")
+    trace_chargee = BooleanProperty(False)
+    point_coupure_text = StringProperty("")
+    status_text = StringProperty("")
+    status_color = ListProperty([0.33, 0.33, 0.33, 1])
+    en_cours = BooleanProperty(False)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.points_courants = []
+
+    def ouvrir_selecteur_fichier(self):
+        contenu = _construire_selecteur_fichier(self._fichier_choisi)
+        self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
+
+    def _fichier_choisi(self, chemin):
+        self._popup.dismiss()
+        if not chemin:
+            return
+        try:
+            points = gps_logic.lire_fichier_pour_conversion(chemin)
+        except Exception as e:
+            self.trace_chargee = False
+            self.info_fichier = f"Erreur de lecture : {e}"
+            return
+
+        if not points:
+            self.trace_chargee = False
+            self.info_fichier = "Aucun point GPS trouvé dans ce fichier."
+            return
+
+        self.fichier_source = chemin
+        self.points_courants = points
+        self.trace_chargee = True
+        self.point_coupure_text = ""
+        self.status_text = ""
+        self.info_fichier = f"Trace chargée : {os.path.basename(chemin)}\n{len(points)} points."
+
+    def executer_decoupe(self):
+        if not self.trace_chargee or self.en_cours:
+            return
+        saisie = self.point_coupure_text.strip()
+        if not saisie.isdigit():
+            self.status_text = "Numéro de point invalide."
+            self.status_color = [0.8, 0.1, 0.1, 1]
+            return
+
+        self.en_cours = True
+        self.status_text = "Découpe en cours..."
+        self.status_color = [0.33, 0.33, 0.33, 1]
+        threading.Thread(target=self._decoupe_thread, args=(int(saisie),), daemon=True).start()
+
+    def _decoupe_thread(self, point_coupure):
+        try:
+            c1, c2 = gps_logic.decouper_trace(
+                self.fichier_source, self.points_courants, point_coupure, dossier_sortie=DOSSIER_SORTIE
+            )
+            message = f"Découpe réussie en 2 fichiers :\n{os.path.basename(c1)}\n{os.path.basename(c2)}"
+            couleur = [0.15, 0.5, 0.15, 1]
+        except Exception as e:
+            message = f"Échec de la découpe : {e}"
+            couleur = [0.8, 0.1, 0.1, 1]
+
+        def _maj_ui(dt):
+            self.en_cours = False
+            self.status_text = message
+            self.status_color = couleur
+
+        Clock.schedule_once(_maj_ui, 0)
+
+
 class EcranAVenir(Screen):
     """Écran affiché pour les fonctionnalités pas encore intégrées."""
 
@@ -855,6 +1006,7 @@ class OutilsTracesApp(App):
         self.sm.add_widget(ConversionScreen(name="conversion"))
         self.sm.add_widget(NumerotationScreen(name="numerotation"))
         self.sm.add_widget(FusionScreen(name="fusion"))
+        self.sm.add_widget(CarteScreen(name="carte"))
         for nom in SCREENS_A_VENIR:
             self.sm.add_widget(EcranAVenir(nom, name=nom))
 
@@ -862,7 +1014,7 @@ class OutilsTracesApp(App):
         barre = BoxLayout(size_hint_y=None, height=dp(60), padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
-        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion")]
+        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Carte / Découpe")]
         self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
         self._boutons_menu = {}
         for nom_ecran, libelle in self._ecrans_menu:

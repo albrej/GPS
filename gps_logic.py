@@ -715,3 +715,33 @@ def traiter_fusion(fichiers_fusion, dossier_sortie, nom_sortie="fusion.gpx"):
 
     sauver_fusion_gpx(final_segments, sortie)
     return sortie
+
+
+# ----------------------------------------------------------------------
+# DÉCOUPE DE TRACE (onglet 4, partie "Découpe" seulement pour l'instant —
+# la carte interactive et le graphique altitude/vitesse sont prévus pour
+# une prochaine étape, voir README.md)
+# ----------------------------------------------------------------------
+
+def decouper_trace(fichier_entree, points, point_coupure, dossier_sortie=None):
+    """Découpe une trace déjà chargée (liste de points issue de
+    lire_fichier_pour_conversion) en 2 fichiers GPX de part et d'autre du
+    point de coupure (numéro 1-indexé, inclus dans les deux parties, comme
+    dans la version desktop). Retourne (chemin_partie1, chemin_partie2)."""
+    max_pts = len(points)
+    if not (1 <= point_coupure <= max_pts):
+        raise ValueError(f"Le numéro doit être compris entre 1 et {max_pts}.")
+
+    part1 = points[:point_coupure]
+    part2 = points[point_coupure - 1:]
+
+    if dossier_sortie is None:
+        dossier_sortie = os.path.dirname(fichier_entree)
+    os.makedirs(dossier_sortie, exist_ok=True)
+    nom_base = os.path.splitext(os.path.basename(fichier_entree))[0]
+
+    chemin1 = os.path.join(dossier_sortie, f"{nom_base}_part_1.gpx")
+    chemin2 = os.path.join(dossier_sortie, f"{nom_base}_part_2.gpx")
+    exporter_vers_gpx(part1, chemin1)
+    exporter_vers_gpx(part2, chemin2)
+    return chemin1, chemin2
