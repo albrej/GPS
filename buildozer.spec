@@ -8,8 +8,6 @@ source.include_exts = py,kv,png,jpg,ttf
 
 version = 0.1
 
-p4a.branch = develop
-
 # Dépendances Python nécessaires à l'onglet Conversion.
 # lxml a été remplacé par xml.etree.ElementTree (bibliothèque standard) :
 # aucune compilation C nécessaire, beaucoup plus fiable sur Android.
@@ -20,7 +18,7 @@ p4a.branch = develop
 # hostpython3 doit être fixé À LA MÊME VERSION EXACTE que python3 :
 # python-for-android utilise ce second interpréteur en interne pendant
 # la compilation croisée, et refuse de continuer si les deux diffèrent.
-requirements = python3,hostpython3,kivy==2.3.1,gpxpy
+requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,gpxpy,kivy_garden.mapview
 
 orientation = portrait
 icon.filename = %(source.dir)s/Icone.png
@@ -41,8 +39,7 @@ android.api = 34
 android.minapi = 24
 android.ndk = 25b
 android.ndk_api = 24
-android.archs = arm64-v8a, armeabi-v7a
-android.gradle_dependencies = androidx.core:core:1.6.0
+android.archs = arm64-v8a
 
 [buildozer]
 log_level = 2

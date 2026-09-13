@@ -723,6 +723,31 @@ def traiter_fusion(fichiers_fusion, dossier_sortie, nom_sortie="fusion.gpx"):
 # une prochaine étape, voir README.md)
 # ----------------------------------------------------------------------
 
+TAILLE_TUILE = 256
+
+
+def projeter_mercator(lat, lon, zoom):
+    """Convertit une coordonnée GPS en position pixel (Web Mercator),
+    à un niveau de zoom donné. Utilisé pour placer la trace et
+    convertir un point tapé sur la carte, indépendamment des méthodes
+    internes de kivy_garden.mapview (non vérifiables sans Kivy)."""
+    taille_monde = TAILLE_TUILE * (2 ** zoom)
+    x = (lon + 180.0) / 360.0 * taille_monde
+    siny = math.sin(math.radians(lat))
+    siny = min(max(siny, -0.9999), 0.9999)
+    y = (0.5 - math.log((1 + siny) / (1 - siny)) / (4 * math.pi)) * taille_monde
+    return x, y
+
+
+def deprojeter_mercator(x, y, zoom):
+    """Opération inverse de projeter_mercator : pixel -> GPS."""
+    taille_monde = TAILLE_TUILE * (2 ** zoom)
+    lon = x / taille_monde * 360.0 - 180.0
+    n = math.pi - 2.0 * math.pi * y / taille_monde
+    lat = math.degrees(math.atan(math.sinh(n)))
+    return lat, lon
+
+
 def decouper_trace(fichier_entree, points, point_coupure, dossier_sortie=None):
     """Découpe une trace déjà chargée (liste de points issue de
     lire_fichier_pour_conversion) en 2 fichiers GPX de part et d'autre du

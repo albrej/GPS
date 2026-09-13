@@ -13,29 +13,103 @@
 """
 
 import os
-import sys
-import subprocess
+import math
 import threading
 
 from kivy.app import App
+from kivy.lang import Builder
+from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.label import Label
+from kivy.uix.dropdown import DropDown
+from kivy.uix.button import Button
+from kivy.uix.popup import Popup
+from kivy.uix.filechooser import FileChooserListView
 from kivy.clock import Clock
 from kivy.core.window import Window
-from kivy.lang import Builder
 from kivy.metrics import dp
-from kivy.properties import BooleanProperty, ListProperty, ObjectProperty, StringProperty
-from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.button import Button
-from kivy.uix.dropdown import DropDown
-from kivy.uix.filechooser import FileChooserListView
-from kivy.uix.label import Label
-from kivy.uix.popup import Popup
-from kivy.uix.screenmanager import Screen, ScreenManager
+from kivy.graphics import Color, Line as KivyLine
+from kivy.properties import StringProperty, BooleanProperty, ListProperty, ObjectProperty
 from kivy.utils import platform
 
 import gps_logic
 
 # ----------------------------------------------------------------------
+# Carte interactive (onglet Carte/Découpe) : kivy_garden.mapview est
+# l'équivalent Kivy le plus proche de tkintermapview (tuiles OSM/
+# satellite, marqueurs). Import protégé : si la bibliothèque n'est pas
+# encore installée, le reste de l'appli continue de fonctionner et
+# l'écran Carte affiche un message au lieu de planter.
+# Installation : pip install kivy_garden.mapview
+# ----------------------------------------------------------------------
+try:
+    from kivy_garden.mapview import MapView, MapMarker, MapSource, MapLayer
+    CARTE_DISPONIBLE = True
+except Exception:
+    CARTE_DISPONIBLE = False
+
+if CARTE_DISPONIBLE:
+    SOURCE_SATELLITE = MapSource(
+        url="https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}",
+        cache_key="google_satellite",
+        min_zoom=0, max_zoom=22,
+        attribution="Google",
+    )
+    SOURCE_PLAN = MapSource(
+        url="https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+        cache_key="osm_plan",
+        min_zoom=0, max_zoom=19,
+        attribution="(c) OpenStreetMap contributors",
+    )
+
+    class TraceLayer(MapLayer):
+        """Dessine la trace (polyligne cyan) par-dessus les tuiles,
+        équivalent de map_widget.set_path(...) sous tkintermapview."""
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.points = []
+
+        def set_points(self, points_lat_lon):
+            self.points = points_lat_lon
+            self.reposition()
+
+        def reposition(self):
+            self.canvas.clear()
+            if not self.points or len(self.points) < 2 or self.parent is None:
+                return
+            mapview = self.parent
+            zoom = mapview.zoom
+            cx, cy = gps_logic.projeter_mercator(mapview.lat, mapview.lon, zoom)
+            coords = []
+            for lat, lon in self.points:
+                px, py = gps_logic.projeter_mercator(lat, lon, zoom)
+                x = mapview.center_x + (px - cx)
+                y = mapview.center_y - (py - cy)
+                coords.extend([x, y])
+            with self.canvas:
+                Color(0, 1, 1, 1)
+                KivyLine(points=coords, width=2)
+
+    class MarqueurTexte(MapMarker):
+        """Marqueur avec une lettre affichée dessus (D, A, ou D/A),
+        équivalent des marqueurs texte de tkintermapview."""
+
+        def __init__(self, texte="", **kwargs):
+            super().__init__(**kwargs)
+            self._label = Label(text=texte, bold=True, font_size="12sp", color=(1, 1, 1, 1))
+            self.add_widget(self._label)
+            self.bind(pos=self._maj_label, size=self._maj_label)
+            self._maj_label()
+
+        def _maj_label(self, *args):
+            self._label.center_x = self.center_x
+            self._label.center_y = self.center_y + dp(6)
+
+# ----------------------------------------------------------------------
 # Dossier racine utilisé pour parcourir/enregistrer les fichiers.
+# Sur Android, nécessite la permission "Accès à tous les fichiers"
+# (voir README.md + buildozer.spec).
 # ----------------------------------------------------------------------
 if platform == "android":
     DOSSIER_RACINE = "/storage/emulated/0"
@@ -44,58 +118,6 @@ else:
 
 DOSSIER_SORTIE = os.path.join(DOSSIER_RACINE, "TracesConverties")
 
-
-def ouvrir_dossier_sortie(chemin_fichier=None):
-    """Ouvre le dossier de sortie ou le fichier généré selon le système."""
-    target = (
-        chemin_fichier
-        if chemin_fichier and os.path.exists(chemin_fichier)
-        else DOSSIER_SORTIE
-    )
-    if not os.path.exists(target):
-        os.makedirs(target, exist_ok=True)
-
-    if platform == "android":
-        try:
-            from jnius import autoclass
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            Intent = autoclass("android.content.Intent")
-            File = autoclass("java.io.File")
-            FileProvider = autoclass("androidx.core.content.FileProvider")
-
-            context = PythonActivity.mActivity
-            fichier = File(target)
-            package_name = context.getPackageName()
-
-            intent = Intent()
-            if fichier.isFile():
-                uri = FileProvider.getUriForFile(context, f"{package_name}.fileprovider", fichier)
-                intent.setAction(Intent.ACTION_VIEW)
-                intent.setDataAndType(uri, "*/*")
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            else:
-                DocumentsContract = autoclass("android.provider.DocumentsContract")
-                intent.setAction(Intent.ACTION_VIEW)
-                intent.setDataAndType(
-                    DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:TracesConverties"),
-                    "*/*"
-                )
-            context.startActivity(intent)
-        except Exception as e:
-            print(f"Erreur d'ouverture Android : {e}")
-
-    elif sys.platform == "win32" or os.name == "nt":
-        # Correction pour Windows : ouverture du dossier ou sélection du fichier
-        dossier = target if os.path.isdir(target) else os.path.dirname(target)
-        os.startfile(os.path.normpath(dossier))
-
-    elif platform == "darwin":
-        subprocess.run(["open", os.path.dirname(target) if os.path.isfile(target) else target])
-
-    else:
-        # Linux uniquement
-        subprocess.run(["xdg-open", os.path.dirname(target) if os.path.isfile(target) else target])
-        
 # Fonctionnalités qui restent à intégrer (affichées dans le menu déroulant
 # avec un écran "à venir" en attendant leur code Python).
 SCREENS_A_VENIR = [
@@ -163,12 +185,10 @@ KV = """
                 ToggleButton:
                     text: "KML"
                     group: "format"
-                    state: "down"
                     on_state: if self.state == "down": root.format_sortie = "kml"
                 ToggleButton:
                     text: "KMZ"
                     group: "format"
-                    state: "down"
                     on_state: if self.state == "down": root.format_sortie = "kmz"
 
         BoxLayout:
@@ -201,14 +221,6 @@ KV = """
             disabled: not root.fichier_source
             background_color: 0.15, 0.68, 0.38, 1
             on_release: root.lancer_conversion()
-
-        Button:
-            text: "Emplacement du fichier généré"
-            size_hint_y: None
-            height: dp(48)
-            disabled: not root.dernier_fichier_genere
-            background_color: 0.9, 0.55, 0.1, 1
-            on_release: root.ouvrir_fichier()
 
         Label:
             id: lbl_status
@@ -411,14 +423,6 @@ KV = """
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer()
 
-            Button:
-                text: "Emplacement du fichier généré"
-                size_hint_y: None
-                height: dp(48)
-                disabled: not root.dernier_fichier_genere
-                background_color: 0.9, 0.55, 0.1, 1
-                on_release: root.ouvrir_fichier()
-
             Label:
                 text: "Résumé des changements (avant exécution)"
                 size_hint_y: None
@@ -527,99 +531,89 @@ KV = """
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer()
 
-            Button:
-                text: "Emplacement du fichier généré"
-                size_hint_y: None
-                height: dp(48)
-                disabled: not root.dernier_fichier_genere
-                background_color: 0.9, 0.55, 0.1, 1
-                on_release: root.ouvrir_fichier()
-
 <CarteScreen>:
-    ScrollView:
-        BoxLayout:
-            orientation: "vertical"
+    BoxLayout:
+        orientation: "vertical"
+        padding: dp(16)
+        spacing: dp(8)
+
+        Label:
+            text: "Carte / Decoupe"
+            font_size: "20sp"
+            bold: True
             size_hint_y: None
-            height: self.minimum_height
-            padding: dp(16)
-            spacing: dp(10)
+            height: dp(36)
+            color: 0, 0, 0, 1
 
-            Label:
-                text: "Carte / Decoupe"
-                font_size: "20sp"
-                bold: True
-                size_hint_y: None
-                height: dp(40)
-                color: 0, 0, 0, 1
-
-            Label:
-                text: "(carte interactive et graphique altitude/vitesse a venir - decoupe deja disponible)"
-                size_hint_y: None
-                height: dp(30)
-                text_size: self.width, self.height
-                halign: "left"
-                valign: "middle"
-                color: 0.4, 0.4, 0.4, 1
-                font_size: "12sp"
-
+        BoxLayout:
+            size_hint_y: None
+            height: dp(48)
+            spacing: dp(6)
             Button:
-                text: "Charger une trace (GPX, KMZ, KML)"
-                size_hint_y: None
-                height: dp(56)
+                text: "Charger une trace"
                 background_color: 0.2, 0.6, 0.86, 1
                 on_release: root.ouvrir_selecteur_fichier()
+            ToggleButton:
+                text: "Satellite"
+                group: "vue_carte"
+                state: "down"
+                size_hint_x: None
+                width: dp(100)
+                on_state: if self.state == "down": root.changer_vue_carte("satellite")
+            ToggleButton:
+                text: "Plan"
+                group: "vue_carte"
+                size_hint_x: None
+                width: dp(90)
+                on_state: if self.state == "down": root.changer_vue_carte("plan")
 
-            Label:
-                text: root.info_fichier
-                size_hint_y: None
-                height: dp(50)
-                text_size: self.width, self.height
-                halign: "left"
-                valign: "middle"
-                color: 0.2, 0.5, 0.2, 1
+        Label:
+            text: root.info_fichier
+            size_hint_y: None
+            height: dp(40)
+            text_size: self.width, self.height
+            halign: "left"
+            valign: "middle"
+            color: 0.2, 0.5, 0.2, 1
 
-            Label:
-                text: "Decoupe de trace"
-                size_hint_y: None
-                height: dp(26)
-                color: 0, 0, 0, 1
-                bold: True
+        BoxLayout:
+            id: map_container
+            size_hint_y: 1
 
-            TextInput:
-                id: entree_coupure
-                hint_text: "Numero du point de coupure (ex: 42)"
-                multiline: False
-                input_filter: "int"
-                size_hint_y: None
-                height: dp(44)
-                disabled: not root.trace_chargee
-                text: root.point_coupure_text
-                on_text: root.point_coupure_text = self.text
+        Label:
+            text: "Decoupe de trace"
+            size_hint_y: None
+            height: dp(26)
+            color: 0, 0, 0, 1
+            bold: True
 
-            Label:
-                text: root.status_text
-                size_hint_y: None
-                height: max(dp(30), self.texture_size[1] + dp(10))
-                color: root.status_color
-                text_size: self.width, None
-                halign: "left"
-                valign: "top"
+        TextInput:
+            id: entree_coupure
+            hint_text: "Numero du point de coupure (ex: 42)"
+            multiline: False
+            input_filter: "int"
+            size_hint_y: None
+            height: dp(44)
+            disabled: not root.trace_chargee
+            text: root.point_coupure_text
+            on_text: root.point_coupure_text = self.text
 
-            Button:
-                text: "Couper ici"
-                size_hint_y: None
-                height: dp(56)
-                disabled: not root.trace_chargee or root.en_cours
-                background_color: 0.15, 0.68, 0.38, 1
-                on_release: root.executer_decoupe()
+        Label:
+            text: root.status_text
+            size_hint_y: None
+            height: max(dp(30), self.texture_size[1] + dp(10))
+            color: root.status_color
+            text_size: self.width, None
+            halign: "left"
+            valign: "top"
 
-            Button:
-                text: "Emplacement du fichier généré"
-                size_hint_y: None
-                height: dp(48)
-                disabled: not root.dernier_fichier_genere
-                background_color: 0.9, 0.55, 0.1, 1
-                on_release: root.ouvrir_fichier()
+        Button:
+            text: "Couper ici"
+            size_hint_y: None
+            height: dp(56)
+            disabled: not root.trace_chargee or root.en_cours
+            background_color: 0.15, 0.68, 0.38, 1
+            on_release: root.executer_decoupe()
 """
 
 
@@ -630,11 +624,7 @@ class ConversionScreen(Screen):
     garder_temps = BooleanProperty(True)
     status_text = StringProperty("")
     en_cours = BooleanProperty(False)
-    dernier_fichier_genere = StringProperty("")
 
-    def ouvrir_fichier(self):
-        ouvrir_dossier_sortie(self.dernier_fichier_genere)
-    
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
         self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
@@ -663,8 +653,6 @@ class ConversionScreen(Screen):
                 self.garder_temps,
                 dossier_sortie=DOSSIER_SORTIE,
             )
-            self.dernier_fichier_genere = chemin_sortie
-            
             message = f"Conversion réussie !\nEnregistré dans :\n{chemin_sortie}"
             erreur = False
         except Exception as e:
@@ -697,12 +685,7 @@ class NumerotationScreen(Screen):
     legende_text = StringProperty("")
 
     en_cours = BooleanProperty(False)
-    
-    dernier_fichier_genere = StringProperty("")
 
-    def ouvrir_fichier(self):
-        ouvrir_dossier_sortie(self.dernier_fichier_genere)
-        
     def on_enter(self, *args):
         # Force la mise à jour dès que l'écran devient visible
         self._maj_etat()
@@ -829,7 +812,6 @@ class NumerotationScreen(Screen):
             chemin_sortie, resume = gps_logic.traiter_numerotation(
                 self.fichier_source, self.segments_lus, self.mode, self.inverser, self.texte_suppr
             )
-            self.dernier_fichier_genere = chemin_sortie
             message = f"{resume}.\nFichier généré : {os.path.basename(chemin_sortie)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
@@ -889,12 +871,7 @@ class FusionScreen(Screen):
     peut_fusionner = BooleanProperty(False)
     en_cours = BooleanProperty(False)
     index_selectionne = ObjectProperty(None, allownone=True)
-    
-    dernier_fichier_genere = StringProperty("")
 
-    def ouvrir_fichier(self):
-        ouvrir_dossier_sortie(self.dernier_fichier_genere)
-        
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.fichiers_fusion = []
@@ -1014,15 +991,45 @@ class CarteScreen(Screen):
     status_text = StringProperty("")
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     en_cours = BooleanProperty(False)
-    
-    dernier_fichier_genere = StringProperty("")
 
-    def ouvrir_fichier(self):
-        ouvrir_dossier_sortie(self.dernier_fichier_genere)
-        
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.points_courants = []
+        self.marqueurs_actifs = []
+        self.marqueur_curseur = None
+        self.trace_layer = None
+        self.map_view = None
+
+        if CARTE_DISPONIBLE:
+            self.map_view = MapView(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
+            # MapView capture les touchers via un Scatter interne (pour le
+            # glisser/zoom) : un binding sur MapView lui-même ne recevrait
+            # jamais l'événement de relâchement (déjà "grab" par ce
+            # Scatter). On se branche donc directement dessus.
+            cible_tactile = getattr(self.map_view, "_scatter", self.map_view)
+            cible_tactile.bind(on_touch_down=self._debut_touch_carte, on_touch_up=self._sur_touch_carte)
+            self.ids.map_container.add_widget(self.map_view)
+        else:
+            self.ids.map_container.add_widget(Label(
+                text=(
+                    "Carte indisponible : le module kivy_garden.mapview\n"
+                    "n'est pas installe.\n\nInstalle-le avec :\n"
+                    "pip install kivy_garden.mapview"
+                ),
+                color=(0.6, 0.1, 0.1, 1),
+                halign="center",
+            ))
+
+    def changer_vue_carte(self, valeur):
+        """Change le fond de carte (satellite ou plan), equivalent de
+        changer_vue_carte() dans la version desktop."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        self.map_view.map_source = SOURCE_SATELLITE if valeur == "satellite" else SOURCE_PLAN
+        # L'affectation seule ne suffit pas toujours à relancer le
+        # chargement des tuiles : on force explicitement un rafraîchissement
+        # complet (sinon le fond peut rester gris-bleu / ne pas revenir).
+        self.map_view.trigger_update(True)
 
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
@@ -1051,6 +1058,101 @@ class CarteScreen(Screen):
         self.point_coupure_text = ""
         self.status_text = ""
         self.info_fichier = f"Trace chargée : {os.path.basename(chemin)}\n{len(points)} points."
+        self._afficher_trace_sur_carte(points)
+
+    def _afficher_trace_sur_carte(self, points):
+        """Equivalent de afficher_trace_sur_carte() dans la version
+        desktop : trace la polyligne, place les marqueurs D/A, centre
+        et zoome la carte sur l'emprise de la trace."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+
+        if self.trace_layer is not None:
+            self.map_view.remove_layer(self.trace_layer)
+            self.trace_layer = None
+        for m in self.marqueurs_actifs:
+            self.map_view.remove_marker(m)
+        self.marqueurs_actifs = []
+        if self.marqueur_curseur is not None:
+            self.map_view.remove_marker(self.marqueur_curseur)
+            self.marqueur_curseur = None
+
+        if not points:
+            return
+
+        liste_coords = [(p['lat'], p['lon']) for p in points]
+        self.trace_layer = TraceLayer()
+        self.map_view.add_layer(self.trace_layer)
+        self.trace_layer.set_points(liste_coords)
+
+        dist_dep_arr = gps_logic.calculer_distance_haversine(
+            points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
+        )
+        if dist_dep_arr <= 20.0:
+            m_unique = MarqueurTexte(texte="D/A", lat=points[0]['lat'], lon=points[0]['lon'])
+            self.map_view.add_marker(m_unique)
+            self.marqueurs_actifs.append(m_unique)
+        else:
+            m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
+            m_arrivee = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
+            self.map_view.add_marker(m_depart)
+            self.map_view.add_marker(m_arrivee)
+            self.marqueurs_actifs.extend([m_depart, m_arrivee])
+
+        lats = [c[0] for c in liste_coords]
+        lons = [c[1] for c in liste_coords]
+        min_lat, max_lat = min(lats), max(lats)
+        min_lon, max_lon = min(lons), max(lons)
+
+        self.map_view.center_on((min_lat + max_lat) / 2, (min_lon + max_lon) / 2)
+        max_delta = max(max_lat - min_lat, max_lon - min_lon)
+        if max_delta > 0:
+            zoom = int(12 - math.log2(max_delta * 10))
+            self.map_view.zoom = max(2, min(zoom, 18))
+
+    def _debut_touch_carte(self, instance, touch):
+        """Mémorise la position exacte de l'appui sur la carte (utilisée
+        ensuite par _sur_touch_carte pour distinguer un tap d'un
+        glissement, et pour convertir la BONNE position en lat/lon)."""
+        if self.map_view is not None and self.map_view.collide_point(*touch.pos):
+            touch.ud["carte_pos_depart"] = (touch.x, touch.y)
+        return False
+
+    def _sur_touch_carte(self, instance, touch):
+        """Sélectionne le point de la trace le plus proche du point
+        touché sur la carte (equivalent de sur_clic_carte), et pré-
+        remplit le numero de point de coupure. Ignore les glissements
+        (pan/zoom) pour ne réagir qu'à un vrai tap."""
+        depart = touch.ud.get("carte_pos_depart")
+        if not CARTE_DISPONIBLE or self.map_view is None or not self.points_courants or depart is None:
+            return False
+        if abs(touch.x - depart[0]) > dp(8) or abs(touch.y - depart[1]) > dp(8):
+            return False  # c'était un glissement (pan/zoom), pas un tap
+
+        zoom = self.map_view.zoom
+        cx, cy = gps_logic.projeter_mercator(self.map_view.lat, self.map_view.lon, zoom)
+        px = cx + (depart[0] - self.map_view.center_x)
+        py = cy - (depart[1] - self.map_view.center_y)
+        lat, lon = gps_logic.deprojeter_mercator(px, py, zoom)
+        meilleur_idx = None
+        meilleure_dist = None
+        for i, p in enumerate(self.points_courants):
+            d = gps_logic.calculer_distance_haversine(lat, lon, p['lat'], p['lon'])
+            if meilleure_dist is None or d < meilleure_dist:
+                meilleure_dist = d
+                meilleur_idx = i
+
+        if meilleur_idx is None:
+            return False
+
+        p_selectionne = self.points_courants[meilleur_idx]
+        self.point_coupure_text = str(meilleur_idx + 1)
+
+        if self.marqueur_curseur is not None:
+            self.map_view.remove_marker(self.marqueur_curseur)
+        self.marqueur_curseur = MapMarker(lat=p_selectionne['lat'], lon=p_selectionne['lon'])
+        self.map_view.add_marker(self.marqueur_curseur)
+        return True
 
     def executer_decoupe(self):
         if not self.trace_chargee or self.en_cours:
@@ -1071,11 +1173,6 @@ class CarteScreen(Screen):
             c1, c2 = gps_logic.decouper_trace(
                 self.fichier_source, self.points_courants, point_coupure, dossier_sortie=DOSSIER_SORTIE
             )
-            
-            # --- CORRECTION ICI ---
-            # On enregistre la destination du premier fichier généré
-            self.dernier_fichier_genere = c1
-            
             message = f"Découpe réussie en 2 fichiers :\n{os.path.basename(c1)}\n{os.path.basename(c2)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
@@ -1088,6 +1185,7 @@ class CarteScreen(Screen):
             self.status_color = couleur
 
         Clock.schedule_once(_maj_ui, 0)
+
 
 class EcranAVenir(Screen):
     """Écran affiché pour les fonctionnalités pas encore intégrées."""
