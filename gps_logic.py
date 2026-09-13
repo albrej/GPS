@@ -748,6 +748,42 @@ def deprojeter_mercator(x, y, zoom):
     return lat, lon
 
 
+def calculer_profil(points):
+    """Calcule les distances cumulées (km), l'altitude (en filtrant les
+    points sans altitude) et la vitesse (km/h) le long de la trace.
+    Repris de afficher_profils() dans la version desktop (sans la partie
+    matplotlib). Retourne (distances_km, distances_avec_ele, altitudes,
+    vitesses_kmh)."""
+    if not points:
+        return [], [], [], []
+
+    distances_km = [0.0]
+    for i in range(1, len(points)):
+        d = calculer_distance_haversine(
+            points[i - 1]['lat'], points[i - 1]['lon'], points[i]['lat'], points[i]['lon']
+        )
+        distances_km.append(distances_km[-1] + d / 1000.0)
+
+    eles_brutes = [p['ele'] for p in points]
+    distances_avec_ele = [distances_km[i] for i, e in enumerate(eles_brutes) if e is not None]
+    altitudes = [e for e in eles_brutes if e is not None]
+
+    vitesses_kmh = [0.0]
+    for i in range(1, len(points)):
+        p1, p2 = points[i - 1], points[i]
+        if p1['time'] and p2['time']:
+            dt = (p2['time'] - p1['time']).total_seconds()
+            if dt > 0:
+                d_m = (distances_km[i] - distances_km[i - 1]) * 1000.0
+                vitesses_kmh.append(round((d_m / dt) * 3.6, 1))
+            else:
+                vitesses_kmh.append(0.0)
+        else:
+            vitesses_kmh.append(0.0)
+
+    return distances_km, distances_avec_ele, altitudes, vitesses_kmh
+
+
 def decouper_trace(fichier_entree, points, point_coupure, dossier_sortie=None):
     """Découpe une trace déjà chargée (liste de points issue de
     lire_fichier_pour_conversion) en 2 fichiers GPX de part et d'autre du

@@ -28,7 +28,9 @@ from kivy.uix.filechooser import FileChooserListView
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.metrics import dp
-from kivy.graphics import Color, Line as KivyLine
+from kivy.graphics import Color, Line as KivyLine, Rectangle
+from kivy.core.text import Label as CoreLabel
+from kivy.uix.widget import Widget
 from kivy.properties import StringProperty, BooleanProperty, ListProperty, ObjectProperty
 from kivy.utils import platform
 
@@ -105,6 +107,175 @@ if CARTE_DISPONIBLE:
         def _maj_label(self, *args):
             self._label.center_x = self.center_x
             self._label.center_y = self.center_y + dp(6)
+
+
+class GrapheProfil(Widget):
+    """Graphique altitude/vitesse redessiné nativement avec les outils
+    de dessin de Kivy (équivalent, sans matplotlib, de afficher_profils()
+    dans la version desktop). Un tap dans la zone du graphique appelle
+    callback_clic(distance_km_tapee)."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.distances_km = []
+        self.distances_ele = []
+        self.altitudes = []
+        self.vitesses_kmh = []
+        self.distance_selection = None
+        self.callback_clic = None
+        self.bind(pos=self._redessiner, size=self._redessiner)
+
+    def set_donnees(self, distances_km, distances_ele, altitudes, vitesses_kmh):
+        self.distances_km = distances_km
+        self.distances_ele = distances_ele
+        self.altitudes = altitudes
+        self.vitesses_kmh = vitesses_kmh
+        self.distance_selection = distances_km[0] if distances_km else None
+        self._redessiner()
+
+    def set_selection(self, distance_km):
+        self.distance_selection = distance_km
+        self._redessiner()
+
+    def _zone_graphique(self):
+        marge_g, marge_d, marge_h, marge_b = dp(48), dp(48), dp(22), dp(38)
+        zx = self.x + marge_g
+        zy = self.y + marge_b
+        zw = max(1.0, self.width - marge_g - marge_d)
+        zh = max(1.0, self.height - marge_h - marge_b)
+        return zx, zy, zw, zh
+
+    def _texte_texture(self, texte, taille_sp=10, gras=True):
+        core_lbl = CoreLabel(text=texte, font_size=dp(taille_sp), bold=gras)
+        core_lbl.refresh()
+        return core_lbl.texture
+
+    def _poser_texte(self, texte, x, y, couleur, taille_sp=10, centre_h=False, centre_v=False, gras=True):
+        tex = self._texte_texture(texte, taille_sp=taille_sp, gras=gras)
+        px = x - tex.width / 2 if centre_h else x
+        py = y - tex.height / 2 if centre_v else y
+        Color(*couleur)
+        Rectangle(texture=tex, pos=(px, py), size=tex.size)
+
+    @staticmethod
+    def _graduations(v_min, v_max, nb=4):
+        """Renvoie nb valeurs régulièrement réparties entre v_min et v_max
+        (bornes incluses), pour les graduations d'un axe."""
+        if nb <= 1 or v_max <= v_min:
+            return [v_min]
+        pas = (v_max - v_min) / (nb - 1)
+        return [v_min + i * pas for i in range(nb)]
+
+    def _redessiner(self, *args):
+        self.canvas.clear()
+        if not self.distances_km or self.width < dp(30) or self.height < dp(30):
+            return
+
+        ROUGE = (0.8, 0.1, 0.1, 1)
+        BLEU = (0.12, 0.53, 0.90, 1)
+        VERT = (0.18, 0.49, 0.20, 1)
+        GRIS_TEXTE = (0.25, 0.25, 0.25, 1)
+
+        zx, zy, zw, zh = self._zone_graphique()
+        d_min, d_max = self.distances_km[0], self.distances_km[-1]
+        d_span = max(d_max - d_min, 1e-6)
+
+        def x_ecran(d):
+            return zx + (d - d_min) / d_span * zw
+
+        a_ele = len(self.altitudes) >= 2
+        a_vit = a_ele and any(v > 0 for v in self.vitesses_kmh)
+
+        if a_ele:
+            a_min, a_max = min(self.altitudes), max(self.altitudes)
+            marge_alt = max((a_max - a_min) * 0.08, 5.0)
+            a_bas, a_haut = a_min - marge_alt, a_max + marge_alt
+            a_span = max(a_haut - a_bas, 1e-6)
+
+            def y_alt(a):
+                return zy + (a - a_bas) / a_span * zh
+
+        if a_vit:
+            v_min, v_max = min(self.vitesses_kmh), max(self.vitesses_kmh)
+            marge_vit = max((v_max - v_min) * 0.1, 5.0)
+            v_bas, v_haut = max(0.0, v_min - marge_vit), v_max + marge_vit
+            v_span = max(v_haut - v_bas, 1e-6)
+
+            def y_vit(v):
+                return zy + (v - v_bas) / v_span * zh
+
+        with self.canvas:
+            # --- Cadre + grille horizontale (basée sur les graduations d'altitude) ---
+            Color(1, 1, 1, 1)
+            Rectangle(pos=(zx, zy), size=(zw, zh))
+
+            if a_ele:
+                for valeur in self._graduations(a_bas, a_haut, 5):
+                    gy = y_alt(valeur)
+                    Color(0.88, 0.88, 0.88, 1)
+                    KivyLine(points=[zx, gy, zx + zw, gy], width=1)
+                    self._poser_texte(f"{int(round(valeur))}", zx - dp(4), gy, ROUGE,
+                                       taille_sp=9, centre_v=True, gras=False)
+                    Color(*ROUGE)
+
+            Color(0.55, 0.55, 0.55, 1)
+            KivyLine(points=[zx, zy, zx + zw, zy, zx + zw, zy + zh, zx, zy + zh], width=1.2)
+
+            # --- Graduations de l'axe des distances (bas) ---
+            for valeur in self._graduations(d_min, d_max, 5):
+                gx = x_ecran(valeur)
+                Color(0.88, 0.88, 0.88, 1)
+                KivyLine(points=[gx, zy, gx, zy + zh], width=1)
+                self._poser_texte(f"{valeur:.1f}", gx, zy - dp(16), GRIS_TEXTE,
+                                   taille_sp=9, centre_h=True, gras=False)
+
+            # --- Courbe d'altitude (bleu, échelle de gauche) ---
+            if a_ele:
+                points_ligne = []
+                for d, a in zip(self.distances_ele, self.altitudes):
+                    points_ligne.extend([x_ecran(d), y_alt(a)])
+                Color(*BLEU)
+                KivyLine(points=points_ligne, width=1.6)
+
+                # --- Courbe de vitesse (vert, échelle de droite) ---
+                if a_vit:
+                    for valeur in self._graduations(v_bas, v_haut, 4):
+                        gy = y_vit(valeur)
+                        self._poser_texte(f"{int(round(valeur))}", zx + zw + dp(4), gy, VERT,
+                                           taille_sp=9, centre_v=True, gras=False)
+
+                    points_vit = []
+                    for d, v in zip(self.distances_km, self.vitesses_kmh):
+                        points_vit.extend([x_ecran(d), y_vit(v)])
+                    Color(*VERT)
+                    KivyLine(points=points_vit, width=1.6)
+
+            # --- Ligne de curseur (pointillée, rouge) sur le point sélectionné ---
+            if self.distance_selection is not None:
+                cx = x_ecran(self.distance_selection)
+                Color(0.85, 0.1, 0.1, 0.9)
+                KivyLine(points=[cx, zy, cx, zy + zh], width=1.4, dash_length=6, dash_offset=4)
+
+            # --- Titres des axes ---
+            self._poser_texte("Distance (km)", zx + zw / 2, self.y, GRIS_TEXTE,
+                               taille_sp=10, centre_h=True)
+            if a_ele:
+                self._poser_texte("Altitude (m)", zx, zy + zh + dp(4), BLEU, taille_sp=9)
+            if a_vit:
+                tex_v = self._texte_texture("Vitesse (km/h)", taille_sp=9)
+                self._poser_texte("Vitesse (km/h)", zx + zw - tex_v.width, zy + zh + dp(4), VERT, taille_sp=9)
+
+    def on_touch_down(self, touch):
+        if not self.collide_point(*touch.pos) or not self.distances_km:
+            return super().on_touch_down(touch)
+        zx, zy, zw, zh = self._zone_graphique()
+        frac = (touch.x - zx) / zw
+        frac = min(max(frac, 0.0), 1.0)
+        d_min, d_max = self.distances_km[0], self.distances_km[-1]
+        distance_tapee = d_min + frac * (d_max - d_min)
+        if self.callback_clic:
+            self.callback_clic(distance_tapee)
+        return True
 
 # ----------------------------------------------------------------------
 # Dossier racine utilisé pour parcourir/enregistrer les fichiers.
@@ -578,7 +749,23 @@ KV = """
 
         BoxLayout:
             id: map_container
-            size_hint_y: 1
+            size_hint_y: None
+            height: dp(190)
+
+        Label:
+            text: root.info_point_text
+            size_hint_y: None
+            height: max(dp(36), self.texture_size[1] + dp(8))
+            text_size: self.width, None
+            halign: "left"
+            valign: "top"
+            font_size: "12sp"
+            color: 0, 0, 0, 1
+
+        BoxLayout:
+            id: zone_graphique
+            size_hint_y: None
+            height: dp(175)
 
         Label:
             text: "Decoupe de trace"
@@ -991,6 +1178,7 @@ class CarteScreen(Screen):
     status_text = StringProperty("")
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     en_cours = BooleanProperty(False)
+    info_point_text = StringProperty("Tape sur la carte ou le graphique pour voir le détail d'un point.")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -999,6 +1187,11 @@ class CarteScreen(Screen):
         self.marqueur_curseur = None
         self.trace_layer = None
         self.map_view = None
+        self.profil = ([], [], [], [])
+
+        self.graphe = GrapheProfil()
+        self.graphe.callback_clic = self._sur_clic_graphique
+        self.ids.zone_graphique.add_widget(self.graphe)
 
         if CARTE_DISPONIBLE:
             self.map_view = MapView(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
@@ -1058,6 +1251,9 @@ class CarteScreen(Screen):
         self.point_coupure_text = ""
         self.status_text = ""
         self.info_fichier = f"Trace chargée : {os.path.basename(chemin)}\n{len(points)} points."
+        self.info_point_text = "Tape sur la carte ou le graphique pour voir le détail d'un point."
+        self.profil = gps_logic.calculer_profil(points)
+        self.graphe.set_donnees(*self.profil)
         self._afficher_trace_sur_carte(points)
 
     def _afficher_trace_sur_carte(self, points):
@@ -1145,14 +1341,49 @@ class CarteScreen(Screen):
         if meilleur_idx is None:
             return False
 
-        p_selectionne = self.points_courants[meilleur_idx]
-        self.point_coupure_text = str(meilleur_idx + 1)
-
-        if self.marqueur_curseur is not None:
-            self.map_view.remove_marker(self.marqueur_curseur)
-        self.marqueur_curseur = MapMarker(lat=p_selectionne['lat'], lon=p_selectionne['lon'])
-        self.map_view.add_marker(self.marqueur_curseur)
+        self._selectionner_point(meilleur_idx, recentrer_carte=False)
         return True
+
+    def _sur_clic_graphique(self, distance_km):
+        """Appelé au tap sur le graphique : sélectionne le point dont la
+        distance cumulée est la plus proche de la distance tapée
+        (équivalent de sur_clic_graphique dans la version desktop, qui
+        recentre aussi la carte contrairement à un tap sur la carte)."""
+        distances_km = self.profil[0]
+        if not distances_km:
+            return
+        idx = min(range(len(distances_km)), key=lambda i: abs(distances_km[i] - distance_km))
+        self._selectionner_point(idx, recentrer_carte=True)
+
+    def _selectionner_point(self, idx, recentrer_carte):
+        """Met à jour, en un seul endroit, tout ce qui doit refléter le
+        point sélectionné : marqueur curseur sur la carte, numéro de
+        découpe, texte d'info, et curseur du graphique."""
+        if not (0 <= idx < len(self.points_courants)):
+            return
+        p = self.points_courants[idx]
+        self.point_coupure_text = str(idx + 1)
+
+        if CARTE_DISPONIBLE and self.map_view is not None:
+            if self.marqueur_curseur is not None:
+                self.map_view.remove_marker(self.marqueur_curseur)
+            self.marqueur_curseur = MapMarker(lat=p['lat'], lon=p['lon'])
+            self.map_view.add_marker(self.marqueur_curseur)
+            if recentrer_carte:
+                self.map_view.center_on(p['lat'], p['lon'])
+
+        distances_km, _, _, vitesses_kmh = self.profil
+        dist = distances_km[idx] if idx < len(distances_km) else 0.0
+        vit = vitesses_kmh[idx] if idx < len(vitesses_kmh) else 0.0
+        heure = p['time'].strftime("%H:%M:%S") if p['time'] else "-"
+        ele_txt = f"{p['ele']} m" if p['ele'] is not None else "-"
+        self.info_point_text = (
+            f"Point {idx + 1}/{len(self.points_courants)}  |  "
+            f"GPS: {p['lat']:.5f}, {p['lon']:.5f}\n"
+            f"Distance: {dist:.2f} km  |  Altitude: {ele_txt}  |  "
+            f"Heure: {heure}  |  Vitesse: {vit} km/h"
+        )
+        self.graphe.set_selection(dist)
 
     def executer_decoupe(self):
         if not self.trace_chargee or self.en_cours:
