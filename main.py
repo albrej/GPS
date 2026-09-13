@@ -203,7 +203,7 @@ KV = """
             on_release: root.lancer_conversion()
 
         Button:
-            text: Emplacement du fichier généré"
+            text: "Emplacement du fichier généré"
             size_hint_y: None
             height: dp(48)
             disabled: not root.dernier_fichier_genere
@@ -412,7 +412,7 @@ KV = """
                 on_release: root.executer()
 
             Button:
-                text: Emplacement du fichier généré"
+                text: "Emplacement du fichier généré"
                 size_hint_y: None
                 height: dp(48)
                 disabled: not root.dernier_fichier_genere
@@ -528,7 +528,7 @@ KV = """
                 on_release: root.executer()
 
             Button:
-                text: Emplacement du fichier généré"
+                text: "Emplacement du fichier généré"
                 size_hint_y: None
                 height: dp(48)
                 disabled: not root.dernier_fichier_genere
@@ -614,7 +614,7 @@ KV = """
                 on_release: root.executer_decoupe()
 
             Button:
-                text: Emplacement du fichier généré"
+                text: "Emplacement du fichier généré"
                 size_hint_y: None
                 height: dp(48)
                 disabled: not root.dernier_fichier_genere
