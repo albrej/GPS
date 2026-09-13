@@ -8,6 +8,8 @@ source.include_exts = py,kv,png,jpg,ttf
 
 version = 0.1
 
+p4a.branch = develop
+
 # Dépendances Python nécessaires à l'onglet Conversion.
 # lxml a été remplacé par xml.etree.ElementTree (bibliothèque standard) :
 # aucune compilation C nécessaire, beaucoup plus fiable sur Android.
