@@ -525,17 +525,26 @@ class NumerotationScreen(Screen):
                 self.segments_lus, self.mode, self.inverser, self.texte_suppr
             )
             lignes = []
+            
+            # Codes couleur BBCode pour Kivy (sans dièse)
+            COULEUR_ACTIF = "000000"     # Noir
+            COULEUR_INACTIF = "888888"   # Gris clair lisible
+
             for cle, couleur, libelle in gps_logic.LEGENDE_NUMEROTATION:
                 nb = compteurs.get(cle, 0)
                 valeur = ("Oui" if nb else "Non") if cle == "inverse" else str(nb)
 
-                # Nettoyage / normalisation du code couleur pour le Markup Kivy
-                c_hex = str(couleur).lstrip("#")
-                if len(c_hex) == 6:
-                    c_hex += "ff"  # Ajout du canal Alpha (opacité) si absent
+                # Condition pour déterminer si l'option interagit positivement
+                est_actif = False
+                if cle == "inverse" and self.inverser:
+                    est_actif = True
+                elif cle in ["ajoute", "modifie", "retire", "inchange", "supprime"] and nb > 0:
+                    est_actif = True
 
-                # Formate la puce colorée (cercle Unicode \u25cf) avec sa couleur
-                lignes.append(f"[color={c_hex}]●[/color] {libelle} : [b]{valeur}[/b]")
+                couleur_texte = COULEUR_ACTIF if est_actif else COULEUR_INACTIF
+
+                # Formatage avec balise de couleur dynamique
+                lignes.append(f"[color={couleur_texte}]{libelle} : [b]{valeur}[/b][/color]")
 
             self.legende_text = "\n".join(lignes)
         except Exception as e:
