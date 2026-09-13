@@ -20,7 +20,7 @@ p4a.branch = develop
 # hostpython3 doit être fixé À LA MÊME VERSION EXACTE que python3 :
 # python-for-android utilise ce second interpréteur en interne pendant
 # la compilation croisée, et refuse de continuer si les deux diffèrent.
-requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,gpxpy
+requirements = python3,hostpython3,kivy==2.3.1,gpxpy
 
 orientation = portrait
 icon.filename = %(source.dir)s/Icone.png
