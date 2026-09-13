@@ -530,7 +530,7 @@ class NumerotationScreen(Screen):
             COULEUR_ACTIF = "000000"     # Noir
             COULEUR_INACTIF = "888888"   # Gris clair lisible
 
-            for cle, couleur, libelle in gps_logic.LEGENDE_NUMEROTATION:
+            for cle, libelle in gps_logic.LEGENDE_NUMEROTATION:
                 nb = compteurs.get(cle, 0)
                 valeur = ("Oui" if nb else "Non") if cle == "inverse" else str(nb)
 
