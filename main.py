@@ -230,7 +230,7 @@ class GrapheProfil(Widget):
 
                 # Altitudes min et max (en rouge) placées dans l'espace décalé à gauche de la courbe
                 for valeur in (a_min, a_max):
-                    self._poser_texte(f"{int(round(valeur))} m", zx + dp(4), y_alt(valeur), ROUGE,
+                    self._poser_texte(f"{int(round(valeur))}", zx + dp(4), y_alt(valeur), ROUGE,
                                        taille_sp=9, centre_v=True, gras=True)
 
             Color(0.55, 0.55, 0.55, 1)
@@ -283,15 +283,11 @@ class GrapheProfil(Widget):
             return super().on_touch_down(touch)
 
         zx, zy, zw, zh = self._zone_graphique()
-        decalage_x = dp(42)
-        zx_courbe = zx + decalage_x
-        zw_courbe = max(1.0, zw - decalage_x)
-
         d_min, d_max = self.distances_km[0], self.distances_km[-1]
         
-        # Ratio du clic par rapport à la zone utile de la courbe décalée
-        rel_x = touch.x - zx_courbe
-        ratio = max(0.0, min(1.0, rel_x / zw_courbe))
+        # Ratio du clic par rapport à la zone utile
+        rel_x = touch.x - zx
+        ratio = max(0.0, min(1.0, rel_x / zw))
         distance_km_tapee = d_min + ratio * (d_max - d_min)
 
         if self.callback_clic:
@@ -306,7 +302,7 @@ class GrapheProfil(Widget):
 if platform == "android":
     DOSSIER_RACINE = "/storage/emulated/0"
 else:
-    DOSSIER_RACINE = os.path.expanduser("~")
+    DOSSIER_RACINE = os.path.join(os.path.expanduser("~"), "Desktop", "GPX-Speed_ok")
 
 DOSSIER_SORTIE = os.path.join(DOSSIER_RACINE, "TracesConverties")
 
@@ -333,7 +329,7 @@ KV = """
             color: 0, 0, 0, 1
 
         Button:
-            text: "Choisir une trace (GPX, KMZ, KML)"
+            text: "Charger une trace (GPX, KMZ, KML)"
             size_hint_y: None
             height: dp(56)
             background_color: 0.2, 0.6, 0.86, 1
@@ -449,10 +445,10 @@ KV = """
             Label:
                 text: root.info_fichier
                 size_hint_y: None
-                height: dp(50)
-                text_size: self.width, self.height
+                height: max(dp(40), self.texture_size[1] + dp(10))
+                text_size: self.width, None
                 halign: "left"
-                valign: "middle"
+                valign: "top"
                 color: 0.2, 0.5, 0.2, 1
 
             BoxLayout:
@@ -649,7 +645,7 @@ KV = """
                 color: 0, 0, 0, 1
 
             Button:
-                text: "Charger les traces a fusionner"
+                text: "Charger les traces à fusionner"
                 size_hint_y: None
                 height: dp(56)
                 background_color: 0.2, 0.6, 0.86, 1
@@ -733,7 +729,7 @@ KV = """
             spacing: dp(8)
 
             Label:
-                text: "Carte / Decoupe"
+                text: "Carte / Découpe"
                 font_size: "20sp"
                 bold: True
                 size_hint_y: None
@@ -765,10 +761,10 @@ KV = """
             Label:
                 text: root.info_fichier
                 size_hint_y: None
-                height: dp(40)
-                text_size: self.width, self.height
+                height: max(dp(30), self.texture_size[1] + dp(8))
+                text_size: self.width, None
                 halign: "left"
-                valign: "middle"
+                valign: "top"
                 color: 0.2, 0.5, 0.2, 1
 
             RelativeLayout:
@@ -922,12 +918,11 @@ KV = """
         Label:
             text: root.info_fichier
             size_hint_y: None
-            height: dp(30)
-            text_size: self.width, self.height
+            height: max(dp(30), self.texture_size[1] + dp(8))
+            text_size: self.width, None
             halign: "left"
-            valign: "middle"
+            valign: "top"
             color: 0.2, 0.5, 0.2, 1
-            font_size: "12sp"
             italic: True
 
         ScrollView:
@@ -1227,10 +1222,15 @@ class FusionScreen(Screen):
             btn = Button(
                 text=nom,
                 size_hint_y=None,
-                height=dp(40),
+                padding=(dp(10), dp(5)),
                 background_color=(0.2, 0.6, 0.86, 1) if selectionne else (0.9, 0.9, 0.9, 1),
                 color=(1, 1, 1, 1) if selectionne else (0, 0, 0, 1),
+                halign="left",
+                valign="middle",
             )
+            # Permet le retour à la ligne et adapte la hauteur du bouton au contenu
+            btn.bind(width=lambda instance, w: setattr(instance, 'text_size', (w - dp(20), None)))
+            btn.bind(texture_size=lambda instance, size: setattr(instance, 'height', max(dp(40), size[1] + dp(10))))
             btn.bind(on_release=lambda inst, idx=i: self._selectionner(idx))
             box.add_widget(btn)
 
@@ -1243,7 +1243,7 @@ class FusionScreen(Screen):
             self.status_text = "Ajoutez au moins 2 fichiers pour fusionner."
             self.status_color = [0.33, 0.33, 0.33, 1]
             self.peut_fusionner = False
-
+            
     def _selectionner(self, idx):
         self.index_selectionne = idx
         self.inverser_selection = self.fichiers_fusion[idx]["inverser"]
@@ -1313,7 +1313,7 @@ class CarteScreen(Screen):
     status_text = StringProperty("")
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     en_cours = BooleanProperty(False)
-    info_point_text = StringProperty("Tape sur la carte ou le graphique pour voir le détail d'un point.")
+    info_point_text = StringProperty("")
 
     def dezoomer_carte(self):
         """Réduit le niveau de zoom de la carte si la carte est chargée."""
