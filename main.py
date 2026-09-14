@@ -150,9 +150,15 @@ class GrapheProfil(Widget):
         core_lbl.refresh()
         return core_lbl.texture
 
-    def _poser_texte(self, texte, x, y, couleur, taille_sp=10, centre_h=False, centre_v=False, gras=True):
+    def _poser_texte(self, texte, x, y, couleur, taille_sp=10, centre_h=False, centre_v=False,
+                      gras=True, aligne_droite=False):
         tex = self._texte_texture(texte, taille_sp=taille_sp, gras=gras)
-        px = x - tex.width / 2 if centre_h else x
+        if aligne_droite:
+            px = x - tex.width
+        elif centre_h:
+            px = x - tex.width / 2
+        else:
+            px = x
         py = y - tex.height / 2 if centre_v else y
         Color(*couleur)
         Rectangle(texture=tex, pos=(px, py), size=tex.size)
@@ -214,9 +220,15 @@ class GrapheProfil(Widget):
                     gy = y_alt(valeur)
                     Color(0.88, 0.88, 0.88, 1)
                     KivyLine(points=[zx, gy, zx + zw, gy], width=1)
-                    self._poser_texte(f"{int(round(valeur))}", zx - dp(4), gy, ROUGE,
-                                       taille_sp=9, centre_v=True, gras=False)
-                    Color(*ROUGE)
+                    self._poser_texte(f"{int(round(valeur))}", zx - dp(4), gy, BLEU,
+                                       taille_sp=9, centre_v=True, gras=False, aligne_droite=True)
+
+                # Altitudes minimale et maximale de la trace (distinctes des
+                # graduations régulières ci-dessus) : en rouge, gras, à
+                # l'intérieur du graphique (à droite de l'axe).
+                for valeur in (a_min, a_max):
+                    self._poser_texte(f"{int(round(valeur))} m", zx + dp(4), y_alt(valeur), ROUGE,
+                                       taille_sp=9, centre_v=True, gras=True)
 
             Color(0.55, 0.55, 0.55, 1)
             KivyLine(points=[zx, zy, zx + zw, zy, zx + zw, zy + zh, zx, zy + zh], width=1.2)
@@ -292,7 +304,6 @@ DOSSIER_SORTIE = os.path.join(DOSSIER_RACINE, "TracesConverties")
 # Fonctionnalités qui restent à intégrer (affichées dans le menu déroulant
 # avec un écran "à venir" en attendant leur code Python).
 SCREENS_A_VENIR = [
-    "Statistiques",
     "Photos",
     "Live",
 ]
@@ -750,57 +761,133 @@ KV = """
         BoxLayout:
             id: map_container
             size_hint_y: None
-            height: dp(190)
+            height: dp(210)
+
+        ScrollView:
+            BoxLayout:
+                orientation: "vertical"
+                size_hint_y: None
+                height: self.minimum_height
+                spacing: dp(8)
+
+                Label:
+                    text: root.info_point_text
+                    size_hint_y: None
+                    height: max(dp(36), self.texture_size[1] + dp(8))
+                    text_size: self.width, None
+                    halign: "left"
+                    valign: "top"
+                    font_size: "12sp"
+                    color: 0, 0, 0, 1
+
+                BoxLayout:
+                    id: zone_graphique
+                    size_hint_y: None
+                    height: dp(175)
+
+                Label:
+                    text: "Decoupe de trace"
+                    size_hint_y: None
+                    height: dp(26)
+                    color: 0, 0, 0, 1
+                    bold: True
+
+                TextInput:
+                    id: entree_coupure
+                    hint_text: "Numero du point de coupure (ex: 42)"
+                    multiline: False
+                    input_filter: "int"
+                    size_hint_y: None
+                    height: dp(44)
+                    disabled: not root.trace_chargee
+                    text: root.point_coupure_text
+                    on_text: root.point_coupure_text = self.text
+
+                Label:
+                    text: root.status_text
+                    size_hint_y: None
+                    height: max(dp(30), self.texture_size[1] + dp(10))
+                    color: root.status_color
+                    text_size: self.width, None
+                    halign: "left"
+                    valign: "top"
+
+                Button:
+                    text: "Couper ici"
+                    size_hint_y: None
+                    height: dp(56)
+                    disabled: not root.trace_chargee or root.en_cours
+                    background_color: 0.15, 0.68, 0.38, 1
+                    on_release: root.executer_decoupe()
+
+<LigneStatistique>:
+    size_hint_y: None
+    height: dp(38)
+    canvas.before:
+        Color:
+            rgba: self.couleur_fond
+        Rectangle:
+            pos: self.pos
+            size: self.size
+    Label:
+        text: root.libelle
+        bold: True
+        color: 0.2, 0.2, 0.2, 1
+        font_size: "13sp"
+        text_size: self.width, self.height
+        halign: "left"
+        valign: "middle"
+        padding_x: dp(8)
+    Label:
+        text: root.valeur
+        bold: True
+        color: 0.0, 0.48, 0.8, 1
+        font_size: "13sp"
+        text_size: self.width, self.height
+        halign: "right"
+        valign: "middle"
+        padding_x: dp(8)
+
+<StatistiquesScreen>:
+    BoxLayout:
+        orientation: "vertical"
+        padding: dp(16)
+        spacing: dp(8)
 
         Label:
-            text: root.info_point_text
+            text: "Statistiques"
+            font_size: "20sp"
+            bold: True
             size_hint_y: None
-            height: max(dp(36), self.texture_size[1] + dp(8))
-            text_size: self.width, None
-            halign: "left"
-            valign: "top"
-            font_size: "12sp"
+            height: dp(36)
             color: 0, 0, 0, 1
 
         BoxLayout:
-            id: zone_graphique
             size_hint_y: None
-            height: dp(175)
+            height: dp(48)
+            spacing: dp(6)
+            Button:
+                text: "Charger une trace"
+                background_color: 0.2, 0.6, 0.86, 1
+                on_release: root.ouvrir_selecteur_fichier()
 
         Label:
-            text: "Decoupe de trace"
+            text: root.info_fichier
             size_hint_y: None
-            height: dp(26)
-            color: 0, 0, 0, 1
-            bold: True
-
-        TextInput:
-            id: entree_coupure
-            hint_text: "Numero du point de coupure (ex: 42)"
-            multiline: False
-            input_filter: "int"
-            size_hint_y: None
-            height: dp(44)
-            disabled: not root.trace_chargee
-            text: root.point_coupure_text
-            on_text: root.point_coupure_text = self.text
-
-        Label:
-            text: root.status_text
-            size_hint_y: None
-            height: max(dp(30), self.texture_size[1] + dp(10))
-            color: root.status_color
-            text_size: self.width, None
+            height: dp(30)
+            text_size: self.width, self.height
             halign: "left"
-            valign: "top"
+            valign: "middle"
+            color: 0.2, 0.5, 0.2, 1
+            font_size: "12sp"
+            italic: True
 
-        Button:
-            text: "Couper ici"
-            size_hint_y: None
-            height: dp(56)
-            disabled: not root.trace_chargee or root.en_cours
-            background_color: 0.15, 0.68, 0.38, 1
-            on_release: root.executer_decoupe()
+        ScrollView:
+            BoxLayout:
+                id: tableau_stats
+                orientation: "vertical"
+                size_hint_y: None
+                height: self.minimum_height
 """
 
 
@@ -1418,6 +1505,67 @@ class CarteScreen(Screen):
         Clock.schedule_once(_maj_ui, 0)
 
 
+class LigneStatistique(BoxLayout):
+    libelle = StringProperty("")
+    valeur = StringProperty("")
+    couleur_fond = ListProperty([1, 1, 1, 1])
+
+
+class StatistiquesScreen(Screen):
+    info_fichier = StringProperty("Aucune trace chargée.")
+
+    LIBELLES = [
+        ("alt_depart", "Altitude de départ :"),
+        ("alt_max", "Altitude maximale :"),
+        ("distance", "Distance parcourue :"),
+        ("den_pos", "Dénivelé positif :"),
+        ("km_effort", "Kilomètre-Effort :"),
+        ("temps_total", "Temps total :"),
+        ("temps_marche", "Temps sans pauses :"),
+        ("vit_moy", "Vitesse moyenne :"),
+        ("allure", "Allure moyenne :"),
+    ]
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._afficher_tableau({cle: "-" for cle, _ in self.LIBELLES})
+
+    def ouvrir_selecteur_fichier(self):
+        contenu = _construire_selecteur_fichier(self._fichier_choisi)
+        self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
+
+    def _fichier_choisi(self, chemin):
+        self._popup.dismiss()
+        if not chemin:
+            return
+        try:
+            points = gps_logic.lire_fichier_pour_conversion(chemin)
+        except Exception as e:
+            self.info_fichier = f"Erreur de lecture : {e}"
+            return
+
+        if not points:
+            self.info_fichier = "Aucun point GPS valide n'a pu être extrait de ce fichier."
+            return
+
+        self.info_fichier = f"Trace : {os.path.basename(chemin)}"
+        stats = gps_logic.calculer_statistiques(points)
+        self._afficher_tableau(stats)
+
+    def _afficher_tableau(self, valeurs):
+        conteneur = self.ids.tableau_stats
+        conteneur.clear_widgets()
+        couleurs = [(0.973, 0.976, 0.980, 1), (0.925, 0.933, 0.945, 1)]
+        for i, (cle, libelle) in enumerate(self.LIBELLES):
+            ligne = LigneStatistique(
+                libelle=libelle,
+                valeur=valeurs.get(cle, "-"),
+                couleur_fond=couleurs[i % 2],
+            )
+            conteneur.add_widget(ligne)
+
+
 class EcranAVenir(Screen):
     """Écran affiché pour les fonctionnalités pas encore intégrées."""
 
@@ -1448,6 +1596,7 @@ class OutilsTracesApp(App):
         self.sm.add_widget(NumerotationScreen(name="numerotation"))
         self.sm.add_widget(FusionScreen(name="fusion"))
         self.sm.add_widget(CarteScreen(name="carte"))
+        self.sm.add_widget(StatistiquesScreen(name="statistiques"))
         for nom in SCREENS_A_VENIR:
             self.sm.add_widget(EcranAVenir(nom, name=nom))
 
@@ -1455,7 +1604,7 @@ class OutilsTracesApp(App):
         barre = BoxLayout(size_hint_y=None, height=dp(60), padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
-        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Carte / Découpe")]
+        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Carte / Découpe"), ("statistiques", "Statistiques")]
         self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
         self._boutons_menu = {}
         for nom_ecran, libelle in self._ecrans_menu:

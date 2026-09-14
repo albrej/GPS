@@ -11,7 +11,7 @@ import os
 import re
 import zipfile
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import gpxpy
 import gpxpy.gpx
@@ -782,6 +782,101 @@ def calculer_profil(points):
             vitesses_kmh.append(0.0)
 
     return distances_km, distances_avec_ele, altitudes, vitesses_kmh
+
+
+def calculer_statistiques(points):
+    """Calcule les statistiques globales d'une trace (repris de
+    mettre_a_jour_statistiques_globales dans la version desktop).
+    Retourne un dict avec les mêmes clés que valeurs_dict sur desktop :
+    alt_depart, alt_max, distance, den_pos, km_effort, temps_total,
+    temps_marche, vit_moy, allure."""
+    if not points:
+        return {}
+
+    alt_depart = points[0].get('ele')
+    altitudes = [p['ele'] for p in points if p.get('ele') is not None]
+    alt_max = max(altitudes) if altitudes else None
+
+    distance_totale = 0.0
+    denivele_positif = 0.0
+
+    for i in range(1, len(points)):
+        p1, p2 = points[i - 1], points[i]
+        d = calculer_distance_haversine(p1['lat'], p1['lon'], p2['lat'], p2['lon'])
+        distance_totale += d
+
+        if p1.get('ele') is not None and p2.get('ele') is not None:
+            diff_ele = p2['ele'] - p1['ele']
+            if diff_ele > 0:
+                denivele_positif += diff_ele
+
+    dist_km = distance_totale / 1000.0
+    km_effort = dist_km + (denivele_positif / 100.0)
+
+    temps_total_sec = 0.0
+    temps_marche_sec = 0.0
+
+    if points[0].get('time') and points[-1].get('time'):
+        t_debut = points[0]['time']
+        t_fin = points[-1]['time']
+        if t_debut.tzinfo:
+            t_debut = t_debut.replace(tzinfo=None)
+        if t_fin.tzinfo:
+            t_fin = t_fin.replace(tzinfo=None)
+        temps_total_sec = max(0.0, (t_fin - t_debut).total_seconds())
+
+    for i in range(1, len(points)):
+        p1, p2 = points[i - 1], points[i]
+        if p1.get('time') and p2.get('time'):
+            t1, t2 = p1['time'], p2['time']
+            if t1.tzinfo:
+                t1 = t1.replace(tzinfo=None)
+            if t2.tzinfo:
+                t2 = t2.replace(tzinfo=None)
+            dt = (t2 - t1).total_seconds()
+            if dt > 0:
+                d = calculer_distance_haversine(p1['lat'], p1['lon'], p2['lat'], p2['lon'])
+                v_kmh = (d / dt) * 3.6
+                if v_kmh >= 0.5:
+                    temps_marche_sec += dt
+
+    if temps_marche_sec == 0 and dist_km > 0:
+        temps_marche_sec = (dist_km / 4.0) * 3600.0
+
+    if temps_total_sec == 0:
+        temps_total_sec = temps_marche_sec
+
+    vit_moy = (dist_km / (temps_marche_sec / 3600.0)) if temps_marche_sec > 0 else 0.0
+    allure_min_km = (60.0 / vit_moy) if vit_moy > 0 else 0.0
+
+    str_alt_dep = f"{alt_depart:.1f} m" if alt_depart is not None else "N/A"
+    str_alt_max = f"{alt_max:.1f} m" if alt_max is not None else "N/A"
+    str_dist = f"{dist_km:.2f} km"
+    str_den = f"{denivele_positif:.1f} m"
+    str_effort = f"{km_effort:.2f} km-effort"
+
+    str_t_total = str(timedelta(seconds=int(temps_total_sec)))
+    str_t_marche = str(timedelta(seconds=int(temps_marche_sec)))
+    str_vit = f"{vit_moy:.2f} km/h"
+
+    if allure_min_km > 0:
+        m_al = int(allure_min_km)
+        s_al = int((allure_min_km - m_al) * 60)
+        str_allure = f"{m_al} min {s_al:02d} s / km"
+    else:
+        str_allure = "N/A"
+
+    return {
+        "alt_depart": str_alt_dep,
+        "alt_max": str_alt_max,
+        "distance": str_dist,
+        "den_pos": str_den,
+        "km_effort": str_effort,
+        "temps_total": str_t_total,
+        "temps_marche": str_t_marche,
+        "vit_moy": str_vit,
+        "allure": str_allure,
+    }
 
 
 def decouper_trace(fichier_entree, points, point_coupure, dossier_sortie=None):
