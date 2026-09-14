@@ -138,6 +138,7 @@ class GrapheProfil(Widget):
         self._redessiner()
 
     def _zone_graphique(self):
+        # Marge interne pour ne pas coller aux bords du widget
         marge_g, marge_d, marge_h, marge_b = dp(48), dp(48), dp(22), dp(38)
         zx = self.x + marge_g
         zy = self.y + marge_b
@@ -165,8 +166,6 @@ class GrapheProfil(Widget):
 
     @staticmethod
     def _graduations(v_min, v_max, nb=4):
-        """Renvoie nb valeurs régulièrement réparties entre v_min et v_max
-        (bornes incluses), pour les graduations d'un axe."""
         if nb <= 1 or v_max <= v_min:
             return [v_min]
         pas = (v_max - v_min) / (nb - 1)
@@ -186,15 +185,21 @@ class GrapheProfil(Widget):
         d_min, d_max = self.distances_km[0], self.distances_km[-1]
         d_span = max(d_max - d_min, 1e-6)
 
+        # Décalage horizontal (en pixels) pour laisser place aux labels min/max rouges à gauche
+        decalage_x = dp(42)
+        zx_courbe = zx + decalage_x
+        zw_courbe = max(1.0, zw - decalage_x)
+
         def x_ecran(d):
-            return zx + (d - d_min) / d_span * zw
+            return zx_courbe + (d - d_min) / d_span * zw_courbe
 
         a_ele = len(self.altitudes) >= 2
         a_vit = a_ele and any(v > 0 for v in self.vitesses_kmh)
 
         if a_ele:
             a_min, a_max = min(self.altitudes), max(self.altitudes)
-            marge_alt = max((a_max - a_min) * 0.08, 5.0)
+            # Ajout du padding d'altitude pour éviter le chevauchement
+            marge_alt = max((a_max - a_min) * 0.12, 10.0)
             a_bas, a_haut = a_min - marge_alt, a_max + marge_alt
             a_span = max(a_haut - a_bas, 1e-6)
 
@@ -211,11 +216,11 @@ class GrapheProfil(Widget):
                 return zy + (v - v_bas) / v_span * zh
 
         with self.canvas:
-            # --- Cadre + grille horizontale (basée sur les graduations d'altitude) ---
             Color(1, 1, 1, 1)
             Rectangle(pos=(zx, zy), size=(zw, zh))
 
             if a_ele:
+                # Quadrillage d'altitude et valeurs sur l'axe Y
                 for valeur in self._graduations(a_bas, a_haut, 5):
                     gy = y_alt(valeur)
                     Color(0.88, 0.88, 0.88, 1)
@@ -223,9 +228,7 @@ class GrapheProfil(Widget):
                     self._poser_texte(f"{int(round(valeur))}", zx - dp(4), gy, BLEU,
                                        taille_sp=9, centre_v=True, gras=False, aligne_droite=True)
 
-                # Altitudes minimale et maximale de la trace (distinctes des
-                # graduations régulières ci-dessus) : en rouge, gras, à
-                # l'intérieur du graphique (à droite de l'axe).
+                # Altitudes min et max (en rouge) placées dans l'espace décalé à gauche de la courbe
                 for valeur in (a_min, a_max):
                     self._poser_texte(f"{int(round(valeur))} m", zx + dp(4), y_alt(valeur), ROUGE,
                                        taille_sp=9, centre_v=True, gras=True)
@@ -233,7 +236,7 @@ class GrapheProfil(Widget):
             Color(0.55, 0.55, 0.55, 1)
             KivyLine(points=[zx, zy, zx + zw, zy, zx + zw, zy + zh, zx, zy + zh], width=1.2)
 
-            # --- Graduations de l'axe des distances (bas) ---
+            # Graduations de l'axe X des distances
             for valeur in self._graduations(d_min, d_max, 5):
                 gx = x_ecran(valeur)
                 Color(0.88, 0.88, 0.88, 1)
@@ -241,34 +244,32 @@ class GrapheProfil(Widget):
                 self._poser_texte(f"{valeur:.1f}", gx, zy - dp(16), GRIS_TEXTE,
                                    taille_sp=9, centre_h=True, gras=False)
 
-            # --- Courbe d'altitude (bleu, échelle de gauche) ---
             if a_ele:
+                # Tracé de la courbe d'altitude
                 points_ligne = []
                 for d, a in zip(self.distances_ele, self.altitudes):
                     points_ligne.extend([x_ecran(d), y_alt(a)])
                 Color(*BLEU)
                 KivyLine(points=points_ligne, width=1.6)
 
-                # --- Courbe de vitesse (vert, échelle de droite) ---
                 if a_vit:
                     for valeur in self._graduations(v_bas, v_haut, 4):
                         gy = y_vit(valeur)
                         self._poser_texte(f"{int(round(valeur))}", zx + zw + dp(4), gy, VERT,
                                            taille_sp=9, centre_v=True, gras=False)
 
+                    # Tracé de la courbe de vitesse
                     points_vit = []
                     for d, v in zip(self.distances_km, self.vitesses_kmh):
                         points_vit.extend([x_ecran(d), y_vit(v)])
                     Color(*VERT)
                     KivyLine(points=points_vit, width=1.6)
 
-            # --- Ligne de curseur (pointillée, rouge) sur le point sélectionné ---
             if self.distance_selection is not None:
                 cx = x_ecran(self.distance_selection)
                 Color(0.85, 0.1, 0.1, 0.9)
                 KivyLine(points=[cx, zy, cx, zy + zh], width=1.4, dash_length=6, dash_offset=4)
 
-            # --- Titres des axes ---
             self._poser_texte("Distance (km)", zx + zw / 2, self.y, GRIS_TEXTE,
                                taille_sp=10, centre_h=True)
             if a_ele:
@@ -280,13 +281,21 @@ class GrapheProfil(Widget):
     def on_touch_down(self, touch):
         if not self.collide_point(*touch.pos) or not self.distances_km:
             return super().on_touch_down(touch)
+
         zx, zy, zw, zh = self._zone_graphique()
-        frac = (touch.x - zx) / zw
-        frac = min(max(frac, 0.0), 1.0)
+        decalage_x = dp(42)
+        zx_courbe = zx + decalage_x
+        zw_courbe = max(1.0, zw - decalage_x)
+
         d_min, d_max = self.distances_km[0], self.distances_km[-1]
-        distance_tapee = d_min + frac * (d_max - d_min)
+        
+        # Ratio du clic par rapport à la zone utile de la courbe décalée
+        rel_x = touch.x - zx_courbe
+        ratio = max(0.0, min(1.0, rel_x / zw_courbe))
+        distance_km_tapee = d_min + ratio * (d_max - d_min)
+
         if self.callback_clic:
-            self.callback_clic(distance_tapee)
+            self.callback_clic(distance_km_tapee)
         return True
 
 # ----------------------------------------------------------------------
@@ -714,111 +723,150 @@ KV = """
                 on_release: root.executer()
 
 <CarteScreen>:
-    BoxLayout:
-        orientation: "vertical"
-        padding: dp(16)
-        spacing: dp(8)
-
-        Label:
-            text: "Carte / Decoupe"
-            font_size: "20sp"
-            bold: True
-            size_hint_y: None
-            height: dp(36)
-            color: 0, 0, 0, 1
-
+    ScrollView:
+        do_scroll_x: False
         BoxLayout:
+            orientation: "vertical"
             size_hint_y: None
-            height: dp(48)
-            spacing: dp(6)
-            Button:
-                text: "Charger une trace"
-                background_color: 0.2, 0.6, 0.86, 1
-                on_release: root.ouvrir_selecteur_fichier()
-            ToggleButton:
-                text: "Satellite"
-                group: "vue_carte"
-                state: "down"
-                size_hint_x: None
-                width: dp(100)
-                on_state: if self.state == "down": root.changer_vue_carte("satellite")
-            ToggleButton:
-                text: "Plan"
-                group: "vue_carte"
-                size_hint_x: None
-                width: dp(90)
-                on_state: if self.state == "down": root.changer_vue_carte("plan")
+            height: self.minimum_height
+            padding: dp(16)
+            spacing: dp(8)
 
-        Label:
-            text: root.info_fichier
-            size_hint_y: None
-            height: dp(40)
-            text_size: self.width, self.height
-            halign: "left"
-            valign: "middle"
-            color: 0.2, 0.5, 0.2, 1
-
-        BoxLayout:
-            id: map_container
-            size_hint_y: None
-            height: dp(210)
-
-        ScrollView:
-            BoxLayout:
-                orientation: "vertical"
+            Label:
+                text: "Carte / Decoupe"
+                font_size: "20sp"
+                bold: True
                 size_hint_y: None
-                height: self.minimum_height
-                spacing: dp(8)
+                height: dp(36)
+                color: 0, 0, 0, 1
 
-                Label:
-                    text: root.info_point_text
-                    size_hint_y: None
-                    height: max(dp(36), self.texture_size[1] + dp(8))
-                    text_size: self.width, None
-                    halign: "left"
-                    valign: "top"
-                    font_size: "12sp"
-                    color: 0, 0, 0, 1
+            BoxLayout:
+                size_hint_y: None
+                height: dp(48)
+                spacing: dp(6)
+                Button:
+                    text: "Charger une trace"
+                    background_color: 0.2, 0.6, 0.86, 1
+                    on_release: root.ouvrir_selecteur_fichier()
+                ToggleButton:
+                    text: "Satellite"
+                    group: "vue_carte"
+                    state: "down"
+                    size_hint_x: None
+                    width: dp(100)
+                    on_state: if self.state == "down": root.changer_vue_carte("satellite")
+                ToggleButton:
+                    text: "Plan"
+                    group: "vue_carte"
+                    size_hint_x: None
+                    width: dp(90)
+                    on_state: if self.state == "down": root.changer_vue_carte("plan")
+
+            Label:
+                text: root.info_fichier
+                size_hint_y: None
+                height: dp(40)
+                text_size: self.width, self.height
+                halign: "left"
+                valign: "middle"
+                color: 0.2, 0.5, 0.2, 1
+
+            RelativeLayout:
+                size_hint_y: None
+                height: dp(220)
 
                 BoxLayout:
-                    id: zone_graphique
-                    size_hint_y: None
-                    height: dp(175)
-
-                Label:
-                    text: "Decoupe de trace"
-                    size_hint_y: None
-                    height: dp(26)
-                    color: 0, 0, 0, 1
-                    bold: True
-
-                TextInput:
-                    id: entree_coupure
-                    hint_text: "Numero du point de coupure (ex: 42)"
-                    multiline: False
-                    input_filter: "int"
-                    size_hint_y: None
-                    height: dp(44)
-                    disabled: not root.trace_chargee
-                    text: root.point_coupure_text
-                    on_text: root.point_coupure_text = self.text
-
-                Label:
-                    text: root.status_text
-                    size_hint_y: None
-                    height: max(dp(30), self.texture_size[1] + dp(10))
-                    color: root.status_color
-                    text_size: self.width, None
-                    halign: "left"
-                    valign: "top"
+                    id: map_container
+                    pos_hint: {"x": 0, "y": 0}
+                    size_hint: 1, 1
 
                 Button:
-                    text: "Couper ici"
-                    size_hint_y: None
-                    height: dp(56)
-                    disabled: not root.trace_chargee or root.en_cours
-                    background_color: 0.15, 0.68, 0.38, 1
-                    on_release: root.executer_decoupe()
+                    text: "-"
+                    font_size: "24sp"
+                    bold: True
+                    color: 0, 0, 0, 1
+                    size_hint: None, None
+                    size: dp(36), dp(36)
+                    pos_hint: {"x": 0.03, "top": 0.95}
+                    background_normal: ""
+                    background_color: 0, 0, 0, 0
+                    on_release: root.dezoomer_carte()
+
+                    canvas.before:
+                        Color:
+                            rgba: 1, 1, 1, 1
+                        Ellipse:
+                            pos: self.pos
+                            size: self.size
+                            
+                Button:
+                    text: "+"
+                    font_size: "24sp"
+                    bold: True
+                    color: 0, 0, 0, 1
+                    size_hint: None, None
+                    size: dp(36), dp(36)
+                    pos_hint: {"right": 0.97, "top": 0.95}
+                    background_normal: ""
+                    background_color: 0, 0, 0, 0
+                    on_release: root.zoomer_carte()
+
+                    canvas.before:
+                        Color:
+                            rgba: 1, 1, 1, 0.9
+                        Ellipse:
+                            pos: self.pos
+                            size: self.size
+
+            Label:
+                text: root.info_point_text
+                size_hint_y: None
+                height: max(dp(36), self.texture_size[1] + dp(8))
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                font_size: "12sp"
+                color: 0, 0, 0, 1
+
+            BoxLayout:
+                id: zone_graphique
+                size_hint_y: None
+                height: dp(175)
+
+            Label:
+                text: "Decoupe de trace"
+                size_hint_y: None
+                height: dp(26)
+                color: 0, 0, 0, 1
+                bold: True
+
+            TextInput:
+                id: entree_coupure
+                hint_text: "Numero du point de coupure (ex: 42)"
+                multiline: False
+                input_filter: "int"
+                size_hint_y: None
+                height: dp(44)
+                disabled: not root.trace_chargee
+                text: root.point_coupure_text
+                on_text: root.point_coupure_text = self.text
+
+            Label:
+                text: root.status_text
+                size_hint_y: None
+                height: max(dp(30), self.texture_size[1] + dp(10))
+                color: root.status_color
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+
+            Button:
+                text: "Couper ici"
+                size_hint_y: None
+                height: dp(56)
+                disabled: not root.trace_chargee or root.en_cours
+                background_color: 0.15, 0.68, 0.38, 1
+                on_release: root.executer_decoupe()
 
 <LigneStatistique>:
     size_hint_y: None
@@ -1267,6 +1315,39 @@ class CarteScreen(Screen):
     en_cours = BooleanProperty(False)
     info_point_text = StringProperty("Tape sur la carte ou le graphique pour voir le détail d'un point.")
 
+    def dezoomer_carte(self):
+        """Réduit le niveau de zoom de la carte si la carte est chargée."""
+        # 1. Vérifie si self.mapview existe déjà
+        mapview = getattr(self, "mapview", None)
+
+        # 2. Sinon, cherche l'instance de la carte directement dans l'un des enfants du container
+        if not mapview and "map_container" in self.ids:
+            for child in self.ids.map_container.children:
+                if hasattr(child, "zoom"):
+                    mapview = child
+                    break
+
+        # 3. Applique le dézoom si la carte est trouvée
+        if mapview and hasattr(mapview, "zoom"):
+            min_z = getattr(mapview, "min_zoom", 0)
+            if mapview.zoom > min_z:
+                mapview.zoom -= 1
+                
+    def zoomer_carte(self):
+        """Augmente le niveau de zoom de la carte si la carte est chargée."""
+        mapview = getattr(self, "mapview", None)
+
+        if not mapview and "map_container" in self.ids:
+            for child in self.ids.map_container.children:
+                if hasattr(child, "zoom"):
+                    mapview = child
+                    break
+
+        if mapview and hasattr(mapview, "zoom"):
+            max_z = getattr(mapview, "max_zoom", 19)
+            if mapview.zoom < max_z:
+                mapview.zoom += 1
+                
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.points_courants = []
@@ -1394,18 +1475,19 @@ class CarteScreen(Screen):
             self.map_view.zoom = max(2, min(zoom, 18))
 
     def _debut_touch_carte(self, instance, touch):
-        """Mémorise la position exacte de l'appui sur la carte (utilisée
-        ensuite par _sur_touch_carte pour distinguer un tap d'un
-        glissement, et pour convertir la BONNE position en lat/lon)."""
+        """Mémorise la position de l'appui et désactive le défilement de la page
+        pendant les manipulations de la carte (pan/zoom)."""
         if self.map_view is not None and self.map_view.collide_point(*touch.pos):
             touch.ud["carte_pos_depart"] = (touch.x, touch.y)
+            # Empêche le ScrollView parent de défiler si l'utilisateur glisse sur la carte
+            touch.grab(self.map_view)
+            return True
         return False
 
     def _sur_touch_carte(self, instance, touch):
-        """Sélectionne le point de la trace le plus proche du point
-        touché sur la carte (equivalent de sur_clic_carte), et pré-
-        remplit le numero de point de coupure. Ignore les glissements
-        (pan/zoom) pour ne réagir qu'à un vrai tap."""
+        if touch.grab_current is self.map_view:
+            touch.ungrab(self.map_view)
+
         depart = touch.ud.get("carte_pos_depart")
         if not CARTE_DISPONIBLE or self.map_view is None or not self.points_courants or depart is None:
             return False
