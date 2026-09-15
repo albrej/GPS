@@ -110,12 +110,18 @@ if CARTE_DISPONIBLE:
                 return
             mapview = self.parent
             zoom = mapview.zoom
-            cx, cy = gps_logic.projeter_mercator(mapview.lat, mapview.lon, zoom)
+            # On utilise la fonction officielle de kivy_garden.mapview (celle
+            # qui positionne aussi les tuiles et les marqueurs D/A) plutôt
+            # qu'une projection Mercator "maison" : elle seule tient compte
+            # du facteur d'échelle interne du Scatter de la carte (mapview.
+            # scale). Sur PC ce facteur reste toujours à 1.0 pendant un
+            # glisser (souris = un seul point de contact), donc l'ancien
+            # calcul semblait correct ; sur Android, un léger bruit tactile
+            # multi-doigts pendant le glisser peut faire dériver ce facteur,
+            # et une trace qui l'ignorait se désynchronisait de la carte.
             coords = []
             for lat, lon in self.points:
-                px, py = gps_logic.projeter_mercator(lat, lon, zoom)
-                x = mapview.center_x + (px - cx)
-                y = mapview.center_y - (py - cy)
+                x, y = mapview.get_window_xy_from(lat, lon, zoom)
                 coords.extend([x, y])
             with self.canvas:
                 Color(0, 1, 1, 1)
