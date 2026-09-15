@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 import gpxpy
 import gpxpy.gpx
 import xml.etree.ElementTree as ET
+import piexif
 
 KML_NS = "http://www.opengis.net/kml/2.2"
 GX_NS = "http://www.google.com/kml/ext/2.2"
@@ -901,3 +902,138 @@ def decouper_trace(fichier_entree, points, point_coupure, dossier_sortie=None):
     exporter_vers_gpx(part1, chemin1)
     exporter_vers_gpx(part2, chemin2)
     return chemin1, chemin2
+
+
+# ----------------------------------------------------------------------
+# ONGLET PHOTOS : lecture/écriture des tags EXIF (date/heure, GPS) et
+# recherche du point de trace le plus proche d'un horodatage. Logique
+# reprise sans modification fonctionnelle de start.py (le formulaire
+# Tkinter est remplacé, côté main.py, par des champs Kivy).
+# ----------------------------------------------------------------------
+
+def _dms_vers_degres(dms, ref):
+    """Convertit un triplet EXIF ((deg,1),(min,1),(sec,100)) en degrés
+    décimaux signés (négatif pour S/W)."""
+    def _frac(x):
+        num, den = x
+        return num / den if den else 0.0
+
+    degres = _frac(dms[0]) + _frac(dms[1]) / 60.0 + _frac(dms[2]) / 3600.0
+    ref_str = ref.decode("utf-8") if isinstance(ref, bytes) else ref
+    if ref_str in ("S", "W"):
+        degres = -degres
+    return round(degres, 6)
+
+
+def _degres_vers_dms(valeur):
+    """Convertit des degrés décimaux en triplet EXIF ((deg,1),(min,1),(sec,100))."""
+    abs_val = abs(valeur)
+    deg = int(abs_val)
+    min_float = (abs_val - deg) * 60
+    minute = int(min_float)
+    sec = int((min_float - minute) * 60 * 100)
+    return ((deg, 1), (minute, 1), (sec, 100))
+
+
+def get_exif_data(chemin_photo):
+    """Lit les tags EXIF Date/Heure et GPS d'une photo JPEG. Renvoie un
+    dict {'datetime', 'latitude', 'longitude', 'altitude'} avec None
+    pour toute valeur absente ou illisible (photo sans EXIF, fichier
+    corrompu...)."""
+    resultat = {"datetime": None, "latitude": None, "longitude": None, "altitude": None}
+    try:
+        exif_dict = piexif.load(chemin_photo)
+    except Exception:
+        return resultat
+
+    try:
+        dt_brut = exif_dict.get("Exif", {}).get(piexif.ExifIFD.DateTimeOriginal)
+        if not dt_brut:
+            dt_brut = exif_dict.get("0th", {}).get(piexif.ImageIFD.DateTime)
+        if dt_brut:
+            resultat["datetime"] = dt_brut.decode("utf-8", errors="ignore") if isinstance(dt_brut, bytes) else str(dt_brut)
+    except Exception:
+        pass
+
+    gps = exif_dict.get("GPS", {})
+    try:
+        if piexif.GPSIFD.GPSLatitude in gps and piexif.GPSIFD.GPSLatitudeRef in gps:
+            resultat["latitude"] = _dms_vers_degres(gps[piexif.GPSIFD.GPSLatitude], gps[piexif.GPSIFD.GPSLatitudeRef])
+        if piexif.GPSIFD.GPSLongitude in gps and piexif.GPSIFD.GPSLongitudeRef in gps:
+            resultat["longitude"] = _dms_vers_degres(gps[piexif.GPSIFD.GPSLongitude], gps[piexif.GPSIFD.GPSLongitudeRef])
+        if piexif.GPSIFD.GPSAltitude in gps:
+            num, den = gps[piexif.GPSIFD.GPSAltitude]
+            resultat["altitude"] = round(num / den, 1) if den else None
+    except Exception:
+        pass
+
+    return resultat
+
+
+def find_closest_point(points, dt_str, tolerance_secondes=900):
+    """Cherche, dans 'points' (issus de lire_fichier_pour_conversion), le
+    point dont l'horodatage ('time') est le plus proche de dt_str (heure
+    EXIF de la photo, formats "AAAA:MM:JJ HH:MM:SS" ou
+    "AAAA-MM-JJ HH:MM:SS" acceptés). Renvoie None si dt_str est vide/
+    invalide, si aucun point de la trace n'a d'horodatage, OU si le point
+    le plus proche trouvé est distant de plus de 'tolerance_secondes'
+    (15 minutes par défaut) de l'horodatage demandé — la photo est alors
+    considérée comme ne correspondant pas à la trace chargée, plutôt que
+    de renvoyer un point sans rapport avec elle."""
+    if not dt_str or not points:
+        return None
+
+    dt_cible = None
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y:%m:%d %H:%M", "%Y-%m-%d %H:%M"):
+        try:
+            dt_cible = datetime.strptime(dt_str.strip(), fmt)
+            break
+        except ValueError:
+            continue
+    if dt_cible is None:
+        return None
+
+    meilleur = None
+    meilleur_delta = None
+    for p in points:
+        t = p.get("time")
+        if t is None:
+            continue
+        delta = abs((t - dt_cible).total_seconds())
+        if meilleur_delta is None or delta < meilleur_delta:
+            meilleur_delta = delta
+            meilleur = p
+
+    if meilleur is None or meilleur_delta > tolerance_secondes:
+        return None
+
+    return meilleur
+
+
+def enregistrer_exif_gps(chemin_photo, latitude, longitude, altitude=None, date_heure=None):
+    """Écrit les tags EXIF GPS (et éventuellement Date/Heure) dans une
+    photo JPEG, en conservant le reste des EXIF existants. Reprend sans
+    modification fonctionnelle la logique d'enregistrer_exif() de la
+    version desktop (le formulaire Tkinter devient de simples
+    paramètres)."""
+    exif_dict = piexif.load(chemin_photo)
+
+    gps_ifd = {
+        piexif.GPSIFD.GPSLatitudeRef: 'S' if latitude < 0 else 'N',
+        piexif.GPSIFD.GPSLatitude: _degres_vers_dms(latitude),
+        piexif.GPSIFD.GPSLongitudeRef: 'W' if longitude < 0 else 'E',
+        piexif.GPSIFD.GPSLongitude: _degres_vers_dms(longitude),
+    }
+    if altitude is not None:
+        gps_ifd[piexif.GPSIFD.GPSAltitudeRef] = 0
+        gps_ifd[piexif.GPSIFD.GPSAltitude] = (int(round(altitude * 100)), 100)
+    exif_dict['GPS'] = gps_ifd
+
+    if date_heure:
+        valeur = date_heure.encode('utf-8')
+        exif_dict.setdefault('0th', {})[piexif.ImageIFD.DateTime] = valeur
+        exif_dict.setdefault('Exif', {})[piexif.ExifIFD.DateTimeOriginal] = valeur
+        exif_dict.setdefault('Exif', {})[piexif.ExifIFD.DateTimeDigitized] = valeur
+
+    exif_bytes = piexif.dump(exif_dict)
+    piexif.insert(exif_bytes, chemin_photo)

@@ -64,6 +64,34 @@ if CARTE_DISPONIBLE:
         attribution="(c) OpenStreetMap contributors",
     )
 
+    class MapViewMolette(MapView):
+        """MapView identique, sauf que la molette/le défilement trackpad
+        (PC) DÉPLACE la carte au lieu de zoomer — le zoom ne se fait plus
+        que via les boutons +/- dédiés. Le glisser (doigt sur Android,
+        clic-glisser sur PC) continue de fonctionner normalement, géré
+        nativement par le Scatter interne de MapView."""
+
+        PAS_DEPLACEMENT_PX = 60
+
+        def on_touch_down(self, touch):
+            bouton = getattr(touch, "button", "")
+            if bouton in ("scrollup", "scrolldown", "scrollleft", "scrollright"):
+                dx = dy = 0
+                if bouton == "scrollup":
+                    dy = -self.PAS_DEPLACEMENT_PX
+                elif bouton == "scrolldown":
+                    dy = self.PAS_DEPLACEMENT_PX
+                elif bouton == "scrollright":
+                    dx = self.PAS_DEPLACEMENT_PX
+                elif bouton == "scrollleft":
+                    dx = -self.PAS_DEPLACEMENT_PX
+
+                cx, cy = gps_logic.projeter_mercator(self.lat, self.lon, self.zoom)
+                nouvelle_lat, nouvelle_lon = gps_logic.deprojeter_mercator(cx + dx, cy + dy, self.zoom)
+                self.center_on(nouvelle_lat, nouvelle_lon)
+                return True
+            return super().on_touch_down(touch)
+
     class TraceLayer(MapLayer):
         """Dessine la trace (polyligne cyan) par-dessus les tuiles,
         équivalent de map_widget.set_path(...) sous tkintermapview."""
@@ -309,7 +337,6 @@ DOSSIER_SORTIE = os.path.join(DOSSIER_RACINE, "TracesConverties")
 # Fonctionnalités qui restent à intégrer (affichées dans le menu déroulant
 # avec un écran "à venir" en attendant leur code Python).
 SCREENS_A_VENIR = [
-    "Photos",
     "Live",
 ]
 
@@ -344,6 +371,7 @@ KV = """
             color: 0.2, 0.5, 0.2, 1
             halign: "left"
             valign: "top"
+            italic: True
 
         AnchorLayout:
             size_hint_y: None
@@ -450,6 +478,7 @@ KV = """
                 halign: "left"
                 valign: "top"
                 color: 0.2, 0.5, 0.2, 1
+                italic: True
 
             BoxLayout:
                 size_hint_y: None
@@ -766,6 +795,7 @@ KV = """
                 halign: "left"
                 valign: "top"
                 color: 0.2, 0.5, 0.2, 1
+                italic: True
 
             RelativeLayout:
                 size_hint_y: None
@@ -931,6 +961,230 @@ KV = """
                 orientation: "vertical"
                 size_hint_y: None
                 height: self.minimum_height
+
+<PhotosScreen>:
+    ScrollView:
+        BoxLayout:
+            orientation: "vertical"
+            size_hint_y: None
+            height: self.minimum_height
+            padding: dp(16)
+            spacing: dp(10)
+
+            Label:
+                text: "Photos"
+                font_size: "20sp"
+                bold: True
+                size_hint_y: None
+                height: dp(40)
+                color: 0, 0, 0, 1
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(48)
+                spacing: dp(6)
+                Button:
+                    text: "Charger une trace"
+                    background_color: 0.2, 0.6, 0.86, 1
+                    on_release: root.ouvrir_selecteur_trace()
+                Button:
+                    text: "Charger une photo"
+                    background_color: 0.61, 0.35, 0.71, 1
+                    on_release: root.ouvrir_selecteur_photo()
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(40)
+                spacing: dp(6)
+                ToggleButton:
+                    text: "Satellite"
+                    group: "vue_carte_photo"
+                    state: "down"
+                    on_state: if self.state == "down": root.changer_vue_carte("satellite")
+                ToggleButton:
+                    text: "Plan"
+                    group: "vue_carte_photo"
+                    on_state: if self.state == "down": root.changer_vue_carte("plan")
+
+            Label:
+                text: root.info_trace
+                size_hint_y: None
+                height: max(dp(24), self.texture_size[1] + dp(6))
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                color: 0.2, 0.5, 0.2, 1
+                italic: True
+
+            Label:
+                text: root.info_photo
+                size_hint_y: None
+                height: max(dp(24), self.texture_size[1] + dp(6))
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                color: 0.4, 0.2, 0.5, 1
+                italic: True
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(215)
+                spacing: dp(10)
+
+                BoxLayout:
+                    orientation: "vertical"
+                    spacing: dp(3)
+
+                    Label:
+                        text: "Date/Heure"
+                        size_hint_y: None
+                        height: dp(18)
+                        text_size: self.width, None
+                        halign: "left"
+                        font_size: "11sp"
+                        color: 0, 0, 0, 1
+                    TextInput:
+                        multiline: False
+                        size_hint_y: None
+                        height: dp(36)
+                        text: root.champ_date
+                        on_text: root.champ_date = self.text
+
+                    Label:
+                        text: "Latitude"
+                        size_hint_y: None
+                        height: dp(18)
+                        text_size: self.width, None
+                        halign: "left"
+                        font_size: "11sp"
+                        color: 0, 0, 0, 1
+                    TextInput:
+                        multiline: False
+                        size_hint_y: None
+                        height: dp(36)
+                        text: root.champ_lat
+                        on_text: root.champ_lat = self.text
+
+                    Label:
+                        text: "Longitude"
+                        size_hint_y: None
+                        height: dp(18)
+                        text_size: self.width, None
+                        halign: "left"
+                        font_size: "11sp"
+                        color: 0, 0, 0, 1
+                    TextInput:
+                        multiline: False
+                        size_hint_y: None
+                        height: dp(36)
+                        text: root.champ_lon
+                        on_text: root.champ_lon = self.text
+
+                    Label:
+                        text: "Altitude"
+                        size_hint_y: None
+                        height: dp(18)
+                        text_size: self.width, None
+                        halign: "left"
+                        font_size: "11sp"
+                        color: 0, 0, 0, 1
+                    TextInput:
+                        multiline: False
+                        size_hint_y: None
+                        height: dp(36)
+                        text: root.champ_alt
+                        on_text: root.champ_alt = self.text
+
+                BoxLayout:
+                    size_hint_x: None
+                    width: dp(140)
+                    canvas.before:
+                        Color:
+                            rgba: 0.92, 0.92, 0.92, 1
+                        Rectangle:
+                            pos: self.pos
+                            size: self.size
+                    Image:
+                        source: root.miniature_source
+                        allow_stretch: True
+                        keep_ratio: True
+
+            Button:
+                text: "Situer (Horodatage)"
+                size_hint_y: None
+                height: dp(48)
+                background_color: 0.16, 0.5, 0.73, 1
+                on_release: root.situer()
+
+            Button:
+                text: "Enregistrer EXIF"
+                size_hint_y: None
+                height: dp(48)
+                background_color: 0.90, 0.49, 0.13, 1
+                on_release: root.enregistrer_exif()
+
+            Label:
+                text: root.status_text
+                size_hint_y: None
+                height: max(dp(30), self.texture_size[1] + dp(10))
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                color: root.status_color
+
+            Label:
+                text: root.titre_carte
+                size_hint_y: None
+                height: dp(26)
+                bold: True
+                color: root.titre_carte_color
+
+            RelativeLayout:
+                size_hint_y: None
+                height: dp(220)
+
+                BoxLayout:
+                    id: map_container
+                    pos_hint: {"x": 0, "y": 0}
+                    size_hint: 1, 1
+
+                Button:
+                    text: "-"
+                    font_size: "24sp"
+                    bold: True
+                    color: 0, 0, 0, 1
+                    size_hint: None, None
+                    size: dp(36), dp(36)
+                    pos_hint: {"x": 0.03, "top": 0.95}
+                    background_normal: ""
+                    background_color: 0, 0, 0, 0
+                    on_release: root.dezoomer_carte()
+
+                    canvas.before:
+                        Color:
+                            rgba: 1, 1, 1, 1
+                        Ellipse:
+                            pos: self.pos
+                            size: self.size
+
+                Button:
+                    text: "+"
+                    font_size: "24sp"
+                    bold: True
+                    color: 0, 0, 0, 1
+                    size_hint: None, None
+                    size: dp(36), dp(36)
+                    pos_hint: {"right": 0.97, "top": 0.95}
+                    background_normal: ""
+                    background_color: 0, 0, 0, 0
+                    on_release: root.zoomer_carte()
+
+                    canvas.before:
+                        Color:
+                            rgba: 1, 1, 1, 0.9
+                        Ellipse:
+                            pos: self.pos
+                            size: self.size
 """
 
 
@@ -952,7 +1206,7 @@ class ConversionScreen(Screen):
         if not chemin:
             return
         self.fichier_source = chemin
-        self.info_fichier = f"Trace sélectionnée :\n{os.path.basename(chemin)}"
+        self.info_fichier = f"Trace :\n{os.path.basename(chemin)}"
         self.status_text = ""
 
     def lancer_conversion(self):
@@ -1181,6 +1435,25 @@ def _construire_selecteur_fichiers_multiples(callback):
     return layout
 
 
+def _construire_selecteur_fichier_photo(callback):
+    """Variante du sélecteur de fichier ci-dessus filtrée sur les photos
+    JPEG (nécessaire pour l'onglet Photos)."""
+    layout = BoxLayout(orientation="vertical", spacing=6, padding=6)
+    chooser = FileChooserListView(path=DOSSIER_RACINE, filters=["*.jpg", "*.jpeg", "*.JPG", "*.JPEG"])
+    layout.add_widget(chooser)
+
+    boutons = BoxLayout(size_hint_y=None, height=48, spacing=6)
+    btn_annuler = Button(text="Annuler")
+    btn_valider = Button(text="Valider")
+    boutons.add_widget(btn_annuler)
+    boutons.add_widget(btn_valider)
+    layout.add_widget(boutons)
+
+    btn_valider.bind(on_release=lambda inst: callback(chooser.selection[0] if chooser.selection else None))
+    btn_annuler.bind(on_release=lambda inst: callback(None))
+    return layout
+
+
 class FusionScreen(Screen):
     inverser_selection = BooleanProperty(False)
     status_text = StringProperty("Aucune trace chargée.")
@@ -1329,10 +1602,11 @@ class CarteScreen(Screen):
 
         # 3. Applique le dézoom si la carte est trouvée
         if mapview and hasattr(mapview, "zoom"):
-            min_z = getattr(mapview, "min_zoom", 0)
+            min_z = getattr(getattr(mapview, "map_source", None), "min_zoom", 0)
             if mapview.zoom > min_z:
                 mapview.zoom -= 1
-                
+                mapview.center_on(mapview.lat, mapview.lon)
+
     def zoomer_carte(self):
         """Augmente le niveau de zoom de la carte si la carte est chargée."""
         mapview = getattr(self, "mapview", None)
@@ -1344,9 +1618,10 @@ class CarteScreen(Screen):
                     break
 
         if mapview and hasattr(mapview, "zoom"):
-            max_z = getattr(mapview, "max_zoom", 19)
+            max_z = getattr(getattr(mapview, "map_source", None), "max_zoom", 19)
             if mapview.zoom < max_z:
                 mapview.zoom += 1
+                mapview.center_on(mapview.lat, mapview.lon)
                 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -1362,13 +1637,13 @@ class CarteScreen(Screen):
         self.ids.zone_graphique.add_widget(self.graphe)
 
         if CARTE_DISPONIBLE:
-            self.map_view = MapView(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
-            # MapView capture les touchers via un Scatter interne (pour le
-            # glisser/zoom) : un binding sur MapView lui-même ne recevrait
-            # jamais l'événement de relâchement (déjà "grab" par ce
-            # Scatter). On se branche donc directement dessus.
-            cible_tactile = getattr(self.map_view, "_scatter", self.map_view)
-            cible_tactile.bind(on_touch_down=self._debut_touch_carte, on_touch_up=self._sur_touch_carte)
+            self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
+            # On écoute les touchers au niveau de la Window, complètement
+            # à l'écart du Scatter interne de MapView (qui gère lui-même
+            # le glisser/pincement). Un binding ou un grab sur le Scatter
+            # ou sur MapView empêcherait ce dernier de recevoir l'événement
+            # et bloquerait le glisser — ce qu'on a observé en pratique.
+            Window.bind(on_touch_down=self._debut_touch_carte, on_touch_up=self._sur_touch_carte)
             self.ids.map_container.add_widget(self.map_view)
         else:
             self.ids.map_container.add_widget(Label(
@@ -1418,7 +1693,7 @@ class CarteScreen(Screen):
         self.trace_chargee = True
         self.point_coupure_text = ""
         self.status_text = ""
-        self.info_fichier = f"Trace chargée : {os.path.basename(chemin)}\n{len(points)} points."
+        self.info_fichier = f"Trace : {os.path.basename(chemin)}\n{len(points)} points."
         self.info_point_text = "Tape sur la carte ou le graphique pour voir le détail d'un point."
         self.profil = gps_logic.calculer_profil(points)
         self.graphe.set_donnees(*self.profil)
@@ -1474,19 +1749,21 @@ class CarteScreen(Screen):
             zoom = int(12 - math.log2(max_delta * 10))
             self.map_view.zoom = max(2, min(zoom, 18))
 
-    def _debut_touch_carte(self, instance, touch):
-        """Mémorise la position de l'appui et désactive le défilement de la page
-        pendant les manipulations de la carte (pan/zoom)."""
-        if self.map_view is not None and self.map_view.collide_point(*touch.pos):
+    def _debut_touch_carte(self, window, touch):
+        """Mémorise la position de l'appui si le toucher démarre sur la
+        carte, SANS jamais consommer l'événement (pas de grab, pas de
+        return True) pour ne surtout pas empêcher MapView de gérer
+        normalement le glisser/pincement lui-même."""
+        if (
+            self.manager is not None and self.manager.current == self.name
+            and self.map_view is not None and self.map_view.collide_point(*touch.pos)
+        ):
             touch.ud["carte_pos_depart"] = (touch.x, touch.y)
-            # Empêche le ScrollView parent de défiler si l'utilisateur glisse sur la carte
-            touch.grab(self.map_view)
-            return True
         return False
 
-    def _sur_touch_carte(self, instance, touch):
-        if touch.grab_current is self.map_view:
-            touch.ungrab(self.map_view)
+    def _sur_touch_carte(self, window, touch):
+        if self.manager is None or self.manager.current != self.name:
+            return False
 
         depart = touch.ud.get("carte_pos_depart")
         if not CARTE_DISPONIBLE or self.map_view is None or not self.points_courants or depart is None:
@@ -1648,6 +1925,222 @@ class StatistiquesScreen(Screen):
             conteneur.add_widget(ligne)
 
 
+class PhotosScreen(Screen):
+    """Onglet Photos : associe une photo JPEG à un point de la trace en
+    se basant sur son horodatage EXIF, puis permet d'écrire/corriger les
+    tags GPS de la photo. Reprend sans modification fonctionnelle la
+    logique de init_onglet6_photos() de la version desktop (le
+    formulaire Tkinter devient un écran Kivy)."""
+
+    info_trace = StringProperty("Aucune trace chargée.")
+    info_photo = StringProperty("Aucune photo chargée.")
+    champ_date = StringProperty("")
+    champ_lat = StringProperty("")
+    champ_lon = StringProperty("")
+    champ_alt = StringProperty("")
+    miniature_source = StringProperty("")
+    status_text = StringProperty("")
+    status_color = ListProperty([0.33, 0.33, 0.33, 1])
+    titre_carte = StringProperty("Emplacement de la photo sur la trace")
+    titre_carte_color = ListProperty([0, 0, 0, 1])
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.fichier_trace = ""
+        self.points_trace = []
+        self.fichier_photo = ""
+        self.trace_layer = None
+        self.marqueurs_actifs = []
+        self.marqueur_photo = None
+        self.map_view = None
+
+        if CARTE_DISPONIBLE:
+            self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
+            self.ids.map_container.add_widget(self.map_view)
+        else:
+            self.ids.map_container.add_widget(Label(
+                text=(
+                    "Carte indisponible : le module kivy_garden.mapview\n"
+                    "n'est pas installe.\n\nInstalle-le avec :\n"
+                    "pip install kivy_garden.mapview"
+                ),
+                color=(0.6, 0.1, 0.1, 1),
+                halign="center",
+            ))
+
+    def dezoomer_carte(self):
+        """Réduit le niveau de zoom de la carte (bouton "-", même
+        comportement que sur l'onglet Carte/Découpe)."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        min_z = self.map_view.map_source.get_min_zoom()
+        if self.map_view.zoom > min_z:
+            self.map_view.zoom -= 1
+            self.map_view.center_on(self.map_view.lat, self.map_view.lon)
+
+    def zoomer_carte(self):
+        """Augmente le niveau de zoom de la carte (bouton "+")."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        max_z = self.map_view.map_source.get_max_zoom()
+        if self.map_view.zoom < max_z:
+            self.map_view.zoom += 1
+            self.map_view.center_on(self.map_view.lat, self.map_view.lon)
+
+    def changer_vue_carte(self, valeur):
+        """Change le fond de carte (satellite ou plan), équivalent de
+        changer_fond_carte_photo() dans la version desktop."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        self.map_view.map_source = SOURCE_SATELLITE if valeur == "satellite" else SOURCE_PLAN
+        self.map_view.trigger_update(True)
+
+    def ouvrir_selecteur_trace(self):
+        contenu = _construire_selecteur_fichier(self._trace_choisie)
+        self._popup = Popup(title="Choisir une trace", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
+
+    def _trace_choisie(self, chemin):
+        self._popup.dismiss()
+        if not chemin:
+            return
+        try:
+            points = gps_logic.lire_fichier_pour_conversion(chemin)
+        except Exception as e:
+            self.info_trace = f"Erreur de lecture : {e}"
+            return
+
+        if not points:
+            self.info_trace = "Aucun point GPS valide trouvé dans ce fichier."
+            return
+
+        self.fichier_trace = chemin
+        self.points_trace = points
+        self.info_trace = f"Trace : {os.path.basename(chemin)} ({len(points)} pts)"
+        self._afficher_trace_sur_carte(points)
+
+    def ouvrir_selecteur_photo(self):
+        contenu = _construire_selecteur_fichier_photo(self._photo_choisie)
+        self._popup = Popup(title="Choisir une photo", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
+
+    def _photo_choisie(self, chemin):
+        self._popup.dismiss()
+        if not chemin:
+            return
+
+        self.fichier_photo = chemin
+        self.info_photo = f"Photo : {os.path.basename(chemin)}"
+        self.status_text = ""
+
+        exif_data = gps_logic.get_exif_data(chemin)
+        self.champ_date = exif_data["datetime"] or ""
+        self.champ_lat = str(exif_data["latitude"]) if exif_data["latitude"] is not None else ""
+        self.champ_lon = str(exif_data["longitude"]) if exif_data["longitude"] is not None else ""
+        self.champ_alt = str(exif_data["altitude"]) if exif_data["altitude"] is not None else ""
+
+        # Force le rechargement de la miniature même si on recharge la
+        # même photo (Kivy ne redéclenche pas "source" si la valeur ne
+        # change pas).
+        self.miniature_source = ""
+        self.miniature_source = chemin
+
+    def situer(self):
+        """Cherche dans la trace le point le plus proche de la date/heure
+        EXIF saisie et pré-remplit latitude/longitude/altitude,
+        équivalent de situer_exif_edite() dans la version desktop."""
+        if not self.champ_date.strip():
+            self.status_text = "Renseigne une date/heure pour la photo."
+            self.status_color = [0.8, 0.1, 0.1, 1]
+            return
+        if not self.points_trace:
+            self.status_text = "Charge d'abord une trace pour y chercher l'horodatage."
+            self.status_color = [0.8, 0.1, 0.1, 1]
+            return
+
+        self.status_text = ""
+        pt = gps_logic.find_closest_point(self.points_trace, self.champ_date)
+        if not pt:
+            self.titre_carte = "Position non trouvée sur la trace"
+            self.titre_carte_color = [0.8, 0.1, 0.1, 1]
+            if CARTE_DISPONIBLE and self.map_view is not None and self.marqueur_photo is not None:
+                self.map_view.remove_marker(self.marqueur_photo)
+                self.marqueur_photo = None
+            return
+
+        self.champ_lat = str(pt["lat"])
+        self.champ_lon = str(pt["lon"])
+        if pt["ele"] is not None:
+            self.champ_alt = str(pt["ele"])
+
+        self.titre_carte = "Emplacement de la photo sur la trace"
+        self.titre_carte_color = [0, 0, 0, 1]
+
+        if CARTE_DISPONIBLE and self.map_view is not None:
+            self.map_view.center_on(pt["lat"], pt["lon"])
+            self.map_view.zoom = 16
+            if self.marqueur_photo is not None:
+                self.map_view.remove_marker(self.marqueur_photo)
+            self.marqueur_photo = MapMarker(lat=pt["lat"], lon=pt["lon"])
+            self.map_view.add_marker(self.marqueur_photo)
+
+    def enregistrer_exif(self):
+        """Écrit les tags EXIF GPS (et date/heure) dans la photo
+        chargée, équivalent de enregistrer_exif() dans la version
+        desktop."""
+        if not self.fichier_photo:
+            self.status_text = "Aucune photo chargée."
+            self.status_color = [0.8, 0.1, 0.1, 1]
+            return
+        try:
+            lat_val = float(self.champ_lat)
+            lon_val = float(self.champ_lon)
+            alt_str = self.champ_alt.strip()
+            alt_val = float(alt_str) if alt_str and alt_str != "N/A" else None
+            gps_logic.enregistrer_exif_gps(
+                self.fichier_photo, lat_val, lon_val, alt_val, self.champ_date.strip() or None
+            )
+            self.status_text = "EXIF enregistré avec succès."
+            self.status_color = [0.15, 0.5, 0.15, 1]
+        except Exception as e:
+            self.status_text = f"Échec de l'enregistrement : {e}"
+            self.status_color = [0.8, 0.1, 0.1, 1]
+
+    def _afficher_trace_sur_carte(self, points):
+        """Trace la polyligne sur la carte et recadre dessus, équivalent
+        de afficher_trace_sur_carte_photo() dans la version desktop."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+
+        if self.trace_layer is not None:
+            self.map_view.remove_layer(self.trace_layer)
+            self.trace_layer = None
+        for m in self.marqueurs_actifs:
+            self.map_view.remove_marker(m)
+        self.marqueurs_actifs = []
+        if self.marqueur_photo is not None:
+            self.map_view.remove_marker(self.marqueur_photo)
+            self.marqueur_photo = None
+
+        if not points:
+            return
+
+        liste_coords = [(p["lat"], p["lon"]) for p in points]
+        self.trace_layer = TraceLayer()
+        self.map_view.add_layer(self.trace_layer)
+        self.trace_layer.set_points(liste_coords)
+
+        lats = [c[0] for c in liste_coords]
+        lons = [c[1] for c in liste_coords]
+        min_lat, max_lat = min(lats), max(lats)
+        min_lon, max_lon = min(lons), max(lons)
+        self.map_view.center_on((min_lat + max_lat) / 2, (min_lon + max_lon) / 2)
+        max_delta = max(max_lat - min_lat, max_lon - min_lon)
+        if max_delta > 0:
+            zoom = int(12 - math.log2(max_delta * 10))
+            self.map_view.zoom = max(2, min(zoom, 18))
+
+
 class EcranAVenir(Screen):
     """Écran affiché pour les fonctionnalités pas encore intégrées."""
 
@@ -1679,6 +2172,7 @@ class OutilsTracesApp(App):
         self.sm.add_widget(FusionScreen(name="fusion"))
         self.sm.add_widget(CarteScreen(name="carte"))
         self.sm.add_widget(StatistiquesScreen(name="statistiques"))
+        self.sm.add_widget(PhotosScreen(name="photos"))
         for nom in SCREENS_A_VENIR:
             self.sm.add_widget(EcranAVenir(nom, name=nom))
 
@@ -1686,7 +2180,7 @@ class OutilsTracesApp(App):
         barre = BoxLayout(size_hint_y=None, height=dp(60), padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
-        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Carte / Découpe"), ("statistiques", "Statistiques")]
+        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Carte / Découpe"), ("statistiques", "Statistiques"), ("photos", "Photos")]
         self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
         self._boutons_menu = {}
         for nom_ecran, libelle in self._ecrans_menu:

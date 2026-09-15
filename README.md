@@ -12,14 +12,14 @@ Réécriture de `start.py` (appli desktop tkinter) en application Android
 | Fusion                       | ⏳ En attente du code Python source     |
 | Carte / Découpe              | ⏳ En attente du code Python source     |
 | Statistiques                 | ⏳ En attente du code Python source     |
-| Photos                       | ⏳ En attente du code Python source     |
+| Photos                       | ✅ Fonctionnelle                        |
 | Live (suivi GPSLogger)       | ⏳ En attente du code Python source     |
 
-Les 6 fonctionnalités en attente apparaissent déjà dans le menu déroulant
+Les fonctionnalités en attente apparaissent déjà dans le menu déroulant
 (bouton **Menu ▾** en haut de l'écran) et affichent un écran "à venir".
 Quand tu m'enverras le code Python de chacune, je créerai son propre
-`Screen` Kivy (fichier dédié dans `screens/`) et je l'accrocherai au menu
-à la place de l'écran "à venir" — sans toucher au reste de l'appli.
+`Screen` Kivy et je l'accrocherai au menu à la place de l'écran "à
+venir" — sans toucher au reste de l'appli.
 
 ## Pourquoi une réécriture et pas juste "packager" start.py ?
 
@@ -102,7 +102,14 @@ en dehors de son propre dossier privé.
 
 Envoie-moi, dans l'ordre que tu veux, le code Python de :
 `init_onglet2_numerotation`, `init_onglet3_fusion`, `init_onglet4_carte`,
-`init_onglet5_statistiques`, `init_onglet6_photos`, `init_onglet7_live`
-(et les fonctions associées, ex. `analyser_liste_suppression`,
-`get_exif_data`, le serveur HTTP live...). Je les intégrerai un par un
-comme nouveaux écrans du menu déroulant.
+`init_onglet5_statistiques`, `init_onglet7_live` (et les fonctions
+associées, ex. `analyser_liste_suppression`, le serveur HTTP live...).
+Je les intégrerai un par un comme nouveaux écrans du menu déroulant.
+
+## Onglet Photos — remarque
+
+L'onglet Photos utilise `piexif` (bibliothèque pure Python, ajoutée aux
+`requirements` de `buildozer.spec`) pour lire et écrire les tags EXIF
+GPS/Date-Heure des photos JPEG. La miniature s'affiche directement via
+le widget `Image` de Kivy (pas besoin de Pillow, non ajouté aux
+dépendances).

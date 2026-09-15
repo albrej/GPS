@@ -18,7 +18,9 @@ version = 0.1
 # hostpython3 doit être fixé À LA MÊME VERSION EXACTE que python3 :
 # python-for-android utilise ce second interpréteur en interne pendant
 # la compilation croisée, et refuse de continuer si les deux diffèrent.
-requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,gpxpy,kivy_garden.mapview
+# piexif (onglet Photos) : lecture/écriture des tags EXIF GPS et
+# Date/Heure. Pure Python, aucune compilation nécessaire.
+requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,gpxpy,kivy_garden.mapview,piexif
 
 orientation = portrait
 icon.filename = %(source.dir)s/Icone.png
