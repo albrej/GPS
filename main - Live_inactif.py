@@ -15,11 +15,6 @@
 import os
 import math
 import threading
-import queue
-import subprocess
-import urllib.parse
-from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from kivy.app import App
 from kivy.lang import Builder
@@ -107,17 +102,12 @@ if CARTE_DISPONIBLE:
             return
 
     class TraceLayer(MapLayer):
-        """Dessine la trace (polyligne) par-dessus les tuiles, équivalent
-        de map_widget.set_path(...) sous tkintermapview. Cyan par défaut
-        (comportement inchangé partout où c'était déjà utilisé) ; un
-        onglet peut passer une autre couleur pour distinguer plusieurs
-        traces sur la même carte (ex. rouge pour la trace live de
-        l'onglet Live, à côté d'une trace chargée cyan)."""
+        """Dessine la trace (polyligne cyan) par-dessus les tuiles,
+        équivalent de map_widget.set_path(...) sous tkintermapview."""
 
-        def __init__(self, couleur=(0, 1, 1, 1), **kwargs):
+        def __init__(self, **kwargs):
             super().__init__(**kwargs)
             self.points = []
-            self.couleur = couleur
 
         def set_points(self, points_lat_lon):
             self.points = points_lat_lon
@@ -143,7 +133,7 @@ if CARTE_DISPONIBLE:
                 x, y = mapview.get_window_xy_from(lat, lon, zoom)
                 coords.extend([x, y])
             with self.canvas:
-                Color(*self.couleur)
+                Color(0, 1, 1, 1)
                 KivyLine(points=coords, width=2)
 
     class MarqueurTexte(MapMarker):
@@ -1315,34 +1305,12 @@ KV = """
                 spacing: dp(6)
                 Button:
                     text: "Live Pydroid"
-                    on_release: root.on_click_live_pydroid()
+                    on_release: app.on_click_live_pydroid(self)
                     background_color: 0.15, 0.68, 0.38, 1
                 Button:
                     text: "Terminer"
                     disabled: True
                     background_color: 0.8, 0.2, 0.2, 1
-
-            Label:
-                text: root.statut_live_text
-                size_hint_y: None
-                height: max(dp(24), self.texture_size[1] + dp(6))
-                text_size: self.width, None
-                halign: "left"
-                valign: "top"
-                italic: True
-                font_size: "12sp"
-                color: root.statut_live_color
-
-            Label:
-                text: root.trace_reference_live_text
-                size_hint_y: None
-                height: max(dp(22), self.texture_size[1] + dp(6))
-                text_size: self.width, None
-                halign: "left"
-                valign: "top"
-                italic: True
-                font_size: "11sp"
-                color: root.trace_reference_live_color
 
             Label:
                 text: root.info_fichier
@@ -1815,50 +1783,13 @@ class LiveScreen(Screen):
     status_text = StringProperty("")
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
 
-    # --- Bloc statut propre au suivi EN DIRECT (rouge), indépendant de
-    # info_fichier/status_text ci-dessus qui concernent la trace
-    # "chargée" manuellement (bleue).
-    statut_live_text = StringProperty("Appuyez sur \"Live Pydroid\" pour démarrer le suivi en direct.")
-    statut_live_color = ListProperty([0.33, 0.33, 0.33, 1])
-    trace_reference_live_text = StringProperty("Aucune trace à suivre chargée")
-    trace_reference_live_color = ListProperty([0.33, 0.33, 0.33, 1])
-
-    # Identifiants propres à l'intégration GPSLogger, utilisés uniquement
-    # par cet onglet : les garder ici les isole totalement des autres
-    # onglets (les déplacer ou les supprimer avec l'onglet n'affecte
-    # aucun autre onglet).
-    PORT_SERVEUR_LIVE = 8765
-    PACKAGE_GPSLOGGER = "com.mendhak.gpslogger"
-    ACTION_TASKER_GPSLOGGER = "com.mendhak.gpslogger.TASKER_COMMAND"
-    RECEIVER_TASKER_GPSLOGGER = "com.mendhak.gpslogger.TaskerReceiver"
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.map_view = None
         self.trace_layer = None
         self.marqueurs_actifs = []
         self.points_courants = []
-
-        # --- Trace EN DIRECT (rouge) : totalement indépendante de la
-        # trace "chargée" manuellement ci-dessus (bleue). Réinitialisée
-        # par on_click_live_pydroid() (bouton "Live Pydroid").
-        self.pause_traitement_live = False
-        self.points_trace_live = []
-        self.trace_layer_live = None
-        self.marqueurs_actifs_live = []
-        self.fichier_gpx_actif_live = None
-
-        # --- Serveur d'écoute live (HTTP local) + file thread-safe des
-        # points reçus, consommée côté thread principal (Kivy, comme
-        # Tkinter, n'est pas thread-safe) par _traiter_file_points_live(),
-        # planifiée ci-dessous via Clock (pas besoin de se replanifier à
-        # la main comme avec after() sous Tkinter : schedule_interval se
-        # répète de lui-même).
-        self.serveur_live = None
-        self.thread_serveur_live = None
-        self.file_points_live = queue.Queue()
-        Clock.schedule_interval(self._traiter_file_points_live, 1.0)
-
+        
         self.profil = ([], [], [], [])
         self.graphe = GrapheProfil()
         self.graphe.afficher_courbe_vitesse = False  # <--- AJOUT : Masque la courbe verte
@@ -1973,337 +1904,43 @@ class LiveScreen(Screen):
             zoom = int(12 - math.log2(max_delta * 10))
             self.map_view.zoom = max(2, min(zoom, 18))
         
-    def on_click_live_pydroid(self):
-        """Bouton "Live Pydroid" (onglet 7) :
-        Phase 1 : réinitialise le suivi EN DIRECT (rouge) de cet onglet.
-        Phase 2 : démarre (ou confirme déjà démarré) le serveur d'écoute
-        live local qui reçoit les points GPS envoyés par GPSLogger.
-        Phase 3 : tente de lancer GPSLogger et d'y démarrer
-        automatiquement l'enregistrement (best effort : pyjnius, puis
-        commande "am" en secours).
-
-        Ne touche jamais à la trace "chargée" manuellement (bleue,
-        gérée par ouvrir_selecteur_fichier/_fichier_choisi ci-dessus) ni
-        à aucun autre onglet."""
-        # --- Phase 1 : réinitialisation de la trace live (rouge) uniquement ---
-        # a. Le drapeau de pause repasse à False.
+    def on_click_live_pydroid(self, instance):
+        """
+        Action déclenchée lors du clic sur le bouton 'Live Pydroid' :
+        Application de la Phase 1 (Réinitialisation du suivi direct - rouge).
+        """
+        # a. Le drapeau de pause passe à False
         self.pause_traitement_live = False
-
-        # b. Les listes internes de la trace live (points, marqueurs) sont vidées.
-        self.points_trace_live = []
-        self.fichier_gpx_actif_live = None
-
-        # c. Le tracé rouge et ses marqueurs sur la carte de l'onglet 7 sont supprimés.
-        if CARTE_DISPONIBLE and self.map_view is not None:
-            if self.trace_layer_live is not None:
-                self.map_view.remove_layer(self.trace_layer_live)
-                self.trace_layer_live = None
-            for m in self.marqueurs_actifs_live:
-                self.map_view.remove_marker(m)
-            self.marqueurs_actifs_live = []
-
-        # d. Le libellé de référence passe en attente et le texte de
-        # statut passe à l'orange.
-        self.trace_reference_live_text = "En attente des premiers points..."
-        self.trace_reference_live_color = [0.33, 0.33, 0.33, 1]
-        self._maj_statut_live("Démarrage du suivi en direct : lancement de GPSLogger...", (0.937, 0.424, 0.0, 1))  # #EF6C00
-
-        # --- Phase 2 : démarrage (ou confirmation) du serveur d'écoute live ---
-        # Fait AVANT la phase 3 : demarrer_serveur_live() affiche son
-        # propre message transitoire ("Serveur d'écoute live démarré
-        # sur ...") aussitôt remplacé par celui de la phase 3 ci-dessous,
-        # qui doit rester le message final visible après un clic sur
-        # "Live Pydroid".
-        self.demarrer_serveur_live()
-
-        # --- Phase 3 : lancement de GPSLogger + démarrage de l'enregistrement ---
-        ok, message = self._lancer_gpslogger_et_demarrer_enregistrement()
-        if ok:
-            self._maj_statut_live("GPSLogger lancé et enregistrement en cours", (0.180, 0.490, 0.196, 1))  # #2E7D32
-        else:
-            self._maj_statut_live(
-                f"Automatisation GPSLogger indisponible ({message}). "
-                "Ouvrez GPSLogger et démarrez l'enregistrement manuellement : "
-                "le suivi en direct ci-dessous démarrera dès la réception des premiers points.",
-                (0.776, 0.157, 0.157, 1)  # #C62828
-            )
-
-    def _maj_statut_live(self, texte, couleur=(0.33, 0.33, 0.33, 1)):
-        """Affiche un message à la fois dans la console et dans le label
-        de statut de cet onglet, pour rester visible même si la console
-        n'est pas accessible (usage mobile). Equivalent de
-        _maj_statut_live() dans la version desktop."""
-        print(f"[Live GPSLogger] {texte}")
-        self.statut_live_text = texte
-        self.statut_live_color = list(couleur)
-
-    def demarrer_serveur_live(self):
-        """Démarre (une seule fois) le petit serveur HTTP local qui
-        reçoit, en temps réel, chaque nouveau point envoyé par GPSLogger
-        via son URL personnalisée :
-            http://127.0.0.1:8765/gps?lat=%LAT&lon=%LON&alt=%ALT&acc=%ACC
-
-        Le serveur tourne dans un thread séparé ; les points reçus sont
-        déposés dans une file thread-safe (self.file_points_live),
-        consommée côté thread principal par _traiter_file_points_live()
-        (Kivy n'est pas thread-safe)."""
-        if self.serveur_live is not None:
-            return
-
-        file_points = self.file_points_live
-
-        class GestionnaireLive(BaseHTTPRequestHandler):
-            def do_GET(self):
-                try:
-                    url_analysee = urllib.parse.urlparse(self.path)
-                    if url_analysee.path != "/gps":
-                        self.send_response(404)
-                        self.end_headers()
-                        return
-
-                    params = urllib.parse.parse_qs(url_analysee.query)
-                    lat_brut = params.get("lat", [None])[0]
-                    lon_brut = params.get("lon", [None])[0]
-                    if lat_brut is None or lon_brut is None:
-                        self.send_response(400)
-                        self.end_headers()
-                        return
-
-                    lat = float(lat_brut)
-                    lon = float(lon_brut)
-                    alt_brut = params.get("alt", [None])[0]
-                    ele = None
-                    if alt_brut not in (None, ""):
-                        try:
-                            ele = round(float(alt_brut), 1)
-                        except ValueError:
-                            ele = None
-
-                    file_points.put({
-                        'lat': lat, 'lon': lon, 'ele': ele,
-                        'time': datetime.now(), 'name': None
-                    })
-
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/plain")
-                    self.end_headers()
-                    self.wfile.write(b"OK")
-                except Exception:
-                    try:
-                        self.send_response(400)
-                        self.end_headers()
-                    except Exception:
-                        pass
-
-            def log_message(self, format, *args):
-                pass  # Silence le log console par défaut de http.server
-
-        try:
-            self.serveur_live = HTTPServer(("127.0.0.1", self.PORT_SERVEUR_LIVE), GestionnaireLive)
-        except OSError as e:
-            print(f"[Live GPSLogger] Impossible de démarrer le serveur local sur le port {self.PORT_SERVEUR_LIVE} : {e}")
-            self.serveur_live = None
-            return
-
-        self.thread_serveur_live = threading.Thread(target=self.serveur_live.serve_forever, daemon=True)
-        self.thread_serveur_live.start()
-        self._maj_statut_live(f"Serveur d'écoute live démarré sur 127.0.0.1:{self.PORT_SERVEUR_LIVE}.", (0.180, 0.490, 0.196, 1))
-
-    def _lancer_gpslogger_et_demarrer_enregistrement(self):
-        """Tente, par les moyens disponibles sous Android, de :
-           a) porter l'application GPSLogger au premier plan (la lancer
-              si elle n'est pas déjà ouverte) ;
-           b) lui envoyer l'ordre de démarrer immédiatement
-              l'enregistrement (extra Android "immediatestart", reconnu
-              nativement par GPSLogger pour l'automatisation externe,
-              ex. Tasker/Automate).
-
-        Renvoie (True, détail) en cas de succès, (False, raison) sinon.
-        Chaque mécanisme est essayé indépendamment et n'importe quel
-        échec est intercepté : cette méthode ne lève jamais d'exception
-        et ne bloque jamais l'affichage live, qui fonctionne dès que
-        GPSLogger envoie effectivement des points, quelle que soit la
-        façon dont il a été démarré (automatique ici, ou manuel par
-        l'utilisateur)."""
-
-        # --- Tentative 1 : pyjnius (accès natif à l'API Android) ---
-        try:
-            from jnius import autoclass, cast
-
-            activite_courante = None
-            for chemin_classe in ("org.kivy.android.PythonActivity", "org.kivy.android.PythonService"):
-                try:
-                    activite_courante = autoclass(chemin_classe).mActivity
-                    if activite_courante:
-                        break
-                except Exception:
-                    continue
-
-            if activite_courante is None:
-                raise RuntimeError("activité Android introuvable via pyjnius")
-
-            Intent = autoclass("android.content.Intent")
-            contexte = cast("android.content.Context", activite_courante)
-
-            # a) Porter GPSLogger au premier plan (son activité principale).
-            gestionnaire_paquets = contexte.getPackageManager()
-            intent_lancement = gestionnaire_paquets.getLaunchIntentForPackage(self.PACKAGE_GPSLOGGER)
-            if intent_lancement is not None:
-                contexte.startActivity(intent_lancement)
-
-            # b) Ordonner à GPSLogger de démarrer l'enregistrement.
-            intent_demarrage = Intent(self.ACTION_TASKER_GPSLOGGER)
-            intent_demarrage.setClassName(self.PACKAGE_GPSLOGGER, self.RECEIVER_TASKER_GPSLOGGER)
-            intent_demarrage.putExtra("immediatestart", True)
-            contexte.sendBroadcast(intent_demarrage)
-
-            return True, "(méthode : pyjnius)"
-        except Exception as e_jnius:
-            # Détail technique complet réservé à la console (utile en
-            # debug), jamais affiché tel quel à l'écran.
-            print(f"[Live GPSLogger] Échec pyjnius (lancement) : {e_jnius}")
-            raison_jnius = "méthode pyjnius indisponible"
-
-        # --- Tentative 2 (secours) : commande Android "am", si disponible ---
-        try:
-            subprocess.run(
-                ["am", "start", "-n", f"{self.PACKAGE_GPSLOGGER}/.GpsMainActivity"],
-                check=False, timeout=5,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-            )
-            resultat = subprocess.run(
-                [
-                    "am", "broadcast",
-                    "-a", self.ACTION_TASKER_GPSLOGGER,
-                    "-n", f"{self.PACKAGE_GPSLOGGER}/{self.RECEIVER_TASKER_GPSLOGGER}",
-                    "--ez", "immediatestart", "true"
-                ],
-                check=False, timeout=5,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            if resultat.returncode == 0:
-                return True, "(méthode : commande am)"
-            print(f"[Live GPSLogger] Échec commande am (lancement), code {resultat.returncode} : "
-                  f"{resultat.stderr.decode(errors='ignore').strip()}")
-            raison_am = "commande am indisponible ou refusée"
-        except Exception as e_am:
-            print(f"[Live GPSLogger] Échec commande am (lancement) : {e_am}")
-            raison_am = "commande am indisponible ou refusée"
-
-        return False, f"{raison_jnius} ; {raison_am}"
-
-    def _traiter_file_points_live(self, dt):
-        """Boucle planifiée (Clock.schedule_interval, toutes les
-        secondes) : vide la file des points reçus en direct par le
-        serveur local et les applique un par un sur la carte et le
-        profil altimétrique de cet onglet. Equivalent de
-        traiter_file_points_live() dans la version desktop — ici,
-        Clock se replanifie lui-même : pas besoin de le refaire à la
-        main comme avec after() sous Tkinter.
-
-        Un point individuel qui provoquerait une erreur est ignoré sans
-        interrompre le traitement des points suivants ni la
-        planification de cette boucle.
-
-        Si self.pause_traitement_live est actif, la file n'est PAS
-        vidée ici, pour que les points reçus entre-temps ne soient
-        jamais perdus."""
-        if self.pause_traitement_live:
-            return
-
-        nouveaux_points = []
-        try:
-            while True:
-                nouveaux_points.append(self.file_points_live.get_nowait())
-        except queue.Empty:
-            pass
-
-        for point in nouveaux_points:
-            try:
-                self._ajouter_point_live(point)
-            except Exception as e:
-                print(f"[Live GPSLogger] Erreur lors de l'ajout d'un point live (point ignoré) : {e}")
-
-    def _ajouter_point_live(self, point):
-        """Ajoute un nouveau point reçu en direct à la trace de cet
-        onglet : étend le tracé sur la carte (rouge) et le profil
-        altimétrique, et met à jour le bloc d'informations avec ce
-        dernier point."""
-        if self.points_trace_live:
-            dernier = self.points_trace_live[-1]
-            if abs(dernier['lat'] - point['lat']) < 1e-6 and abs(dernier['lon'] - point['lon']) < 1e-6:
-                return  # Point identique au dernier déjà affiché (doublon) : ignoré.
-
-        self.points_trace_live.append(point)
-        nom_fich = os.path.basename(self.fichier_gpx_actif_live) if self.fichier_gpx_actif_live else "Live..."
-
-        self._afficher_trace_live_sur_carte()
-
-        self.profil = gps_logic.calculer_profil(self.points_trace_live)
-        self.graphe.set_donnees(*self.profil)
-
-        self.trace_reference_live_text = f"● Trace : {nom_fich}"
-        self.trace_reference_live_color = [0.776, 0.157, 0.157, 1]  # #C62828
-
-        idx = len(self.points_trace_live) - 1
-        distances_km, _, _, vitesses_kmh = self.profil
-        dist = distances_km[idx] if idx < len(distances_km) else 0.0
-        vit = vitesses_kmh[idx] if idx < len(vitesses_kmh) else 0.0
-        heure = point['time'].strftime("%H:%M:%S") if point.get('time') else "-"
-        ele_txt = f"{point['ele']} m" if point.get('ele') is not None else "-"
-        self.info_point_text = (
-            f"Point {idx + 1} (live)  |  GPS: {point['lat']:.5f}, {point['lon']:.5f}\n"
-            f"Distance: {dist:.2f} km  |  Altitude: {ele_txt}  |  "
-            f"Heure: {heure}  |  Vitesse: {vit} km/h"
-        )
-
-    def _afficher_trace_live_sur_carte(self):
-        """Affiche, sur la carte de cet onglet, la trace suivie EN
-        DIRECT (rouge) : chemin et marqueurs qui lui sont propres, sans
-        jamais toucher au chemin/marqueurs de la trace chargée
-        manuellement (cyan, voir _fichier_choisi/_afficher_trace_sur_carte
-        ci-dessus)."""
-        if not CARTE_DISPONIBLE or self.map_view is None:
-            return
-
-        if self.trace_layer_live is not None:
-            self.map_view.remove_layer(self.trace_layer_live)
-            self.trace_layer_live = None
-        for m in self.marqueurs_actifs_live:
-            self.map_view.remove_marker(m)
-        self.marqueurs_actifs_live = []
-
-        points = self.points_trace_live
-        if not points:
-            return
-
-        liste_coords = [(p['lat'], p['lon']) for p in points]
-        self.trace_layer_live = TraceLayer(couleur=(0.898, 0.224, 0.208, 1))  # rouge #E53935
-        self.map_view.add_layer(self.trace_layer_live)
-        self.trace_layer_live.set_points(liste_coords)
-
-        if len(points) >= 2:
-            dist_dep_arr = gps_logic.calculer_distance_haversine(
-                points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
-            )
-            if dist_dep_arr <= 20.0:
-                m_unique = MarqueurTexte(texte="D/A", lat=points[0]['lat'], lon=points[0]['lon'])
-                self.map_view.add_marker(m_unique)
-                self.marqueurs_actifs_live.append(m_unique)
-            else:
-                m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
-                m_arrivee = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
-                self.map_view.add_marker(m_depart)
-                self.map_view.add_marker(m_arrivee)
-                self.marqueurs_actifs_live.extend([m_depart, m_arrivee])
-        else:
-            m_unique = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
-            self.map_view.add_marker(m_unique)
-            self.marqueurs_actifs_live.append(m_unique)
-
-        self.map_view.center_on(points[-1]['lat'], points[-1]['lon'])
-
-
+        
+        # b. Les listes internes de la trace live (points, distances, marqueurs) sont vidées
+        self.live_points.clear()
+        self.live_distances.clear()
+        self.live_marqueurs.clear()
+        
+        # c. Le tracé rouge et ses marqueurs sur la carte de l'onglet 7 sont supprimés
+        # Exemple avec kivy_garden.mapview :
+        if hasattr(self, 'map_view') and self.map_view:
+            # Supprimer la ligne rouge du tracé si elle a été ajoutée à la carte
+            if hasattr(self, 'live_kivy_line') and self.live_kivy_line in self.map_view.canvas.children:
+                self.map_view.canvas.remove(self.live_kivy_line)
+                self.live_kivy_line = None
+                
+            # Supprimer les marqueurs de la carte
+            for marqueur in self.live_marqueurs_carte:
+                self.map_view.remove_marker(marqueur)
+            self.live_marqueurs_carte.clear()
+        
+        # d. Le libellé de référence passe en attente et le texte de statut passe à l'orange
+        if hasattr(self, 'label_reference'):
+            self.label_reference.text = "En attente des premiers points..."
+            
+        if hasattr(self, 'label_statut'):
+            self.label_statut.text = "Démarrage du suivi en direct..."
+            # Couleur orange (RGBA)
+            self.label_statut.color = (1.0, 0.5, 0.0, 1.0) 
+        
+        # Note : La trace bleue chargée manuellement n'est pas touchée.
+        
 class CarteScreen(Screen):
     fichier_source = StringProperty("")
     info_fichier = StringProperty("Aucune trace chargée.")
@@ -2884,6 +2521,12 @@ class EcranAVenir(Screen):
 class OutilsTracesApp(App):
     title = "Bubu GPS"
 
+    # --- Drapeaux et états & Listes internes (ajoutés ici) ---
+    pause_traitement_live = BooleanProperty(False)
+    live_points = ListProperty([])
+    live_distances = ListProperty([])
+    live_marqueurs = ListProperty([])
+
     def build(self):
         # Par défaut, Kivy affiche un fond NOIR uni tant qu'on ne le
         # change pas explicitement : tous les libellés en texte noir
@@ -2961,6 +2604,10 @@ class OutilsTracesApp(App):
     def _changer_ecran(self, nom_ecran):
         self.dropdown.dismiss()
         self.sm.current = nom_ecran
+
+    def on_click_live_pydroid(self, instance):
+        """Méthode ajoutée pour éviter l'erreur AttributeError sur le bouton Live"""
+        pass
 
     def _demander_permissions_android(self):
         """Sur Android 11+, l'accès complet au stockage (nécessaire pour
