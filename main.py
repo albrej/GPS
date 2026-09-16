@@ -174,6 +174,15 @@ class GrapheProfil(Widget):
         self.distances_ele = []
         self.altitudes = []
         self.vitesses_kmh = []
+        # --- Série secondaire (optionnelle) : une seconde courbe
+        # d'altitude, dessinée en rouge par-dessus celle de set_donnees()
+        # (bleue). Utilisée uniquement par l'onglet Live pour superposer
+        # la trace live (rouge) à la trace chargée manuellement (bleue).
+        # Aucun autre écran n'appelle set_donnees_secondaires() : ces
+        # listes restent vides et rien ne change pour eux.
+        self.distances_km_secondaire = []
+        self.distances_ele_secondaire = []
+        self.altitudes_secondaire = []
         self.distance_selection = None
         self.callback_clic = None
         self.afficher_courbe_vitesse = True  # <--- AJOUT ICI
@@ -185,6 +194,23 @@ class GrapheProfil(Widget):
         self.altitudes = altitudes
         self.vitesses_kmh = vitesses_kmh
         self.distance_selection = distances_km[0] if distances_km else None
+        self._redessiner()
+
+    def set_donnees_secondaires(self, distances_km, distances_ele, altitudes):
+        """Ajoute (ou remplace) une SECONDE courbe d'altitude, dessinée
+        en rouge par-dessus celle de set_donnees() (toujours bleue) :
+        utilisé par l'onglet Live pour superposer la trace live (rouge)
+        à la trace chargée manuellement (bleue), sans jamais toucher au
+        comportement des autres onglets."""
+        self.distances_km_secondaire = distances_km
+        self.distances_ele_secondaire = distances_ele
+        self.altitudes_secondaire = altitudes
+        self._redessiner()
+
+    def effacer_donnees_secondaires(self):
+        self.distances_km_secondaire = []
+        self.distances_ele_secondaire = []
+        self.altitudes_secondaire = []
         self._redessiner()
 
     def set_selection(self, distance_km):
@@ -227,7 +253,8 @@ class GrapheProfil(Widget):
 
     def _redessiner(self, *args):
         self.canvas.clear()
-        if not self.distances_km or self.width < dp(30) or self.height < dp(30):
+        toutes_distances_km = list(self.distances_km) + list(self.distances_km_secondaire)
+        if not toutes_distances_km or self.width < dp(30) or self.height < dp(30):
             return
 
         ROUGE = (0.8, 0.1, 0.1, 1)
@@ -236,7 +263,7 @@ class GrapheProfil(Widget):
         GRIS_TEXTE = (0.25, 0.25, 0.25, 1)
 
         zx, zy, zw, zh = self._zone_graphique()
-        d_min, d_max = self.distances_km[0], self.distances_km[-1]
+        d_min, d_max = min(toutes_distances_km), max(toutes_distances_km)
         d_span = max(d_max - d_min, 1e-6)
 
         # Décalage horizontal (en pixels) pour laisser place aux labels min/max rouges à gauche
@@ -301,10 +328,12 @@ class GrapheProfil(Widget):
             return zx_courbe + (d - d_min) / d_span * zw_courbe
 
         a_ele = len(self.altitudes) >= 2
+        a_ele_sec = len(self.altitudes_secondaire) >= 2
         a_vit = a_ele and any(v > 0 for v in self.vitesses_kmh)
 
-        if a_ele:
-            a_min, a_max = min(self.altitudes), max(self.altitudes)
+        if a_ele or a_ele_sec:
+            toutes_altitudes = list(self.altitudes) + list(self.altitudes_secondaire)
+            a_min, a_max = min(toutes_altitudes), max(toutes_altitudes)
             # Ajout du padding d'altitude pour éviter le chevauchement
             marge_alt = max((a_max - a_min) * 0.12, 10.0)
             a_bas, a_haut = a_min - marge_alt, a_max + marge_alt
@@ -326,7 +355,7 @@ class GrapheProfil(Widget):
             Color(1, 1, 1, 1)
             Rectangle(pos=(zx, zy), size=(zw, zh))
 
-            if a_ele:
+            if a_ele or a_ele_sec:
                 # Quadrillage d'altitude et valeurs sur l'axe Y
                 for valeur in self._graduations(a_bas, a_haut, 5):
                     gy = y_alt(valeur)
@@ -352,13 +381,24 @@ class GrapheProfil(Widget):
                                    taille_sp=9, centre_h=True, gras=False)
 
             if a_ele:
-                # Tracé de la courbe d'altitude
+                # Tracé de la courbe d'altitude (trace chargée, bleu)
                 points_ligne = []
                 for d, a in zip(self.distances_ele, self.altitudes):
                     points_ligne.extend([x_ecran(d), y_alt(a)])
                 Color(*BLEU)
                 KivyLine(points=points_ligne, width=1.6)
 
+            if a_ele_sec:
+                # Tracé de la seconde courbe d'altitude (trace live,
+                # rouge), superposée à celle ci-dessus (onglet Live
+                # uniquement — voir set_donnees_secondaires()).
+                points_ligne_sec = []
+                for d, a in zip(self.distances_ele_secondaire, self.altitudes_secondaire):
+                    points_ligne_sec.extend([x_ecran(d), y_alt(a)])
+                Color(*ROUGE)
+                KivyLine(points=points_ligne_sec, width=1.8)
+
+            if a_ele or a_ele_sec:
                 if a_vit:
                     for valeur in self._graduations(v_bas, v_haut, 4):
                         gy = y_vit(valeur)
@@ -382,7 +422,7 @@ class GrapheProfil(Widget):
 
             self._poser_texte("Distance (km)", zx + zw / 2, self.y, GRIS_TEXTE,
                                taille_sp=10, centre_h=True)
-            if a_ele:
+            if a_ele or a_ele_sec:
                 self._poser_texte("Altitude (m)", zx, zy + zh + dp(4), BLEU, taille_sp=9)
             if a_vit:
                 tex_v = self._texte_texture("Vitesse (km/h)", taille_sp=9)
@@ -1319,7 +1359,7 @@ KV = """
                     background_color: 0.15, 0.68, 0.38, 1
                 Button:
                     text: "Terminer"
-                    disabled: True
+                    on_release: root.on_click_terminer_live()
                     background_color: 0.8, 0.2, 0.2, 1
 
             Label:
@@ -1686,6 +1726,32 @@ def _construire_selecteur_fichier_photo(callback):
     return layout
 
 
+def _construire_confirmation_oui_non_annuler(message, callback):
+    """Boîte de dialogue à 3 réponses (Oui / Non / Annuler), même
+    convention que messagebox.askyesnocancel() dans la version desktop :
+    callback(True) pour "Oui", callback(False) pour "Non", callback(None)
+    pour "Annuler"."""
+    layout = BoxLayout(orientation="vertical", spacing=12, padding=12)
+
+    lbl_message = Label(text=message, halign="center", valign="middle", color=(0, 0, 0, 1))
+    lbl_message.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
+    layout.add_widget(lbl_message)
+
+    boutons = BoxLayout(size_hint_y=None, height=48, spacing=6)
+    btn_annuler = Button(text="Annuler")
+    btn_non = Button(text="Non", background_color=(0.8, 0.2, 0.2, 1))
+    btn_oui = Button(text="Oui", background_color=(0.15, 0.68, 0.38, 1))
+    boutons.add_widget(btn_annuler)
+    boutons.add_widget(btn_non)
+    boutons.add_widget(btn_oui)
+    layout.add_widget(boutons)
+
+    btn_oui.bind(on_release=lambda inst: callback(True))
+    btn_non.bind(on_release=lambda inst: callback(False))
+    btn_annuler.bind(on_release=lambda inst: callback(None))
+    return layout
+
+
 class FusionScreen(Screen):
     inverser_selection = BooleanProperty(False)
     status_text = StringProperty("Aucune trace chargée.")
@@ -1860,6 +1926,13 @@ class LiveScreen(Screen):
         Clock.schedule_interval(self._traiter_file_points_live, 1.0)
 
         self.profil = ([], [], [], [])
+        # --- Profil de la trace live (rouge), tenu à part de self.profil
+        # (chargée, bleue, ci-dessus) : sert uniquement à calculer la
+        # distance/vitesse du dernier point live pour le bloc
+        # "Informations du point sélectionné" (voir _ajouter_point_live),
+        # sans jamais écraser le profil de la trace chargée sur le
+        # graphique.
+        self.profil_live = ([], [], [], [])
         self.graphe = GrapheProfil()
         self.graphe.afficher_courbe_vitesse = False  # <--- AJOUT : Masque la courbe verte
         self.ids.zone_graphique.add_widget(self.graphe)
@@ -1992,6 +2065,8 @@ class LiveScreen(Screen):
         # b. Les listes internes de la trace live (points, marqueurs) sont vidées.
         self.points_trace_live = []
         self.fichier_gpx_actif_live = None
+        self.profil_live = ([], [], [], [])
+        self.graphe.effacer_donnees_secondaires()
 
         # c. Le tracé rouge et ses marqueurs sur la carte de l'onglet 7 sont supprimés.
         if CARTE_DISPONIBLE and self.map_view is not None:
@@ -2226,9 +2301,10 @@ class LiveScreen(Screen):
 
     def _ajouter_point_live(self, point):
         """Ajoute un nouveau point reçu en direct à la trace de cet
-        onglet : étend le tracé sur la carte (rouge) et le profil
-        altimétrique, et met à jour le bloc d'informations avec ce
-        dernier point."""
+        onglet : étend le tracé sur la carte (rouge) et sa courbe
+        d'altitude sur le graphique (rouge, superposée à celle de la
+        trace chargée en bleu — voir set_donnees_secondaires), et met à
+        jour le bloc d'informations avec ce dernier point."""
         if self.points_trace_live:
             dernier = self.points_trace_live[-1]
             if abs(dernier['lat'] - point['lat']) < 1e-6 and abs(dernier['lon'] - point['lon']) < 1e-6:
@@ -2239,14 +2315,17 @@ class LiveScreen(Screen):
 
         self._afficher_trace_live_sur_carte()
 
-        self.profil = gps_logic.calculer_profil(self.points_trace_live)
-        self.graphe.set_donnees(*self.profil)
+        # self.profil_live est tenu à part de self.profil (trace chargée,
+        # bleue) : ne l'écrase jamais, la courbe et le graphique de la
+        # trace chargée restent affichés pendant tout le suivi live.
+        self.profil_live = gps_logic.calculer_profil(self.points_trace_live)
+        distances_km, distances_ele, altitudes, vitesses_kmh = self.profil_live
+        self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
 
         self.trace_reference_live_text = f"● Trace : {nom_fich}"
         self.trace_reference_live_color = [0.776, 0.157, 0.157, 1]  # #C62828
 
         idx = len(self.points_trace_live) - 1
-        distances_km, _, _, vitesses_kmh = self.profil
         dist = distances_km[idx] if idx < len(distances_km) else 0.0
         vit = vitesses_kmh[idx] if idx < len(vitesses_kmh) else 0.0
         heure = point['time'].strftime("%H:%M:%S") if point.get('time') else "-"
@@ -2256,6 +2335,7 @@ class LiveScreen(Screen):
             f"Distance: {dist:.2f} km  |  Altitude: {ele_txt}  |  "
             f"Heure: {heure}  |  Vitesse: {vit} km/h"
         )
+
 
     def _afficher_trace_live_sur_carte(self):
         """Affiche, sur la carte de cet onglet, la trace suivie EN
@@ -2302,6 +2382,213 @@ class LiveScreen(Screen):
             self.marqueurs_actifs_live.append(m_unique)
 
         self.map_view.center_on(points[-1]['lat'], points[-1]['lon'])
+
+    def on_click_terminer_live(self):
+        """Bouton "Terminer" (onglet 7) :
+        1. Met en pause le traitement des points live (ceux reçus
+           entre-temps par le serveur local restent en file d'attente,
+           sans être perdus, voir _traiter_file_points_live).
+        2. Propose d'enregistrer la trace en direct dans un fichier GPX
+           (Oui / Non / Annuler) :
+           - Annuler : lève la pause, reprend comme si "Terminer"
+             n'avait jamais été cliqué.
+           - Oui : exporte la trace vers DOSSIER_SORTIE — même
+             convention que les autres onglets (Conversion, Fusion,
+             Carte/Découpe) : pas de sélecteur "Enregistrer sous", qui
+             n'existe pas nativement sous Android/Kivy.
+           - Non : n'enregistre rien.
+        3. Tente ensuite d'arrêter l'enregistrement dans GPSLogger (best
+           effort), puis soit invite à fermer GPSLogger manuellement
+           (trace enregistrée), soit réinitialise entièrement l'onglet
+           (trace abandonnée)."""
+        self.pause_traitement_live = True
+        self._maj_statut_live("Suivi en direct mis en pause...", (0.937, 0.424, 0.0, 1))  # #EF6C00
+
+        contenu = _construire_confirmation_oui_non_annuler(
+            "Voulez-vous enregistrer la trace en cours dans un fichier GPX ?",
+            self._reponse_terminer_live,
+        )
+        self._popup_terminer = Popup(title="Terminer le suivi en direct", content=contenu, size_hint=(0.9, 0.4))
+        self._popup_terminer.open()
+
+    def _reponse_terminer_live(self, reponse):
+        """reponse : True (Oui), False (Non) ou None (Annuler) — même
+        convention que messagebox.askyesnocancel() dans la version
+        desktop."""
+        self._popup_terminer.dismiss()
+
+        if reponse is None:
+            # Annuler : on lève la pause, tout reprend normalement.
+            # Message transitoire "Reprise..." puis retour au message
+            # normal une fois le suivi effectivement repris, pour ne
+            # pas rester figé dessus.
+            self.pause_traitement_live = False
+            self._maj_statut_live("Reprise du suivi en direct.", (0.180, 0.490, 0.196, 1))  # #2E7D32
+            Clock.schedule_once(
+                lambda dt: self._maj_statut_live("GPSLogger lancé et enregistrement en cours", (0.180, 0.490, 0.196, 1)),
+                1.5,
+            )
+            return
+
+        if reponse:
+            try:
+                os.makedirs(DOSSIER_SORTIE, exist_ok=True)
+                nom_defaut = (
+                    os.path.basename(self.fichier_gpx_actif_live) if self.fichier_gpx_actif_live
+                    else f"trace_live_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gpx"
+                )
+                chemin_sortie = os.path.join(DOSSIER_SORTIE, nom_defaut)
+                gps_logic.exporter_vers_gpx(self.points_trace_live, chemin_sortie, garder_temps=True)
+                self._maj_statut_live(f"Trace enregistrée : {os.path.basename(chemin_sortie)}", (0.180, 0.490, 0.196, 1))
+            except Exception as e:
+                self._maj_statut_live(f"Erreur lors de l'enregistrement de la trace : {e}", (0.776, 0.157, 0.157, 1))
+        else:
+            self._maj_statut_live("Trace non enregistrée.", (0.33, 0.33, 0.33, 1))
+
+        # --- Arrêt automatique de l'enregistrement (tenté en best
+        # effort, sans détailler le résultat à l'écran : un message
+        # simple et unique suffit). La fermeture complète de GPSLogger
+        # reste, elle, à faire manuellement.
+        self._arreter_gpslogger()
+
+        if reponse:
+            self._maj_statut_live("Enregistrement terminé. Arrêtez GPSLogger manuellement.", (0.937, 0.424, 0.0, 1))  # #EF6C00
+        else:
+            # Trace NON enregistrée : l'utilisateur ne conserve rien de
+            # ce suivi, on repart donc sur un onglet Live entièrement
+            # vierge, prêt pour un nouveau clic sur "Live Pydroid".
+            self._reinitialiser_onglet7_vierge()
+
+    def _arreter_gpslogger(self):
+        """Opération inverse de _lancer_gpslogger_et_demarrer_enregistrement :
+           a) ordonne à GPSLogger d'arrêter l'enregistrement en cours
+              (extra Android "immediatestop", symétrique de
+              "immediatestart") ;
+           b) tente ensuite de fermer l'application (best effort :
+              Android n'autorise pas une appli tierce non-rootée à
+              forcer l'arrêt d'une autre application de façon garantie ;
+              killBackgroundProcesses est tenté, mais peut ne pas
+              fonctionner selon l'appareil/la version d'Android,
+              notamment si GPSLogger est encore au premier plan).
+
+        Renvoie (ok_arret_enregistrement, ok_fermeture, détail). Ne lève
+        jamais d'exception."""
+        ok_stop = False
+        ok_fermeture = False
+        details = []
+
+        # --- a) Arrêt de l'enregistrement (fiable, documenté par GPSLogger) ---
+        try:
+            from jnius import autoclass, cast
+
+            activite_courante = None
+            for chemin_classe in ("org.kivy.android.PythonActivity", "org.kivy.android.PythonService"):
+                try:
+                    activite_courante = autoclass(chemin_classe).mActivity
+                    if activite_courante:
+                        break
+                except Exception:
+                    continue
+
+            if activite_courante is None:
+                raise RuntimeError("activité Android introuvable via pyjnius")
+
+            Intent = autoclass("android.content.Intent")
+            contexte = cast("android.content.Context", activite_courante)
+
+            intent_arret = Intent(self.ACTION_TASKER_GPSLOGGER)
+            intent_arret.setClassName(self.PACKAGE_GPSLOGGER, self.RECEIVER_TASKER_GPSLOGGER)
+            intent_arret.putExtra("immediatestop", True)
+            contexte.sendBroadcast(intent_arret)
+            ok_stop = True
+            details.append("enregistrement arrêté (pyjnius)")
+
+            # --- b) Tentative de fermeture de l'application (best effort) ---
+            try:
+                gestionnaire_activites = cast(
+                    "android.app.ActivityManager",
+                    contexte.getSystemService(activite_courante.ACTIVITY_SERVICE)
+                )
+                gestionnaire_activites.killBackgroundProcesses(self.PACKAGE_GPSLOGGER)
+                ok_fermeture = True
+                details.append("fermeture tentée (killBackgroundProcesses)")
+            except Exception:
+                # On évite volontairement d'afficher le détail technique
+                # brut de l'exception Android (souvent une longue trace
+                # Java/Parcel illisible et sans intérêt pour
+                # l'utilisateur) : un message court et indicatif suffit,
+                # l'essentiel (l'arrêt de l'enregistrement, lui, réussi)
+                # étant déjà remonté à part.
+                details.append("fermeture non autorisée par Android sur cet appareil")
+
+            return ok_stop, ok_fermeture, " / ".join(details)
+        except Exception as e_jnius:
+            print(f"[Live GPSLogger] Échec pyjnius (arrêt) : {e_jnius}")
+            raison_jnius = "méthode pyjnius indisponible"
+
+        # --- Secours : commande Android "am", si disponible ---
+        try:
+            resultat = subprocess.run(
+                [
+                    "am", "broadcast",
+                    "-a", self.ACTION_TASKER_GPSLOGGER,
+                    "-n", f"{self.PACKAGE_GPSLOGGER}/{self.RECEIVER_TASKER_GPSLOGGER}",
+                    "--ez", "immediatestop", "true"
+                ],
+                check=False, timeout=5,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            if resultat.returncode == 0:
+                # La fermeture complète via "am force-stop" nécessite des
+                # privilèges (root/ADB) qu'une appli normale n'a pas :
+                # non tentée ici pour éviter un échec silencieux trompeur.
+                return True, False, "enregistrement arrêté (commande am), fermeture non tentée (nécessite root)"
+            print(f"[Live GPSLogger] Échec commande am (arrêt), code {resultat.returncode} : "
+                  f"{resultat.stderr.decode(errors='ignore').strip()}")
+            raison_am = "commande am indisponible ou refusée"
+        except Exception as e_am:
+            print(f"[Live GPSLogger] Échec commande am (arrêt) : {e_am}")
+            raison_am = "commande am indisponible ou refusée"
+
+        return False, False, f"{raison_jnius} ; {raison_am}"
+
+    def _reinitialiser_onglet7_vierge(self):
+        """Remet l'onglet Live dans son état initial "vierge", identique
+        à celui affiché avant toute trace live : carte sans trace ni
+        marqueur (live ET chargée), profil altimétrique vide, bloc
+        d'informations vidé, messages de statut par défaut.
+
+        Efface aussi la trace "à suivre" chargée manuellement (cyan) sur
+        cet onglet : après un abandon ("Non"), l'onglet doit repartir
+        entièrement vierge, y compris la trace de référence
+        éventuellement chargée avant le suivi live."""
+        self.fichier_gpx_actif_live = None
+
+        # Vide la trace live (chemin + marqueurs sur la carte).
+        self.points_trace_live = []
+        self._afficher_trace_live_sur_carte()
+
+        # Efface également la trace chargée manuellement (cyan).
+        self.points_courants = []
+        self.info_fichier = "Aucune trace chargée."
+        if CARTE_DISPONIBLE and self.map_view is not None:
+            if self.trace_layer is not None:
+                self.map_view.remove_layer(self.trace_layer)
+                self.trace_layer = None
+            for m in self.marqueurs_actifs:
+                self.map_view.remove_marker(m)
+        self.marqueurs_actifs = []
+
+        self.profil = ([], [], [], [])
+        self.profil_live = ([], [], [], [])
+        self.graphe.set_donnees(*self.profil)
+        self.graphe.effacer_donnees_secondaires()
+        self.info_point_text = ""
+
+        self.trace_reference_live_text = "Aucune trace à suivre chargée"
+        self.trace_reference_live_color = [0.33, 0.33, 0.33, 1]
+
+        self._maj_statut_live("Aucune trace active.", (0.33, 0.33, 0.33, 1))
 
 
 class CarteScreen(Screen):
