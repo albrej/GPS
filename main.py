@@ -461,11 +461,11 @@ class GrapheProfil(Widget):
 # (voir README.md + buildozer.spec).
 # ----------------------------------------------------------------------
 if platform == "android":
-    DOSSIER_RACINE = "/storage/emulated/0"
+    DOSSIER_RACINE = "/storage/emulated/0/Bubu_GPS_files"
 else:
     DOSSIER_RACINE = os.path.join(os.path.expanduser("~"), "Desktop", "GPX-Speed_ok")
 
-DOSSIER_SORTIE = os.path.join(DOSSIER_RACINE, "TracesConverties")
+DOSSIER_SORTIE = DOSSIER_RACINE
 
 # Fonctionnalités qui restent à intégrer (affichées dans le menu déroulant
 # avec un écran "à venir" en attendant leur code Python).
@@ -555,7 +555,7 @@ KV = """
                         width: 1.2
                         rectangle: (self.x, self.y, self.width, self.height)
             Label:
-                text: "Conserver les heures / temps de passage"
+                text: "Conserver l'horodatage"
                 color: 0, 0, 0, 1
                 text_size: self.width, self.height
                 halign: "left"
@@ -630,7 +630,7 @@ KV = """
                             width: 1.2
                             rectangle: (self.x, self.y, self.width, self.height)
                 Label:
-                    text: "Inverser le sens de la trace (premier <-> dernier point)"
+                    text: "Inverser le sens de la trace"
                     text_size: self.width, self.height
                     halign: "left"
                     valign: "middle"
@@ -663,7 +663,7 @@ KV = """
                             width: 1.2
                             rectangle: (self.x, self.y, self.width, self.height)
                 Label:
-                    text: "Aucune action sur les numéros (garder tel quel)"
+                    text: "Aucune action sur les numéros"
                     text_size: self.width, self.height
                     halign: "left"
                     valign: "middle"
@@ -688,7 +688,7 @@ KV = """
                             width: 1.2
                             rectangle: (self.x, self.y, self.width, self.height)
                 Label:
-                    text: "Numéroter les points de trace (1, 2, 3...)"
+                    text: "Numéroter les points de trace"
                     text_size: self.width, self.height
                     halign: "left"
                     valign: "middle"
@@ -713,7 +713,7 @@ KV = """
                             width: 1.2
                             rectangle: (self.x, self.y, self.width, self.height)
                 Label:
-                    text: "Tout dénuméroter (conserver tous les points sans numéro)"
+                    text: "Tout dénuméroter"
                     text_size: self.width, self.height
                     halign: "left"
                     valign: "middle"
@@ -738,7 +738,7 @@ KV = """
                             width: 1.2
                             rectangle: (self.x, self.y, self.width, self.height)
                 Label:
-                    text: "Supprimer des numéros précis (et leurs points GPS)"
+                    text: "Supprimer des points GPS (indiquer les numéros)"
                     text_size: self.width, self.height
                     halign: "left"
                     valign: "middle"
@@ -825,10 +825,10 @@ KV = """
                 height: dp(48)
                 spacing: dp(6)
                 Button:
-                    text: "^ Monter"
+                    text: "Monter"
                     on_release: root.monter()
                 Button:
-                    text: "v Descendre"
+                    text: "Descendre"
                     on_release: root.descendre()
                 Button:
                     text: "Retirer"
@@ -854,7 +854,7 @@ KV = """
                             width: 1.2
                             rectangle: (self.x, self.y, self.width, self.height)
                 Label:
-                    text: "Inverser le sens de cette trace (premier <-> dernier point)"
+                    text: "Inverser le sens de la trace sélectionnée"
                     text_size: self.width, self.height
                     halign: "left"
                     valign: "middle"
@@ -1156,15 +1156,15 @@ KV = """
                 color: 0.4, 0.2, 0.5, 1
                 italic: True
 
+# Ligne 1 : Date/Heure et Altitude
             BoxLayout:
                 size_hint_y: None
-                height: dp(215)
+                height: dp(60)
                 spacing: dp(10)
 
                 BoxLayout:
                     orientation: "vertical"
                     spacing: dp(3)
-
                     Label:
                         text: "Date/Heure"
                         size_hint_y: None
@@ -1180,36 +1180,9 @@ KV = """
                         text: root.champ_date
                         on_text: root.champ_date = self.text
 
-                    Label:
-                        text: "Latitude"
-                        size_hint_y: None
-                        height: dp(18)
-                        text_size: self.width, None
-                        halign: "left"
-                        font_size: "11sp"
-                        color: 0, 0, 0, 1
-                    TextInput:
-                        multiline: False
-                        size_hint_y: None
-                        height: dp(36)
-                        text: root.champ_lat
-                        on_text: root.champ_lat = self.text
-
-                    Label:
-                        text: "Longitude"
-                        size_hint_y: None
-                        height: dp(18)
-                        text_size: self.width, None
-                        halign: "left"
-                        font_size: "11sp"
-                        color: 0, 0, 0, 1
-                    TextInput:
-                        multiline: False
-                        size_hint_y: None
-                        height: dp(36)
-                        text: root.champ_lon
-                        on_text: root.champ_lon = self.text
-
+                BoxLayout:
+                    orientation: "vertical"
+                    spacing: dp(3)
                     Label:
                         text: "Altitude"
                         size_hint_y: None
@@ -1225,19 +1198,68 @@ KV = """
                         text: root.champ_alt
                         on_text: root.champ_alt = self.text
 
+            # Ligne 2 : Latitude et Longitude
+            BoxLayout:
+                size_hint_y: None
+                height: dp(60)
+                spacing: dp(10)
+
                 BoxLayout:
-                    size_hint_x: None
-                    width: dp(140)
-                    canvas.before:
-                        Color:
-                            rgba: 0.92, 0.92, 0.92, 1
-                        Rectangle:
-                            pos: self.pos
-                            size: self.size
-                    Image:
-                        source: root.miniature_source
-                        allow_stretch: True
-                        keep_ratio: True
+                    orientation: "vertical"
+                    spacing: dp(3)
+                    Label:
+                        text: "Latitude"
+                        size_hint_y: None
+                        height: dp(18)
+                        text_size: self.width, None
+                        halign: "left"
+                        font_size: "11sp"
+                        color: 0, 0, 0, 1
+                    TextInput:
+                        multiline: False
+                        size_hint_y: None
+                        height: dp(36)
+                        text: root.champ_lat
+                        on_text: root.champ_lat = self.text
+
+                BoxLayout:
+                    orientation: "vertical"
+                    spacing: dp(3)
+                    Label:
+                        text: "Longitude"
+                        size_hint_y: None
+                        height: dp(18)
+                        text_size: self.width, None
+                        halign: "left"
+                        font_size: "11sp"
+                        color: 0, 0, 0, 1
+                    TextInput:
+                        multiline: False
+                        size_hint_y: None
+                        height: dp(36)
+                        text: root.champ_lon
+                        on_text: root.champ_lon = self.text
+
+            # Bloc photo à hauteur dynamique pour repousser correctement les éléments du dessous
+            BoxLayout:
+                size_hint_x: 1
+                size_hint_y: None
+                # La hauteur s'adapte automatiquement à la largeur réelle du parent divisée par le ratio de l'image (4:3)
+                height: self.width / (photo_img.image_ratio if photo_img.image_ratio else (4/3))
+                
+                canvas.before:
+                    Color:
+                        rgba: 0.92, 0.92, 0.92, 1
+                    Rectangle:
+                        pos: self.pos
+                        size: self.size
+
+                Image:
+                    id: photo_img
+                    source: root.miniature_source
+                    size_hint: 1, 1
+                    allow_stretch: True
+                    keep_ratio: True
 
             Button:
                 text: "Situer (Horodatage)"
@@ -1339,7 +1361,7 @@ KV = """
                 height: dp(48)
                 spacing: dp(6)
                 Button:
-                    text: "Charger une trace"
+                    text: "Charger une trace à suivre"
                     background_color: 0.2, 0.6, 0.86, 1
                     on_release: root.ouvrir_selecteur_fichier()
                 ToggleButton:
@@ -1361,7 +1383,7 @@ KV = """
                 height: dp(48)
                 spacing: dp(6)
                 Button:
-                    text: "Live Pydroid"
+                    text: "Live"
                     on_release: root.on_click_live_pydroid()
                     background_color: 0.15, 0.68, 0.38, 1
                 Button:
@@ -1377,7 +1399,6 @@ KV = """
                 halign: "left"
                 valign: "top"
                 italic: True
-                font_size: "12sp"
                 color: root.statut_live_color
 
             Label:
@@ -1388,7 +1409,6 @@ KV = """
                 halign: "left"
                 valign: "top"
                 italic: True
-                font_size: "11sp"
                 color: root.trace_reference_live_color
 
             Label:
@@ -1740,11 +1760,11 @@ def _construire_confirmation_oui_non_annuler(message, callback):
     pour "Annuler"."""
     layout = BoxLayout(orientation="vertical", spacing=12, padding=12)
 
-    lbl_message = Label(text=message, halign="center", valign="middle", color=(0, 0, 0, 1))
+    lbl_message = Label(text=message, halign="center", valign="middle", color=(1, 1, 1, 1))
     lbl_message.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
     layout.add_widget(lbl_message)
 
-    boutons = BoxLayout(size_hint_y=None, height=48, spacing=6)
+    boutons = BoxLayout(size_hint_y=None, height=56, spacing=6)
     btn_annuler = Button(text="Annuler")
     btn_non = Button(text="Non", background_color=(0.8, 0.2, 0.2, 1))
     btn_oui = Button(text="Oui", background_color=(0.15, 0.68, 0.38, 1))
@@ -1883,7 +1903,7 @@ class FusionScreen(Screen):
         Clock.schedule_once(_maj_ui, 0)
 
 class LiveScreen(Screen):
-    info_fichier = StringProperty("Aucune trace chargée.")
+    info_fichier = StringProperty("Aucune trace à suivre chargée.")
     info_point_text = StringProperty("")
     status_text = StringProperty("")
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
@@ -1891,9 +1911,9 @@ class LiveScreen(Screen):
     # --- Bloc statut propre au suivi EN DIRECT (rouge), indépendant de
     # info_fichier/status_text ci-dessus qui concernent la trace
     # "chargée" manuellement (bleue).
-    statut_live_text = StringProperty("Appuyez sur \"Live Pydroid\" pour démarrer le suivi en direct.")
+    statut_live_text = StringProperty("Appuyez sur \"Live\" pour démarrer le suivi en direct.")
     statut_live_color = ListProperty([0.33, 0.33, 0.33, 1])
-    trace_reference_live_text = StringProperty("Aucune trace à suivre chargée")
+    trace_reference_live_text = StringProperty("Aucune trace en cours d'enregistrement.")
     trace_reference_live_color = ListProperty([0.33, 0.33, 0.33, 1])
 
     # Identifiants propres à l'intégration GPSLogger, utilisés uniquement
@@ -1914,7 +1934,7 @@ class LiveScreen(Screen):
 
         # --- Trace EN DIRECT (rouge) : totalement indépendante de la
         # trace "chargée" manuellement ci-dessus (bleue). Réinitialisée
-        # par on_click_live_pydroid() (bouton "Live Pydroid").
+        # par on_click_live_pydroid() (bouton "Live").
         self.pause_traitement_live = False
         self.points_trace_live = []
         self.trace_layer_live = None
@@ -2001,7 +2021,7 @@ class LiveScreen(Screen):
             return
 
         self.points_courants = points
-        self.info_fichier = f"Trace : {os.path.basename(chemin)}\n{len(points)} points."
+        self.info_fichier = f"Trace à suivre : {os.path.basename(chemin)}\n{len(points)} points."
         
         # --- AJOUT : Calcul et affichage du profil (sans courbe de vitesse) ---
         self.profil = gps_logic.calculer_profil(points)
@@ -2055,7 +2075,7 @@ class LiveScreen(Screen):
             self.map_view.zoom = max(2, min(zoom, 18))
         
     def on_click_live_pydroid(self):
-        """Bouton "Live Pydroid" (onglet 7) :
+        """Bouton "Live" (onglet 7) :
         Phase 1 : réinitialise le suivi EN DIRECT (rouge) de cet onglet.
         Phase 2 : démarre (ou confirme déjà démarré) le serveur d'écoute
         live local qui reçoit les points GPS envoyés par GPSLogger.
@@ -2096,7 +2116,7 @@ class LiveScreen(Screen):
         # propre message transitoire ("Serveur d'écoute live démarré
         # sur ...") aussitôt remplacé par celui de la phase 3 ci-dessous,
         # qui doit rester le message final visible après un clic sur
-        # "Live Pydroid".
+        # "Live".
         self.demarrer_serveur_live()
 
         # --- Phase 3 : lancement de GPSLogger + démarrage de l'enregistrement ---
@@ -2449,17 +2469,53 @@ class LiveScreen(Screen):
             return
 
         if reponse:
-            try:
-                os.makedirs(DOSSIER_SORTIE, exist_ok=True)
-                nom_defaut = (
-                    os.path.basename(self.fichier_gpx_actif_live) if self.fichier_gpx_actif_live
-                    else f"trace_live_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gpx"
-                )
-                chemin_sortie = os.path.join(DOSSIER_SORTIE, nom_defaut)
-                gps_logic.exporter_vers_gpx(self.points_trace_live, chemin_sortie, garder_temps=True)
-                self._maj_statut_live(f"Trace enregistrée : {os.path.basename(chemin_sortie)}", (0.180, 0.490, 0.196, 1))
-            except Exception as e:
-                self._maj_statut_live(f"Erreur lors de l'enregistrement de la trace : {e}", (0.776, 0.157, 0.157, 1))
+            # Suggérer un nom par défaut basé sur l'heure actuelle
+            nom_defaut = (
+                os.path.basename(self.fichier_gpx_actif_live) if self.fichier_gpx_actif_live
+                else f"trace_live_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gpx"
+            )
+            
+            # Fonction de callback appelée lors de la validation ou annulation du choix de sauvegarde
+            def _valider_enregistrement(chemin_choisi):
+                self._popup_sauvegarde.dismiss()
+                if not chemin_choisi:
+                    self._maj_statut_live("Enregistrement annulé.", (0.33, 0.33, 0.33, 1))
+                    self._arreter_gpslogger()
+                    return
+                try:
+                    # Si l'utilisateur a sélectionné un dossier, on y ajoute le nom par défaut
+                    if os.path.isdir(chemin_choisi):
+                        chemin_sortie = os.path.join(chemin_choisi, nom_defaut)
+                    else:
+                        chemin_sortie = chemin_choisi
+                        
+                    os.makedirs(os.path.dirname(chemin_sortie), exist_ok=True)
+                    gps_logic.exporter_vers_gpx(self.points_trace_live, chemin_sortie, garder_temps=True)
+                    self._maj_statut_live(f"Trace enregistrée : {os.path.basename(chemin_sortie)}", (0.180, 0.490, 0.196, 1))
+                except Exception as e:
+                    self._maj_statut_live(f"Erreur lors de l'enregistrement de la trace : {e}", (0.776, 0.157, 0.157, 1))
+                
+                self._arreter_gpslogger()
+
+            # Construction de la fenêtre "Enregistrer sous" avec FileChooserListView
+            layout_sauvegarde = BoxLayout(orientation="vertical", spacing=6, padding=6)
+            chooser = FileChooserListView(path=DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE, filters=["*.gpx"])
+            layout_sauvegarde.add_widget(chooser)
+
+            boutons_sv = BoxLayout(size_hint_y=None, height=48, spacing=6)
+            btn_annul_sv = Button(text="Annuler")
+            btn_val_sv = Button(text="Enregistrer", background_color=(0.15, 0.68, 0.38, 1))
+            boutons_sv.add_widget(btn_annul_sv)
+            boutons_sv.add_widget(btn_val_sv)
+            layout_sauvegarde.add_widget(boutons_sv)
+
+            # Liaison des boutons
+            btn_val_sv.bind(on_release=lambda inst: _valider_enregistrement(chooser.selection[0] if chooser.selection else os.path.join(chooser.path, nom_defaut)))
+            btn_annul_sv.bind(on_release=lambda inst: _valider_enregistrement(None))
+
+            self._popup_sauvegarde = Popup(title="Enregistrer sous...", content=layout_sauvegarde, size_hint=(0.95, 0.95))
+            self._popup_sauvegarde.open()
+            return
         else:
             self._maj_statut_live("Trace non enregistrée.", (0.33, 0.33, 0.33, 1))
 
@@ -2474,7 +2530,7 @@ class LiveScreen(Screen):
         else:
             # Trace NON enregistrée : l'utilisateur ne conserve rien de
             # ce suivi, on repart donc sur un onglet Live entièrement
-            # vierge, prêt pour un nouveau clic sur "Live Pydroid".
+            # vierge, prêt pour un nouveau clic sur "Live".
             self._reinitialiser_onglet7_vierge()
 
     def _arreter_gpslogger(self):
