@@ -168,6 +168,18 @@ class GrapheProfil(Widget):
     dans la version desktop). Un tap dans la zone du graphique appelle
     callback_clic(distance_km_tapee)."""
 
+    def _calculer_distance_depuis_touch(self, touch):
+        """Méthode utilitaire pour calculer la distance km depuis la position du toucher."""
+        zx, zy, zw, zh = self._zone_graphique()
+        decalage_x = dp(42)
+        zx_courbe = zx + decalage_x
+        zw_courbe = max(1.0, zw - decalage_x)
+    
+        d_min, d_max = self.distances_km[0], self.distances_km[-1]
+        rel_x = touch.x - zx_courbe
+        ratio = max(0.0, min(1.0, rel_x / zw_courbe))
+        return d_min + ratio * (d_max - d_min)
+    
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.distances_km = []
@@ -438,22 +450,36 @@ class GrapheProfil(Widget):
     def on_touch_down(self, touch):
         if not self.collide_point(*touch.pos) or not self.distances_km:
             return super().on_touch_down(touch)
-    
-        zx, zy, zw, zh = self._zone_graphique()
-        decalage_x = dp(42)
-        zx_courbe = zx + decalage_x
-        zw_courbe = max(1.0, zw - decalage_x)
-    
-        d_min, d_max = self.distances_km[0], self.distances_km[-1]
         
-        # Ratio du clic par rapport à la zone utile de la courbe
-        rel_x = touch.x - zx_courbe
-        ratio = max(0.0, min(1.0, rel_x / zw_courbe))
-        distance_km_tapee = d_min + ratio * (d_max - d_min)
-    
+        # Capture le toucher pour suivre le glissement
+        touch.grab(self)
+        
+        distance_km_tapee = self._calculer_distance_depuis_touch(touch)
+        self.set_selection(distance_km_tapee)  # Met à jour le curseur visuel
         if self.callback_clic:
-            self.callback_clic(distance_km_tapee)
+            self.callback_clic(distance_km_tapee)  # Met à jour la carte dès l'appui
         return True
+
+    def on_touch_move(self, touch):
+        if touch.grab_current is self:
+            distance_km_tapee = self._calculer_distance_depuis_touch(touch)
+            self.set_selection(distance_km_tapee)  # Suit le mouvement du curseur
+            if self.callback_clic:
+                self.callback_clic(distance_km_tapee)  # Met à jour la carte en temps réel pendant le glissement
+            return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        if touch.grab_current is self:
+            touch.ungrab(self)
+            
+            distance_km_tapee = self._calculer_distance_depuis_touch(touch)
+            self.set_selection(distance_km_tapee)
+            if self.callback_clic:
+                self.callback_clic(distance_km_tapee)  # Assure la position finale au lâcher
+            return True
+        return super().on_touch_up(touch)
+
 
 # ----------------------------------------------------------------------
 # Dossier racine utilisé pour parcourir/enregistrer les fichiers.
@@ -1371,7 +1397,7 @@ KV = """
                 height: dp(48)
                 spacing: dp(6)
                 Button:
-                    text: "Charger une trace à suivre"
+                    text: "Charger une trace"
                     background_color: 0.2, 0.6, 0.86, 1
                     on_release: root.ouvrir_selecteur_fichier()
                 ToggleButton:
@@ -2031,7 +2057,7 @@ class LiveScreen(Screen):
             return
 
         self.points_courants = points
-        self.info_fichier = f"Trace à suivre : {os.path.basename(chemin)}\n{len(points)} points."
+        self.info_fichier = f"Trace à suivre : {os.path.basename(chemin)}."
         
         # --- AJOUT : Calcul et affichage du profil (sans courbe de vitesse) ---
         self.profil = gps_logic.calculer_profil(points)
@@ -3113,7 +3139,7 @@ class PhotosScreen(Screen):
 
         self.fichier_trace = chemin
         self.points_trace = points
-        self.info_trace = f"Trace : {os.path.basename(chemin)} ({len(points)} pts)"
+        self.info_trace = f"Trace : {os.path.basename(chemin)}."
         self._afficher_trace_sur_carte(points)
 
     def ouvrir_selecteur_photo(self):
