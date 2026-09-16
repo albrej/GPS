@@ -2131,6 +2131,13 @@ class LiveScreen(Screen):
         self.fichier_gpx_actif_live = None
         self.profil_live = ([], [], [], [])
         self.graphe.effacer_donnees_secondaires()
+        
+        # --- AJOUT : Vider la file d'attente pour purger les points obsolètes ---
+        while not self.file_points_live.empty():
+            try:
+                self.file_points_live.get_nowait()
+            except queue.Empty:
+                break
 
         # c. Le tracé rouge et ses marqueurs sur la carte de l'onglet 7 sont supprimés.
         if CARTE_DISPONIBLE and self.map_view is not None:
