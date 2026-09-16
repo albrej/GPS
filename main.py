@@ -2166,7 +2166,7 @@ class LiveScreen(Screen):
         ok, message = self._lancer_gpslogger_et_demarrer_enregistrement()
         if ok:
             self._maj_statut_live(
-                f"GPSLogger lancé et enregistrement en cours ({len(self.points_trace_live)} points).",
+                "GPSLogger lancé et enregistrement en cours.",
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             )
         else:
