@@ -186,6 +186,7 @@ class GrapheProfil(Widget):
         self.distance_selection = None
         self.callback_clic = None
         self.afficher_courbe_vitesse = True  # <--- AJOUT ICI
+        self.afficher_curseur = True
         self.bind(pos=self._redessiner, size=self._redessiner)
 
     def set_donnees(self, distances_km, distances_ele, altitudes, vitesses_kmh):
@@ -415,10 +416,16 @@ class GrapheProfil(Widget):
                         Color(*VERT)
                         KivyLine(points=points_vit, width=1.6)
 
-            if self.distance_selection is not None:
+            if self.afficher_curseur and self.distance_selection is not None:
                 cx = x_ecran(self.distance_selection)
                 Color(0.85, 0.1, 0.1, 0.9)
-                KivyLine(points=[cx, zy, cx, zy + zh], width=1.4, dash_length=6, dash_offset=4)
+                longueur_trait = dp(5)
+                longueur_espace = dp(4)
+                y = zy
+                while y < zy + zh:
+                    y_fin = min(y + longueur_trait, zy + zh)
+                    KivyLine(points=[cx, y, cx, y_fin], width=1.4)
+                    y += longueur_trait + longueur_espace
 
             self._poser_texte("Distance (km)", zx + zw / 2, self.y, GRIS_TEXTE,
                                taille_sp=10, centre_h=True)
@@ -1935,6 +1942,7 @@ class LiveScreen(Screen):
         self.profil_live = ([], [], [], [])
         self.graphe = GrapheProfil()
         self.graphe.afficher_courbe_vitesse = False  # <--- AJOUT : Masque la courbe verte
+        self.graphe.afficher_curseur = False  # aucun point n'est sélectionnable sur ce graphique
         self.ids.zone_graphique.add_widget(self.graphe)
 
         if CARTE_DISPONIBLE:
