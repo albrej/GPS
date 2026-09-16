@@ -457,15 +457,25 @@ class GrapheProfil(Widget):
 
 # ----------------------------------------------------------------------
 # Dossier racine utilisé pour parcourir/enregistrer les fichiers.
-# Sur Android, nécessite la permission "Accès à tous les fichiers"
-# (voir README.md + buildozer.spec).
+# Sur Android, cible directement la carte SD physique "2EBA-9AD9".
 # ----------------------------------------------------------------------
 if platform == "android":
-    DOSSIER_RACINE = "/storage/emulated/0/Bubu_GPS_files"
+    # Le chargement pointe toujours vers les Téléchargements sur Android
+    DOSSIER_CHARGEMENT = "/storage/emulated/0/Download/"
+    
+    # L'enregistrement conserve votre logique initiale avec la carte SD
+    sd_physique = "/storage/2EBA-9AD9"
+    # On vérifie si la carte SD est bien montée/présente, sinon on bascule sur la mémoire interne
+    if os.path.exists(sd_physique):
+        DOSSIER_SORTIE = os.path.join(sd_physique, "Bubu_GPS_files")
+    else:
+        DOSSIER_SORTIE = "/storage/emulated/0/Bubu_GPS_files"
 else:
-    DOSSIER_RACINE = os.path.join(os.path.expanduser("~"), "Desktop", "GPX-Speed_ok")
+    DOSSIER_CHARGEMENT = os.path.join(os.path.expanduser("~"), "Desktop", "GPX-Speed_ok")
+    DOSSIER_SORTIE = DOSSIER_CHARGEMENT
 
-DOSSIER_SORTIE = DOSSIER_RACINE
+# Rétrocompatibilité si d'autres parties du code utilisent encore DOSSIER_RACINE
+DOSSIER_RACINE = DOSSIER_CHARGEMENT
 
 # Fonctionnalités qui restent à intégrer (affichées dans le menu déroulant
 # avec un écran "à venir" en attendant leur code Python).

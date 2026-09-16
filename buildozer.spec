@@ -32,6 +32,9 @@ fullscreen = 0
 # après l'installation (voir README.md).
 android.permissions = READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE,INTERNET,ACCESS_FINE_LOCATION,ACCESS_COARSE_LOCATION
 
+# Demande d'accès complet au stockage pour les versions récentes d'Android
+android.scoped_storage = False
+
 # Redmi Note 15 Pro (2026) : Android récent -> viser une API cible actuelle.
 # android.ndk : le NDK auto-téléchargé le plus récent (r28c) embarque un
 # Clang trop strict pour le code SDL2/OpenGL de Kivy 2.3.0 (voir README).
