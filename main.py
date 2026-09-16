@@ -38,6 +38,7 @@ from kivy.core.text import Label as CoreLabel
 from kivy.uix.widget import Widget
 from kivy.properties import StringProperty, BooleanProperty, ListProperty, ObjectProperty
 from kivy.utils import platform
+from kivy.uix.textinput import TextInput
 
 import gps_logic
 
@@ -1790,20 +1791,38 @@ def _construire_selecteur_fichier_photo(callback):
 
 
 def _construire_confirmation_oui_non_annuler(message, callback):
-    """Boîte de dialogue à 3 réponses (Oui / Non / Annuler), même
-    convention que messagebox.askyesnocancel() dans la version desktop :
-    callback(True) pour "Oui", callback(False) pour "Non", callback(None)
-    pour "Annuler"."""
-    layout = BoxLayout(orientation="vertical", spacing=12, padding=12)
+    """Boîte de dialogue à 3 réponses (Oui / Non / Annuler), harmonisée
+    avec les standards graphiques Android de l'application."""
+    layout = BoxLayout(orientation="vertical", spacing=dp(12), padding=dp(16))
 
-    lbl_message = Label(text=message, halign="center", valign="middle", color=(1, 1, 1, 1))
+    lbl_message = Label(
+        text=message,
+        halign="center",
+        valign="middle",
+        color=(0, 0, 0, 1),
+        font_size="15sp"
+    )
     lbl_message.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
     layout.add_widget(lbl_message)
 
-    boutons = BoxLayout(size_hint_y=None, height=56, spacing=6)
-    btn_annuler = Button(text="Annuler")
-    btn_non = Button(text="Non", background_color=(0.8, 0.2, 0.2, 1))
-    btn_oui = Button(text="Oui", background_color=(0.15, 0.68, 0.38, 1))
+    boutons = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+    
+    btn_annuler = Button(
+        text="Annuler",
+        background_color=(0.7, 0.7, 0.7, 1),
+        color=(0, 0, 0, 1)
+    )
+    btn_non = Button(
+        text="Non", 
+        background_color=(0.8, 0.2, 0.2, 1),
+        color=(1, 1, 1, 1)
+    )
+    btn_oui = Button(
+        text="Oui", 
+        background_color=(0.15, 0.68, 0.38, 1),
+        color=(1, 1, 1, 1)
+    )
+    
     boutons.add_widget(btn_annuler)
     boutons.add_widget(btn_non)
     boutons.add_widget(btn_oui)
@@ -1814,6 +1833,32 @@ def _construire_confirmation_oui_non_annuler(message, callback):
     btn_annuler.bind(on_release=lambda inst: callback(None))
     return layout
 
+def _construire_popup_saisie_nom(nom_defaut, callback):
+    """Boîte de dialogue permettant de modifier le nom du fichier par défaut."""
+    layout = BoxLayout(orientation="vertical", spacing=12, padding=12)
+
+    lbl = Label(text="Nom du fichier de sortie :", size_hint_y=None, height=dp(30), halign="left")
+    lbl.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
+    layout.add_widget(lbl)
+
+    champ_saisie = TextInput(
+        text=nom_defaut,
+        multiline=False,
+        size_hint_y=None,
+        height=dp(44)
+    )
+    layout.add_widget(champ_saisie)
+
+    boutons = BoxLayout(size_hint_y=None, height=56, spacing=6)
+    btn_annuler = Button(text="Annuler")
+    btn_valider = Button(text="Enregistrer", background_color=(0.15, 0.68, 0.38, 1))
+    boutons.add_widget(btn_annuler)
+    boutons.add_widget(btn_valider)
+    layout.add_widget(boutons)
+
+    btn_valider.bind(on_release=lambda inst: callback(champ_saisie.text.strip()))
+    btn_annuler.bind(on_release=lambda inst: callback(None))
+    return layout
 
 class FusionScreen(Screen):
     inverser_selection = BooleanProperty(False)
@@ -1947,9 +1992,9 @@ class LiveScreen(Screen):
     # --- Bloc statut propre au suivi EN DIRECT (rouge), indépendant de
     # info_fichier/status_text ci-dessus qui concernent la trace
     # "chargée" manuellement (bleue).
-    statut_live_text = StringProperty("Appuyez sur \"Live\" pour démarrer le suivi en direct.")
+    statut_live_text = StringProperty("Aucune trace en cours d'enregistrement (GPSLogger).")
     statut_live_color = ListProperty([0.33, 0.33, 0.33, 1])
-    trace_reference_live_text = StringProperty("Aucune trace en cours d'enregistrement.")
+    trace_reference_live_text = StringProperty("Aucune trace en cours d'enregistrement (Bubu GPS).")
     trace_reference_live_color = ListProperty([0.33, 0.33, 0.33, 1])
 
     # Identifiants propres à l'intégration GPSLogger, utilisés uniquement
@@ -2166,7 +2211,7 @@ class LiveScreen(Screen):
         ok, message = self._lancer_gpslogger_et_demarrer_enregistrement()
         if ok:
             self._maj_statut_live(
-                "GPSLogger lancé et enregistrement en cours.",
+                f"Live GPSlogger... ({len(self.points_trace_live)} points)",
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             )
         else:
@@ -2385,7 +2430,6 @@ class LiveScreen(Screen):
                 return  # Point identique au dernier déjà affiché (doublon) : ignoré.
 
         self.points_trace_live.append(point)
-        nom_fich = os.path.basename(self.fichier_gpx_actif_live) if self.fichier_gpx_actif_live else "Live..."
 
         self._afficher_trace_live_sur_carte()
 
@@ -2396,10 +2440,10 @@ class LiveScreen(Screen):
         distances_km, distances_ele, altitudes, vitesses_kmh = self.profil_live
         self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
 
-        self.trace_reference_live_text = f"● Trace : {nom_fich} ({len(self.points_trace_live)} points)"
+        self.trace_reference_live_text = f"Live Bubu GPS... ({len(self.points_trace_live)} points)"
         self.trace_reference_live_color = [0.776, 0.157, 0.157, 1]  # #C62828
         self._maj_statut_live(
-            f"GPSLogger lancé et enregistrement en cours ({len(self.points_trace_live)} points).",
+            f"Live GPSlogger... ({len(self.points_trace_live)} points)",
             (0.180, 0.490, 0.196, 1)  # #2E7D32
         )
 
@@ -2496,15 +2540,22 @@ class LiveScreen(Screen):
         self._popup_terminer.dismiss()
 
         if reponse is None:
-            # Annuler : on lève la pause, tout reprend normalement.
-            # Message transitoire "Reprise..." puis retour au message
-            # normal une fois le suivi effectivement repris, pour ne
-            # pas rester figé dessus.
+            # Annuler : on lève la pause. Si aucun point live n'a jamais
+            # été reçu (GPSLogger éteint, ou jamais démarré), il n'y a
+            # rien à "reprendre" : on affiche simplement le message
+            # neutre par défaut, sans prétendre à tort qu'un
+            # enregistrement est en cours.
             self.pause_traitement_live = False
+            if not self.points_trace_live:
+                self.trace_reference_live_text = "Aucune trace en cours d'enregistrement (Bubu GPS)."
+                self.trace_reference_live_color = [0.33, 0.33, 0.33, 1]
+                self._maj_statut_live("Aucune trace en cours d'enregistrement (GPSLogger).", (0.33, 0.33, 0.33, 1))
+                return
+
             self._maj_statut_live("Reprise du suivi en direct.", (0.180, 0.490, 0.196, 1))  # #2E7D32
             Clock.schedule_once(
                 lambda dt: self._maj_statut_live(
-                    f"GPSLogger lancé et enregistrement en cours ({len(self.points_trace_live)} points).",
+                    f"Live GPSlogger... ({len(self.points_trace_live)} points)",
                     (0.180, 0.490, 0.196, 1)  # #2E7D32
                 ),
                 1.5,
@@ -2517,64 +2568,73 @@ class LiveScreen(Screen):
                 os.path.basename(self.fichier_gpx_actif_live) if self.fichier_gpx_actif_live
                 else f"trace_live_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gpx"
             )
-            
-            # Fonction de callback appelée lors de la validation ou annulation du choix de sauvegarde
-            def _valider_enregistrement(chemin_choisi):
+
+            # Fonction de callback appelée lors de la validation ou annulation du choix du nom
+            def _valider_enregistrement_nom(nouveau_nom):
                 self._popup_sauvegarde.dismiss()
-                if not chemin_choisi:
+                
+                # Si l'utilisateur a annulé la saisie du nom
+                if not nouveau_nom:
+                    if not self.points_trace_live:
+                        self.trace_reference_live_text = "Aucune trace en cours d'enregistrement (Bubu GPS)."
+                        self.trace_reference_live_color = [0.33, 0.33, 0.33, 1]
                     self._maj_statut_live("Enregistrement annulé.", (0.33, 0.33, 0.33, 1))
                     self._arreter_gpslogger()
                     return
+
+                # S'assurer que le fichier se termine bien par .gpx
+                if not nouveau_nom.lower().endswith(".gpx"):
+                    nouveau_nom += ".gpx"
+
                 try:
-                    # Si l'utilisateur a sélectionné un dossier, on y ajoute le nom par défaut
-                    if os.path.isdir(chemin_choisi):
-                        chemin_sortie = os.path.join(chemin_choisi, nom_defaut)
-                    else:
-                        chemin_sortie = chemin_choisi
-                        
-                    os.makedirs(os.path.dirname(chemin_sortie), exist_ok=True)
+                    # Construction du chemin final dans le dossier de sortie habituel
+                    dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
+                    os.makedirs(dossier_cible, exist_ok=True)
+                    chemin_sortie = os.path.join(dossier_cible, nouveau_nom)
+
                     gps_logic.exporter_vers_gpx(self.points_trace_live, chemin_sortie, garder_temps=True)
                     self._maj_statut_live(f"Trace enregistrée : {os.path.basename(chemin_sortie)}", (0.180, 0.490, 0.196, 1))
                 except Exception as e:
                     self._maj_statut_live(f"Erreur lors de l'enregistrement de la trace : {e}", (0.776, 0.157, 0.157, 1))
-                
+
                 self._arreter_gpslogger()
+                self._maj_statut_live("Enregistrement terminé. Arrêtez GPSLogger manuellement.", (0.937, 0.424, 0.0, 1)) # #EF6C00
 
-            # Construction de la fenêtre "Enregistrer sous" avec FileChooserListView
-            layout_sauvegarde = BoxLayout(orientation="vertical", spacing=6, padding=6)
-            chooser = FileChooserListView(path=DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE, filters=["*.gpx"])
-            layout_sauvegarde.add_widget(chooser)
+            # Construction de la boîte de dialogue simple avec un TextInput pour le nom
+            layout_sauvegarde = BoxLayout(orientation="vertical", spacing=12, padding=12)
 
-            boutons_sv = BoxLayout(size_hint_y=None, height=48, spacing=6)
+            lbl = Label(text="Nom du fichier de sortie :", size_hint_y=None, height=dp(30), halign="left")
+            lbl.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
+            layout_sauvegarde.add_widget(lbl)
+
+            champ_saisie = TextInput(
+                text=nom_defaut,
+                multiline=False,
+                size_hint_y=None,
+                height=dp(44)
+            )
+            layout_sauvegarde.add_widget(champ_saisie)
+
+            boutons_sv = BoxLayout(size_hint_y=None, height=dp(48), spacing=6)
             btn_annul_sv = Button(text="Annuler")
             btn_val_sv = Button(text="Enregistrer", background_color=(0.15, 0.68, 0.38, 1))
             boutons_sv.add_widget(btn_annul_sv)
             boutons_sv.add_widget(btn_val_sv)
             layout_sauvegarde.add_widget(boutons_sv)
 
-            # Liaison des boutons
-            btn_val_sv.bind(on_release=lambda inst: _valider_enregistrement(chooser.selection[0] if chooser.selection else os.path.join(chooser.path, nom_defaut)))
-            btn_annul_sv.bind(on_release=lambda inst: _valider_enregistrement(None))
+            # Liaison des boutons du pop-up de saisie
+            btn_val_sv.bind(on_release=lambda inst: _valider_enregistrement_nom(champ_saisie.text.strip()))
+            btn_annul_sv.bind(on_release=lambda inst: _valider_enregistrement_nom(None))
 
-            self._popup_sauvegarde = Popup(title="Enregistrer sous...", content=layout_sauvegarde, size_hint=(0.95, 0.95))
+            self._popup_sauvegarde = Popup(title="Nommer le fichier GPX", content=layout_sauvegarde, size_hint=(0.9, 0.45))
             self._popup_sauvegarde.open()
             return
         else:
             self._maj_statut_live("Trace non enregistrée.", (0.33, 0.33, 0.33, 1))
 
-        # --- Arrêt automatique de l'enregistrement (tenté en best
-        # effort, sans détailler le résultat à l'écran : un message
-        # simple et unique suffit). La fermeture complète de GPSLogger
-        # reste, elle, à faire manuellement.
+        # --- Arrêt automatique de l'enregistrement (si "Non" a été choisi)
         self._arreter_gpslogger()
-
-        if reponse:
-            self._maj_statut_live("Enregistrement terminé. Arrêtez GPSLogger manuellement.", (0.937, 0.424, 0.0, 1))  # #EF6C00
-        else:
-            # Trace NON enregistrée : l'utilisateur ne conserve rien de
-            # ce suivi, on repart donc sur un onglet Live entièrement
-            # vierge, prêt pour un nouveau clic sur "Live".
-            self._reinitialiser_onglet7_vierge()
+        self._reinitialiser_onglet7_vierge()
 
     def _arreter_gpslogger(self):
         """Opération inverse de _lancer_gpslogger_et_demarrer_enregistrement :
@@ -2687,7 +2747,7 @@ class LiveScreen(Screen):
 
         # Efface également la trace chargée manuellement (cyan).
         self.points_courants = []
-        self.info_fichier = "Aucune trace chargée."
+        self.info_fichier = "Aucune trace à suivre chargée."
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.trace_layer is not None:
                 self.map_view.remove_layer(self.trace_layer)
@@ -2702,10 +2762,10 @@ class LiveScreen(Screen):
         self.graphe.effacer_donnees_secondaires()
         self.info_point_text = ""
 
-        self.trace_reference_live_text = "Aucune trace à suivre chargée"
+        self.trace_reference_live_text = "Aucune trace en cours d'enregistrement (Bubu GPS)."
         self.trace_reference_live_color = [0.33, 0.33, 0.33, 1]
 
-        self._maj_statut_live("Aucune trace active.", (0.33, 0.33, 0.33, 1))
+        self._maj_statut_live("Aucune trace en cours d'enregistrement (GPSLogger).", (0.33, 0.33, 0.33, 1))
 
 
 class CarteScreen(Screen):
