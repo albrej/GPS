@@ -2102,7 +2102,10 @@ class LiveScreen(Screen):
         # --- Phase 3 : lancement de GPSLogger + démarrage de l'enregistrement ---
         ok, message = self._lancer_gpslogger_et_demarrer_enregistrement()
         if ok:
-            self._maj_statut_live("GPSLogger lancé et enregistrement en cours", (0.180, 0.490, 0.196, 1))  # #2E7D32
+            self._maj_statut_live(
+                f"GPSLogger lancé et enregistrement en cours ({len(self.points_trace_live)} points).",
+                (0.180, 0.490, 0.196, 1)  # #2E7D32
+            )
         else:
             self._maj_statut_live(
                 f"Automatisation GPSLogger indisponible ({message}). "
@@ -2330,8 +2333,12 @@ class LiveScreen(Screen):
         distances_km, distances_ele, altitudes, vitesses_kmh = self.profil_live
         self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
 
-        self.trace_reference_live_text = f"● Trace : {nom_fich}"
+        self.trace_reference_live_text = f"● Trace : {nom_fich} ({len(self.points_trace_live)} points)"
         self.trace_reference_live_color = [0.776, 0.157, 0.157, 1]  # #C62828
+        self._maj_statut_live(
+            f"GPSLogger lancé et enregistrement en cours ({len(self.points_trace_live)} points).",
+            (0.180, 0.490, 0.196, 1)  # #2E7D32
+        )
 
         idx = len(self.points_trace_live) - 1
         dist = distances_km[idx] if idx < len(distances_km) else 0.0
@@ -2433,7 +2440,10 @@ class LiveScreen(Screen):
             self.pause_traitement_live = False
             self._maj_statut_live("Reprise du suivi en direct.", (0.180, 0.490, 0.196, 1))  # #2E7D32
             Clock.schedule_once(
-                lambda dt: self._maj_statut_live("GPSLogger lancé et enregistrement en cours", (0.180, 0.490, 0.196, 1)),
+                lambda dt: self._maj_statut_live(
+                    f"GPSLogger lancé et enregistrement en cours ({len(self.points_trace_live)} points).",
+                    (0.180, 0.490, 0.196, 1)  # #2E7D32
+                ),
                 1.5,
             )
             return
