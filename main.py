@@ -77,8 +77,22 @@ if CARTE_DISPONIBLE:
         sans zoom tactile ni pincement."""
     
         PAS_DEPLACEMENT_PX = 60
+        freeze_callback = ObjectProperty(None, allownone=True)
     
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.freeze_actif = False  # <--- Assure l'initialisation de l'attribut
+
         def on_touch_down(self, touch):
+            # Le double-tap déclenche le freeze/unfreeze dans tous les cas
+            if touch.is_double_tap:
+                if self.freeze_callback:
+                    self.freeze_callback()
+                return True
+    
+            if getattr(self, 'freeze_actif', False):
+                return True  # Bloque tous les clics et l'amorce de glisser sur la carte en mode freeze
+                
             bouton = getattr(touch, "button", "")
             if bouton in ("scrollup", "scrolldown", "scrollleft", "scrollright"):
                 dx = dy = 0
@@ -98,12 +112,23 @@ if CARTE_DISPONIBLE:
             return super().on_touch_down(touch)
     
         def on_touch_move(self, touch):
+            # ---> Bloque net le glisser-déposer (pan) de la carte si le gel est actif
+            if getattr(self, 'freeze_actif', False):
+                return True
+                
             # Empêche le zoom par pincement en neutralisant l'effet multi-touch de la carte
             if touch.grab_current is not self and len(getattr(self, 'touches', [])) > 1:
                 return True
             return super().on_touch_move(touch)
     
+        def on_touch_up(self, touch):
+            if getattr(self, 'freeze_actif', False):
+                return True
+            return super().on_touch_up(touch)
+
         def scale_at(self, *args, **kwargs):
+            if getattr(self, 'freeze_actif', False):
+                return
             # Désactive l'ajustement d'échelle par pincement tactile
             return
 
@@ -449,6 +474,9 @@ class GrapheProfil(Widget):
                 self._poser_texte("Vitesse (km/h)", zx + zw - tex_v.width, zy + zh + dp(4), VERT, taille_sp=9)
 
     def on_touch_down(self, touch):
+        # Si un parent gèle l'interaction (ex: LiveScreen en mode freeze)
+        if hasattr(self.parent, 'parent') and getattr(self.parent.parent, 'freeze_actif', False):
+            return True
         if not self.collide_point(*touch.pos) or not self.distances_km:
             return super().on_touch_down(touch)
         
@@ -1399,18 +1427,21 @@ KV = """
                 spacing: dp(6)
                 Button:
                     text: "Charger une trace"
+                    disabled: root.freeze_actif
                     background_color: 0.2, 0.6, 0.86, 1
                     on_release: root.ouvrir_selecteur_fichier()
                 ToggleButton:
                     text: "Satellite"
                     group: "vue_carte_live"
                     state: "down"
+                    disabled: root.freeze_actif
                     size_hint_x: None
                     width: dp(100)
                     on_state: if self.state == "down": root.changer_vue_carte("satellite")
                 ToggleButton:
                     text: "Plan"
                     group: "vue_carte_live"
+                    disabled: root.freeze_actif
                     size_hint_x: None
                     width: dp(90)
                     on_state: if self.state == "down": root.changer_vue_carte("plan")
@@ -1421,10 +1452,12 @@ KV = """
                 spacing: dp(6)
                 Button:
                     text: "Live"
+                    disabled: root.freeze_actif
                     on_release: root.on_click_live_pydroid()
                     background_color: 0.15, 0.68, 0.38, 1
                 Button:
                     text: "Terminer"
+                    disabled: root.freeze_actif
                     on_release: root.on_click_terminer_live()
                     background_color: 0.8, 0.2, 0.2, 1
 
@@ -1459,6 +1492,7 @@ KV = """
 
                 Button:
                     text: "-"
+                    disabled: root.freeze_actif
                     font_size: "24sp"
                     bold: True
                     color: 0, 0, 0, 1
@@ -1478,6 +1512,7 @@ KV = """
                             
                 Button:
                     text: "+"
+                    disabled: root.freeze_actif
                     font_size: "24sp"
                     bold: True
                     color: 0, 0, 0, 1
@@ -1974,6 +2009,7 @@ class FusionScreen(Screen):
         Clock.schedule_once(_maj_ui, 0)
 
 class LiveScreen(Screen):
+    freeze_actif = BooleanProperty(False)
     info_fichier = StringProperty("Aucune trace à suivre chargée.")
     info_point_text = StringProperty("")
     status_text = StringProperty("")
@@ -2039,6 +2075,7 @@ class LiveScreen(Screen):
 
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
+            self.map_view.freeze_callback = self.basculer_freeze
             self.ids.map_container.add_widget(self.map_view)
         else:
             self.ids.map_container.add_widget(Label(
@@ -2836,7 +2873,37 @@ class LiveScreen(Screen):
         # S'assure que le toucher est toujours actif
         if touch.ud.get('long_press_clock'):
             self.ouvrir_camera_android()
-            
+
+    def basculer_freeze(self):
+        # Bascule l'état du gel
+        self.freeze_actif = not self.freeze_actif
+        
+        if getattr(self.map_view, 'freeze_actif', None) is not None:
+            self.map_view.freeze_actif = self.freeze_actif
+
+        # --- MODIFICATION ICI : Au dégel de l'onglet ---
+        if not self.freeze_actif:
+            if self.points_trace_live:
+                # Récupère le dernier point enregistré
+                dernier_point = self.points_trace_live[-1]
+                idx = len(self.points_trace_live) - 1
+                
+                # Recalcule les données du profil pour s'assurer d'avoir les bonnes valeurs à jour
+                distances_km, _, _, vitesses_kmh = self.profil_live
+                
+                dist = distances_km[idx] if idx < len(distances_km) else 0.0
+                vit = vitesses_kmh[idx] if idx < len(vitesses_kmh) else 0.0
+                heure = dernier_point['time'].strftime("%H:%M:%S") if dernier_point.get('time') else "-"
+                ele_txt = f"{dernier_point['ele']} m" if dernier_point.get('ele') is not None else "-"
+                
+                # Met à jour la première ligne de texte séquentiel avec le nouveau compte de points mis à jour
+                self.info_point_text = (
+                    f"Point {idx + 1} (live)  |  GPS: {dernier_point['lat']:.5f}, {dernier_point['lon']:.5f}\n"
+                    f"Distance: {dist:.2f} km  |  Altitude: {ele_txt}  |  "
+                    f"Heure: {heure}  |  Vitesse: {vit} km/h"
+                )
+            else:
+                self.info_point_text = "Aucun point live enregistré."
             
 class CarteScreen(Screen):
     fichier_source = StringProperty("")
@@ -3122,7 +3189,6 @@ class CarteScreen(Screen):
             self.status_color = couleur
 
         Clock.schedule_once(_maj_ui, 0)
-
 
 class LigneStatistique(BoxLayout):
     libelle = StringProperty("")
@@ -3448,15 +3514,15 @@ class OutilsTracesApp(App):
             self.dropdown.add_widget(btn)
             self._boutons_menu[nom_ecran] = btn
 
-        btn_menu = Button(text="Menu", size_hint_x=None, width=dp(110))
-        btn_menu.bind(on_release=self._ouvrir_menu)
-        barre.add_widget(btn_menu)
+        self.btn_menu = Button(text="Menu", size_hint_x=None, width=dp(110))
+        self.btn_menu.bind(on_release=self._ouvrir_menu)
+        barre.add_widget(self.btn_menu)
 
         barre.add_widget(Label(text="Bubu GPS", bold=True, color=(1, 1, 1, 1)))
 
-        btn_quitter = Button(text="Quitter", size_hint_x=None, width=dp(110))
-        btn_quitter.bind(on_release=lambda inst: self.stop())
-        barre.add_widget(btn_quitter)
+        self.btn_quitter = Button(text="Quitter", size_hint_x=None, width=dp(110))
+        self.btn_quitter.bind(on_release=lambda inst: self.stop())
+        barre.add_widget(self.btn_quitter)
 
         from kivy.graphics import Color, Rectangle
         with barre.canvas.before:
@@ -3495,7 +3561,31 @@ class OutilsTracesApp(App):
     def _changer_ecran(self, nom_ecran):
         self.dropdown.dismiss()
         self.sm.current = nom_ecran
+        
 
+        # Récupération de l'écran Live
+        live_screen = self.sm.get_screen("Live") if "Live" in self.sm.screen_names else None
+
+        if nom_ecran == "Live" and live_screen:
+            # Si on est sur le Live, on lie l'état 'disabled' des boutons globaux 
+            # à la variable 'freeze_actif' du LiveScreen
+            # (On évite de lier plusieurs fois si on clique plusieurs fois)
+            live_screen.unbind(freeze_actif=self._mettre_a_jour_gel_barre)
+            live_screen.bind(freeze_actif=self._mettre_a_jour_gel_barre)
+            # Application immédiate de l'état actuel
+            self._mettre_a_jour_gel_barre(live_screen, live_screen.freeze_actif)
+        else:
+            # Sur tous les autres écrans, les boutons de la barre du haut doivent être actifs
+            if live_screen:
+                live_screen.unbind(freeze_actif=self._mettre_a_jour_gel_barre)
+            self.btn_menu.disabled = False
+            self.btn_quitter.disabled = False
+
+    def _mettre_a_jour_gel_barre(self, instance_live, est_gele):
+        """Met à jour l'état désactivé/activé de la barre globale en fonction du gel Live."""
+        self.btn_menu.disabled = est_gele
+        self.btn_quitter.disabled = est_gele
+    
     def _demander_permissions_android(self):
         """Sur Android 11+, l'accès complet au stockage (nécessaire pour
         retrouver les traces GPSLogger et enregistrer les conversions un
