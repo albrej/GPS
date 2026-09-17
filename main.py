@@ -2198,10 +2198,7 @@ class LiveScreen(Screen):
         stockage / "Log file directory") et l'ajouter à la liste si
         besoin."""
         dossiers_candidats = [
-            "/storage/emulated/0/GPSLogger",
-            "/storage/emulated/0/Android/data/com.mendhak.gpslogger/files/GPSLogger",
-            "/storage/2EBA-9AD9/GPSLogger",
-            "/storage/2EBA-9AD9/Android/data/com.mendhak.gpslogger/files/GPSLogger",
+            "/storage/emulated/0/GPSLoggerTraces",
         ]
 
         meilleur_chemin = None
