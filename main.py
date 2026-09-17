@@ -2183,24 +2183,18 @@ class LiveScreen(Screen):
             zoom = int(12 - math.log2(max_delta * 10))
             self.map_view.zoom = max(2, min(zoom, 18))
         
-    def _detecter_trace_gpslogger_active(self):
-        """Cherche, dans les dossiers de sortie habituels de GPSLogger,
-        une trace GPX dont l'écriture semble en cours — signe que
-        GPSLogger est déjà à l'état actif (bouton vert "Arrêter
-        l'enregistrement") et enregistre déjà une trace, sans qu'on ait
-        eu besoin de cliquer sur "Live" pour la démarrer.
+    def _trouver_dernier_gpx_gpslogger(self):
+        """Trouve le fichier .gpx le plus récemment modifié dans les
+        dossiers de sortie habituels de GPSLogger, sans présumer s'il
+        est encore activement écrit ou non — cette question est
+        tranchée séparément par on_click_live_pydroid, en comparant son
+        nombre de lignes à 20 secondes d'intervalle (voir
+        _verifier_gpslogger_actif_suite).
 
-        Renvoie le chemin du fichier GPX actif le plus vraisemblable, ou
-        None si aucune trace ne semble en cours d'écriture.
-
-        Purement heuristique : GPSLogger n'offre pas d'API pour
-        interroger directement son état. On se base sur la date de
-        dernière modification des fichiers .gpx des dossiers de sortie
-        par défaut de GPSLogger — un fichier modifié il y a moins de 2
-        minutes est considéré comme probablement encore en cours
-        d'écriture. Si GPSLogger a été configuré avec un dossier de
-        sortie personnalisé (différent des deux dossiers par défaut
-        ci-dessous), cette détection ne le trouvera pas."""
+        Renvoie le chemin trouvé, ou None si aucun fichier .gpx n'existe
+        dans ces dossiers. Si GPSLogger a été configuré avec un dossier
+        de sortie personnalisé (différent des deux dossiers par défaut
+        ci-dessous), ce fichier ne sera pas trouvé."""
         dossiers_candidats = [
             "/storage/emulated/0/GPSLogger",
             "/storage/emulated/0/Android/data/com.mendhak.gpslogger/files/GPSLogger",
@@ -2227,21 +2221,21 @@ class LiveScreen(Screen):
             except OSError:
                 continue
 
-        if meilleur_chemin is None:
-            return None
+        return meilleur_chemin
 
-        if (datetime.now().timestamp() - meilleure_date) <= 120:
-            return meilleur_chemin
-
-        return None
+    def _compter_lignes(self, chemin):
+        with open(chemin, "r", encoding="utf-8", errors="ignore") as f:
+            return sum(1 for _ in f)
 
     def _reprendre_trace_gpslogger_active(self, chemin):
         """GPSLogger est déjà à l'état actif et enregistre déjà une
-        trace (détecté par _detecter_trace_gpslogger_active) : affiche
-        directement tous ses points déjà enregistrés sur la carte et le
-        graphique (rouge), puis poursuit l'affichage live à partir de
-        là — le serveur d'écoute est démarré pour les points suivants,
-        sans relancer GPSLogger (déjà actif)."""
+        trace (détecté par on_click_live_pydroid/_verifier_gpslogger_
+        actif_suite : le fichier grossit toujours 20 secondes après une
+        première lecture) : affiche directement tous ses points déjà
+        enregistrés sur la carte et le graphique (rouge), puis poursuit
+        l'affichage live à partir de là — le serveur d'écoute est
+        démarré pour les points suivants, sans relancer GPSLogger (déjà
+        actif)."""
         self.pause_traitement_live = False
         self.en_cours_live = True
 
@@ -2252,7 +2246,7 @@ class LiveScreen(Screen):
                 break
 
         try:
-            points = gps_logic.lire_fichier_pour_conversion(chemin)
+            points = gps_logic.lire_gpx_tolerant(chemin)
         except Exception as e:
             print(f"[Live GPSLogger] Erreur de lecture de la trace déjà active ({chemin}) : {e}")
             points = []
@@ -2287,9 +2281,10 @@ class LiveScreen(Screen):
             )
 
         # Démarre le serveur d'écoute live AVANT le message final
-        # ci-dessous, pour la même raison que dans on_click_live_pydroid :
-        # demarrer_serveur_live() affiche son propre message transitoire,
-        # aussitôt remplacé par celui-ci qui doit rester affiché.
+        # ci-dessous, pour la même raison que dans
+        # _demarrer_nouveau_suivi_live : demarrer_serveur_live() affiche
+        # son propre message transitoire, aussitôt remplacé par
+        # celui-ci qui doit rester affiché.
         self.demarrer_serveur_live()
         self._maj_statut_live(
             f"Trace GPSLogger déjà en cours reprise : {os.path.basename(chemin)} ({len(points)} points).",
@@ -2300,11 +2295,62 @@ class LiveScreen(Screen):
         """Bouton "Live" (onglet 7) :
         Étape 0 : vérifie d'abord si GPSLogger n'est pas déjà à l'état
         actif (trace déjà en cours d'enregistrement, bouton vert
-        "Arrêter l'enregistrement") : si oui, tous les points déjà
-        enregistrés de cette trace sont affichés directement (carte +
-        graphique) et l'affichage live se poursuit à partir de là, sans
-        exécuter les phases ci-dessous. Sinon, la séquence habituelle
-        s'exécute :
+        "Arrêter l'enregistrement"). GPSLogger n'offrant aucune API pour
+        interroger directement son état, la détection se fait en
+        observant si son dernier fichier .gpx continue de grossir :
+        on compte ses lignes maintenant, puis on recompte 20 secondes
+        plus tard (_verifier_gpslogger_actif_suite) — un nombre inchangé
+        signifie qu'il n'y a pas d'enregistrement en cours, un nombre
+        différent signifie qu'un enregistrement est bien en cours.
+
+        - Si un enregistrement est en cours : tous les points déjà
+          enregistrés de cette trace sont affichés (carte + graphique)
+          et l'affichage live se poursuit à partir de là.
+        - Sinon (ou si aucun fichier .gpx n'existe) : la séquence
+          habituelle démarre un nouveau suivi (_demarrer_nouveau_suivi_
+          live), exactement comme avant.
+
+        Ne touche jamais à la trace "chargée" manuellement (bleue,
+        gérée par ouvrir_selecteur_fichier/_fichier_choisi ci-dessus) ni
+        à aucun autre onglet."""
+        chemin_candidat = self._trouver_dernier_gpx_gpslogger()
+        if chemin_candidat is None:
+            self._demarrer_nouveau_suivi_live()
+            return
+
+        try:
+            nb_lignes_1 = self._compter_lignes(chemin_candidat)
+        except OSError as e:
+            print(f"[Live GPSLogger] Impossible de lire {chemin_candidat} pour la détection ({e}) : nouveau suivi.")
+            self._demarrer_nouveau_suivi_live()
+            return
+
+        self._maj_statut_live("Vérification de GPSLogger...", (0.33, 0.33, 0.33, 1))
+        Clock.schedule_once(
+            lambda dt: self._verifier_gpslogger_actif_suite(chemin_candidat, nb_lignes_1),
+            20,
+        )
+
+    def _verifier_gpslogger_actif_suite(self, chemin, nb_lignes_1):
+        """Seconde moitié de la détection démarrée par
+        on_click_live_pydroid, 20 secondes plus tôt : si le fichier a
+        grossi entre-temps, GPSLogger est bien en train d'enregistrer
+        une trace ; sinon, on démarre un nouveau suivi normalement."""
+        try:
+            nb_lignes_2 = self._compter_lignes(chemin)
+        except OSError:
+            nb_lignes_2 = nb_lignes_1
+
+        if nb_lignes_2 != nb_lignes_1:
+            self._reprendre_trace_gpslogger_active(chemin)
+        else:
+            self._demarrer_nouveau_suivi_live()
+
+    def _demarrer_nouveau_suivi_live(self):
+        """Séquence normale de démarrage du suivi en direct (bouton
+        "Live") — appelée par on_click_live_pydroid quand GPSLogger
+        n'est pas déjà détecté comme étant en train d'enregistrer une
+        trace :
         Phase 1 : réinitialise le suivi EN DIRECT (rouge) de cet onglet.
         Phase 2 : démarre (ou confirme déjà démarré) le serveur d'écoute
         live local qui reçoit les points GPS envoyés par GPSLogger.
@@ -2315,11 +2361,6 @@ class LiveScreen(Screen):
         Ne touche jamais à la trace "chargée" manuellement (bleue,
         gérée par ouvrir_selecteur_fichier/_fichier_choisi ci-dessus) ni
         à aucun autre onglet."""
-        chemin_trace_active = self._detecter_trace_gpslogger_active()
-        if chemin_trace_active is not None:
-            self._reprendre_trace_gpslogger_active(chemin_trace_active)
-            return
-
         # --- Phase 1 : réinitialisation de la trace live (rouge) uniquement ---
         # a. Le drapeau de pause repasse à False.
         self.pause_traitement_live = False
