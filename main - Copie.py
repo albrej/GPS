@@ -2009,6 +2009,7 @@ class LiveScreen(Screen):
         self.trace_layer_live = None
         self.marqueurs_actifs_live = []
         self.fichier_gpx_actif_live = None
+        self.compteur_sources_live = {}
 
         # --- Serveur d'écoute live (HTTP local) + file thread-safe des
         # points reçus, consommée côté thread principal (Kivy, comme
@@ -2164,6 +2165,12 @@ class LiveScreen(Screen):
         self.fichier_gpx_actif_live = None
         self.profil_live = ([], [], [], [])
         self.graphe.effacer_donnees_secondaires()
+
+        # --- AJOUT (silencieux) : compteur de points par source de
+        # géolocalisation (gps/network/fused...), écrit dans un fichier
+        # log au moment de l'arrêt (_arreter_gpslogger), sans aucun
+        # message ni indicateur visible pendant le suivi.
+        self.compteur_sources_live = {}
         
         # --- AJOUT : Vider la file d'attente pour purger les points obsolètes ---
         while not self.file_points_live.empty():
@@ -2196,7 +2203,7 @@ class LiveScreen(Screen):
         ok, message = self._lancer_gpslogger_et_demarrer_enregistrement()
         if ok:
             self._maj_statut_live(
-                f"Live ... ({len(self.points_trace_live)} points)",
+                f"Live en cours... ({len(self.points_trace_live)} points)",
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             )
         else:
@@ -2218,7 +2225,13 @@ class LiveScreen(Screen):
         """Démarre (une seule fois) le petit serveur HTTP local qui
         reçoit, en temps réel, chaque nouveau point envoyé par GPSLogger
         via son URL personnalisée :
-            http://127.0.0.1:8765/gps?lat=%LAT&lon=%LON&alt=%ALT&acc=%ACC
+            http://127.0.0.1:8765/gps?lat=%LAT&lon=%LON&alt=%ALT&acc=%ACC&prov=%PROV
+
+        Le paramètre "prov" (variable %PROV de GPSLogger) correspond à
+        la source de géolocalisation affichée entre parenthèses dans
+        "Affichage du journal > Localisation uniquement" de GPSLogger
+        (gps, network, fused...) — utilisé pour le comptage silencieux
+        de points par source (voir _ajouter_point_live/_arreter_gpslogger).
 
         Le serveur tourne dans un thread séparé ; les points reçus sont
         déposés dans une file thread-safe (self.file_points_live),
@@ -2256,9 +2269,13 @@ class LiveScreen(Screen):
                         except ValueError:
                             ele = None
 
+                    source_brut = params.get("prov", [None])[0]
+                    source = source_brut if source_brut not in (None, "") else "inconnue"
+
                     file_points.put({
                         'lat': lat, 'lon': lon, 'ele': ele,
-                        'time': datetime.now(), 'name': None
+                        'time': datetime.now(), 'name': None,
+                        'source': source,
                     })
 
                     self.send_response(200)
@@ -2414,6 +2431,12 @@ class LiveScreen(Screen):
 
         self.points_trace_live.append(point)
 
+        # Comptage silencieux par source de géolocalisation (gps/network/
+        # fused...), aucun affichage — voir demarrer_serveur_live et
+        # _arreter_gpslogger pour l'écriture du log correspondant.
+        source_point = point.get('source', 'inconnue')
+        self.compteur_sources_live[source_point] = self.compteur_sources_live.get(source_point, 0) + 1
+
         self._afficher_trace_live_sur_carte()
 
         # self.profil_live est tenu à part de self.profil (trace chargée,
@@ -2424,7 +2447,7 @@ class LiveScreen(Screen):
         self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
 
         self._maj_statut_live(
-            f"Live GPSlogger... ({len(self.points_trace_live)} points)",
+            f"Live en cours... ({len(self.points_trace_live)} points)",
             (0.180, 0.490, 0.196, 1)  # #2E7D32
         )
 
@@ -2532,7 +2555,7 @@ class LiveScreen(Screen):
         self._maj_statut_live("Reprise du suivi en direct.", (0.180, 0.490, 0.196, 1))  # #2E7D32
         Clock.schedule_once(
             lambda dt: self._maj_statut_live(
-                f"Live GPSlogger... ({len(self.points_trace_live)} points)",
+                f"Live en cours... ({len(self.points_trace_live)} points)",
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             ),
             1.5,
@@ -2635,6 +2658,23 @@ class LiveScreen(Screen):
 
         Renvoie (ok_arret_enregistrement, ok_fermeture, détail). Ne lève
         jamais d'exception."""
+        # --- Écriture silencieuse du log de comptage par source de
+        # géolocalisation (aucun message, comme demandé). Toujours
+        # tentée en tout premier, indépendamment du succès du reste de
+        # cette méthode (automatisation Android best-effort ci-dessous).
+        try:
+            dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
+            os.makedirs(dossier_cible, exist_ok=True)
+            nom_log = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            chemin_log = os.path.join(dossier_cible, nom_log)
+            with open(chemin_log, "w", encoding="utf-8") as f:
+                for source, nb in sorted(self.compteur_sources_live.items()):
+                    f.write(f"{source} : {nb}\n")
+        except Exception:
+            pass
+        finally:
+            self.compteur_sources_live = {}
+
         ok_stop = False
         ok_fermeture = False
         details = []

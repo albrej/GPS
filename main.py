@@ -2034,6 +2034,8 @@ class LiveScreen(Screen):
         self.graphe.afficher_courbe_vitesse = False  # <--- AJOUT : Masque la courbe verte
         self.graphe.afficher_curseur = False  # aucun point n'est sélectionnable sur ce graphique
         self.ids.zone_graphique.add_widget(self.graphe)
+        
+        self.en_cours_live = False  # Indique si le live est actif ou non
 
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
@@ -2172,6 +2174,8 @@ class LiveScreen(Screen):
         # message ni indicateur visible pendant le suivi.
         self.compteur_sources_live = {}
         
+        self.en_cours_live = True  # Le live est maintenant actif
+        
         # --- AJOUT : Vider la file d'attente pour purger les points obsolètes ---
         while not self.file_points_live.empty():
             try:
@@ -2203,7 +2207,7 @@ class LiveScreen(Screen):
         ok, message = self._lancer_gpslogger_et_demarrer_enregistrement()
         if ok:
             self._maj_statut_live(
-                f"Live ... ({len(self.points_trace_live)} points)",
+                f"Live en cours... ({len(self.points_trace_live)} points)",
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             )
         else:
@@ -2447,7 +2451,7 @@ class LiveScreen(Screen):
         self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
 
         self._maj_statut_live(
-            f"Live GPSlogger... ({len(self.points_trace_live)} points)",
+            f"Live en cours... ({len(self.points_trace_live)} points)",
             (0.180, 0.490, 0.196, 1)  # #2E7D32
         )
 
@@ -2509,7 +2513,7 @@ class LiveScreen(Screen):
 
         self.map_view.center_on(points[-1]['lat'], points[-1]['lon'])
 
-    def on_click_terminer_live(self):
+    def on_click_terminer_live(self, *args):
         """Bouton "Terminer" (onglet 7) :
         1. Met en pause le traitement des points live (ceux reçus
            entre-temps par le serveur local restent en file d'attente,
@@ -2536,6 +2540,8 @@ class LiveScreen(Screen):
         )
         self._popup_terminer = Popup(title="Terminer le suivi en direct", content=contenu, size_hint=(0.9, 0.4))
         self._popup_terminer.open()
+        
+        self.en_cours_live = False  # Le live est arrêté
 
     def _annuler_et_reprendre_live(self):
         """Annule la demande de "Terminer" et reprend le suivi en direct
@@ -2555,7 +2561,7 @@ class LiveScreen(Screen):
         self._maj_statut_live("Reprise du suivi en direct.", (0.180, 0.490, 0.196, 1))  # #2E7D32
         Clock.schedule_once(
             lambda dt: self._maj_statut_live(
-                f"Live GPSlogger... ({len(self.points_trace_live)} points)",
+                f"Live en cours... ({len(self.points_trace_live)} points)",
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             ),
             1.5,
@@ -2789,7 +2795,49 @@ class LiveScreen(Screen):
 
         self._maj_statut_live("Aucun live en cours.", (0.33, 0.33, 0.33, 1))
 
+    def ouvrir_camera_android(self):
+        """Ouvre l'application caméra de l'appareil Android."""
+        if platform == "android":
+            try:
+                from jnius import autoclass
+                Intent = autoclass('android.content.Intent')
+                MediaStore = autoclass('android.provider.MediaStore')
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                
+                intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                current_activity = PythonActivity.mActivity
+                current_activity.startActivity(intent)
+                self.status_text = "Caméra ouverte."
+            except Exception as e:
+                self.status_text = f"Erreur ouverture caméra : {e}"
+        else:
+            self.status_text = "Fonction caméra disponible uniquement sur Android."
 
+    def on_touch_down(self, touch):
+        # Vérifie si le live est actif (en cours d'enregistrement)
+        # Ajustez la condition selon la variable booléenne ou l'état de votre live
+        live_en_cours = getattr(self, "en_cours_live", False) # ou votre indicateur d'enregistrement actif
+        
+        if live_en_cours and self.collide_point(*touch.pos):
+            # Programmé pour un appui long (ex: 0.6 seconde, durée similaire à un déclenchement de glisser)
+            self._touch_event_item = touch
+            touch.ud['long_press_clock'] = Clock.schedule_once(lambda dt: self._declencher_long_press(touch), 0.6)
+            
+        return super().on_touch_down(touch)
+
+    def on_touch_up(self, touch):
+        # Si le toucher se relève avant la fin du délai, on annule l'appui long
+        if 'long_press_clock' in touch.ud:
+            touch.ud['long_press_clock'].cancel()
+            
+        return super().on_touch_up(touch)
+
+    def _declencher_long_press(self, touch):
+        # S'assure que le toucher est toujours actif
+        if touch.ud.get('long_press_clock'):
+            self.ouvrir_camera_android()
+            
+            
 class CarteScreen(Screen):
     fichier_source = StringProperty("")
     info_fichier = StringProperty("Aucune trace chargée.")
