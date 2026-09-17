@@ -2187,17 +2187,21 @@ class LiveScreen(Screen):
         """Trouve le fichier .gpx le plus récemment modifié dans les
         dossiers de sortie habituels de GPSLogger, sans présumer s'il
         est encore activement écrit ou non — cette question est
-        tranchée séparément par on_click_live_pydroid, en comparant son
-        nombre de lignes à 20 secondes d'intervalle (voir
-        _verifier_gpslogger_actif_suite).
+        tranchée séparément par on_click_live_pydroid, en surveillant
+        s'il continue de grossir (voir _verifier_gpslogger_actif_suite).
 
         Renvoie le chemin trouvé, ou None si aucun fichier .gpx n'existe
         dans ces dossiers. Si GPSLogger a été configuré avec un dossier
-        de sortie personnalisé (différent des deux dossiers par défaut
-        ci-dessous), ce fichier ne sera pas trouvé."""
+        de sortie personnalisé (différent de ceux listés ci-dessous), ce
+        fichier ne sera pas trouvé : vérifier le dossier réellement
+        utilisé dans GPSLogger (Réglages → Général → Dossier de
+        stockage / "Log file directory") et l'ajouter à la liste si
+        besoin."""
         dossiers_candidats = [
             "/storage/emulated/0/GPSLogger",
             "/storage/emulated/0/Android/data/com.mendhak.gpslogger/files/GPSLogger",
+            "/storage/2EBA-9AD9/GPSLogger",
+            "/storage/2EBA-9AD9/Android/data/com.mendhak.gpslogger/files/GPSLogger",
         ]
 
         meilleur_chemin = None
@@ -2297,11 +2301,15 @@ class LiveScreen(Screen):
         actif (trace déjà en cours d'enregistrement, bouton vert
         "Arrêter l'enregistrement"). GPSLogger n'offrant aucune API pour
         interroger directement son état, la détection se fait en
-        observant si son dernier fichier .gpx continue de grossir :
-        on compte ses lignes maintenant, puis on recompte 20 secondes
-        plus tard (_verifier_gpslogger_actif_suite) — un nombre inchangé
-        signifie qu'il n'y a pas d'enregistrement en cours, un nombre
-        différent signifie qu'un enregistrement est bien en cours.
+        observant si son dernier fichier .gpx continue de grossir : on
+        compte ses lignes maintenant, puis on recompte périodiquement
+        (toutes les 10 secondes, jusqu'à 60 secondes au total — voir
+        _verifier_gpslogger_actif_suite) pour tolérer un intervalle
+        d'enregistrement GPSLogger pouvant aller jusqu'à environ une
+        minute. Un nombre de lignes qui grossit à un moment quelconque
+        de cette fenêtre signifie qu'un enregistrement est en cours ;
+        s'il n'a toujours pas bougé au bout de 60 secondes, on considère
+        qu'il n'y a pas d'enregistrement en cours.
 
         - Si un enregistrement est en cours : tous les points déjà
           enregistrés de cette trace sont affichés (carte + graphique)
@@ -2319,32 +2327,54 @@ class LiveScreen(Screen):
             return
 
         try:
-            nb_lignes_1 = self._compter_lignes(chemin_candidat)
+            nb_lignes_reference = self._compter_lignes(chemin_candidat)
         except OSError as e:
             print(f"[Live GPSLogger] Impossible de lire {chemin_candidat} pour la détection ({e}) : nouveau suivi.")
             self._demarrer_nouveau_suivi_live()
             return
 
-        self._maj_statut_live("Vérification de GPSLogger...", (0.33, 0.33, 0.33, 1))
+        # Le nom du fichier candidat est affiché ici (temporairement) :
+        # s'il n'apparaît jamais à l'écran après un clic sur "Live",
+        # c'est que _trouver_dernier_gpx_gpslogger() ne trouve aucun
+        # fichier dans les dossiers surveillés (GPSLogger utilise
+        # probablement un dossier de sortie différent de ceux listés
+        # dans cette méthode).
+        self._maj_statut_live(
+            f"Vérification de GPSLogger... ({os.path.basename(chemin_candidat)})",
+            (0.33, 0.33, 0.33, 1)
+        )
+        self._verif_gpslogger_essais_restants = 6  # 6 x 10 s = 60 s maximum
         Clock.schedule_once(
-            lambda dt: self._verifier_gpslogger_actif_suite(chemin_candidat, nb_lignes_1),
-            20,
+            lambda dt: self._verifier_gpslogger_actif_suite(chemin_candidat, nb_lignes_reference),
+            10,
         )
 
-    def _verifier_gpslogger_actif_suite(self, chemin, nb_lignes_1):
-        """Seconde moitié de la détection démarrée par
-        on_click_live_pydroid, 20 secondes plus tôt : si le fichier a
-        grossi entre-temps, GPSLogger est bien en train d'enregistrer
-        une trace ; sinon, on démarre un nouveau suivi normalement."""
+    def _verifier_gpslogger_actif_suite(self, chemin, nb_lignes_reference):
+        """Un des contrôles périodiques de la détection démarrée par
+        on_click_live_pydroid : si le fichier a grossi depuis le tout
+        premier comptage (nb_lignes_reference), GPSLogger est bien en
+        train d'enregistrer une trace. Sinon, réessaie 10 secondes plus
+        tard tant qu'il reste des essais (jusqu'à 60 secondes au total),
+        puis démarre un nouveau suivi normalement si le fichier n'a
+        toujours pas bougé."""
         try:
-            nb_lignes_2 = self._compter_lignes(chemin)
+            nb_lignes_actuel = self._compter_lignes(chemin)
         except OSError:
-            nb_lignes_2 = nb_lignes_1
+            nb_lignes_actuel = nb_lignes_reference
 
-        if nb_lignes_2 != nb_lignes_1:
+        if nb_lignes_actuel != nb_lignes_reference:
             self._reprendre_trace_gpslogger_active(chemin)
-        else:
+            return
+
+        self._verif_gpslogger_essais_restants -= 1
+        if self._verif_gpslogger_essais_restants <= 0:
             self._demarrer_nouveau_suivi_live()
+            return
+
+        Clock.schedule_once(
+            lambda dt: self._verifier_gpslogger_actif_suite(chemin, nb_lignes_reference),
+            10,
+        )
 
     def _demarrer_nouveau_suivi_live(self):
         """Séquence normale de démarrage du suivi en direct (bouton
