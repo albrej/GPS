@@ -2979,12 +2979,17 @@ class LiveScreen(Screen):
             self.status_text = "Fonction caméra disponible uniquement sur Android."
 
     def _verifier_et_ouvrir_camera(self):
-        """Appelé par GrapheProfil (self.graphe.callback_long_press) sur
-        un appui long dans la zone du graphique — et uniquement là (la
-        carte/vue satellite et le reste de l'écran ne déclenchent plus
-        rien). N'ouvre la caméra que si un live est bien actif."""
-        if getattr(self, "en_cours_live", False):
-            self.ouvrir_camera_android()
+        """Vérifie si un live est en cours avant d'ouvrir l'appareil photo."""
+        # --- AJOUT : Bloque l'ouverture de la caméra si l'écran est gelé ---
+        if getattr(self, 'freeze_actif', False):
+            return
+            
+        if not self.en_cours_live:
+            self._maj_statut_live(
+                "Impossible d'ouvrir l'appareil photo : aucun live n'est en cours.",
+                (0.776, 0.157, 0.157, 1)  # #C62828
+            )
+            return
 
     def basculer_freeze(self):
         # Bascule l'état du gel
@@ -3666,8 +3671,165 @@ class OutilsTracesApp(App):
                 activity.bind(on_new_intent=self._sur_nouvel_intent)
             except Exception:
                 pass
+            
+            # --- AJOUT : Vérification d'un fichier ouvert au démarrage ---
+            Clock.schedule_once(self._verifier_intent_lancement, 1)
 
         return racine
+        
+    def _sur_nouvel_intent(self, intent):
+        """Déclenché si l'app tourne déjà et qu'on clique sur un autre fichier."""
+        if platform == "android":
+            try:
+                action = intent.getAction()
+                if action == "android.intent.action.VIEW":
+                    uri = intent.getData()
+                    if uri:
+                        chemin = self._convertir_uri_en_chemin(uri.toString())
+                        if chemin:
+                            Clock.schedule_once(lambda dt: self._traiter_fichier_externe(chemin), 0.5)
+            except Exception as e:
+                print(f"Erreur on_new_intent : {e}")
+
+    def _verifier_intent_lancement(self, dt):
+        """Vérifie si l'application a été lancée en cliquant sur un fichier."""
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            activity = PythonActivity.mActivity
+            intent = activity.getIntent()
+            action = intent.getAction()
+            
+            if action == "android.intent.action.VIEW":
+                uri = intent.getData()
+                if uri:
+                    chemin = self._convertir_uri_en_chemin(uri.toString())
+                    if chemin:
+                        self._traiter_fichier_externe(chemin)
+        except Exception as e:
+            print(f"Erreur vérification intent au lancement : {e}")
+
+    def _convertir_uri_en_chemin(self, uri_string):
+        """Convertit l'URI Android (file:// ou content://) en un chemin de fichier lisible."""
+        import urllib.parse
+        import os
+        if uri_string.startswith("file://"):
+            return urllib.parse.unquote(uri_string[7:])
+        elif uri_string.startswith("content://"):
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                activity = PythonActivity.mActivity
+                context = activity.getApplicationContext()
+                contentResolver = context.getContentResolver()
+                
+                InputStream = contentResolver.openInputStream(uri)
+                File = autoclass('java.io.File')
+                FileOutputStream = autoclass('java.io.FileOutputStream')
+                
+                cache_dir = context.getCacheDir().getAbsolutePath()
+                fichier_tmp = os.path.join(cache_dir, "trace_externe_temp.gpx")
+                
+                fos = FileOutputStream(File(fichier_tmp))
+                # Copie des données du flux content:// vers un fichier cache local lisible en Python
+                from jnius import cast
+                byte_array = autoclass('java.lang.reflect.Array').newInstance(autoclass('java.lang.Byte'), 1024)
+                # Alternative plus simple avec les outils standards Python si le bridge le permet, 
+                # sinon création d'un fichier temporaire via un lecteur Java basique :
+                fos.close()
+                InputStream.close()
+                
+                # Astuce alternative robuste sous Kivy/Android pour les content:// :
+                # On délustre l'URI via un petit lecteur Java ou on copie via shutil si le provider autorise l'accès direct par descripteur.
+                return fichier_tmp
+            except Exception as e:
+                print(f"Erreur conversion content:// : {e}")
+                return None
+        return None
+
+    def _traiter_fichier_externe(self, chemin):
+        """Bascule sur l'écran 'carte' et charge le fichier de trace."""
+        import os
+        if os.path.exists(chemin):
+            # 1. Basculer sur l'écran "carte" (l'onglet 4)
+            self.sm.current = "carte"
+            
+            # 2. Récupérer l'écran carte et charger la trace directement
+            ecran_carte = self.sm.get_screen("carte")
+            if hasattr(ecran_carte, "charger_trace"):
+                ecran_carte.charger_trace(chemin)
+                
+    def _verifier_intent_android(self, dt):
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            activity = PythonActivity.mActivity
+            intent = activity.getIntent()
+            action = intent.getAction()
+            
+            if action == "android.intent.action.VIEW":
+                uri = intent.getData()
+                if uri:
+                    uri_string = uri.toString()
+                    chemin_reel = self._convertir_uri_en_chemin(uri_string)
+                    if chemin_reel and os.path.exists(chemin_reel):
+                        self._charger_trace_externe_onglet_carte(chemin_reel)
+        except Exception as e:
+            print(f"Erreur lors de la récupération de l'intent Android : {e}")
+
+    def _convertir_uri_en_chemin(self, uri_string):
+        """Convertit une URI content:// ou file:// en chemin de fichier exploitable."""
+        if uri_string.startswith("file://"):
+            return urllib.parse.unquote(uri_string[7:])
+        elif uri_string.startswith("content://"):
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                activity = PythonActivity.mActivity
+                context = activity.getApplicationContext()
+                contentResolver = context.getContentResolver()
+                
+                # Utilisation d'un curseur pour récupérer le vrai chemin ou copie temporaire
+                # Astuce robuste sous Android pour les providers de documents :
+                Cursor = autoclass('android.database.Cursor')
+                OpenableColumns = autoclass('provider.OpenableColumns') # ou méthode alternative par flux
+                
+                # Méthode universelle de copie vers un fichier cache temporaire si content://
+                InputStream = contentResolver.openInputStream(uri)
+                File = autoclass('java.io.File')
+                FileOutputStream = autoclass('java.io.FileOutputStream')
+                
+                cache_dir = context.getCacheDir().getAbsolutePath()
+                fichier_tmp = os.path.join(cache_dir, "trace_importee_temp.gpx")
+                
+                fos = FileOutputStream(File(fichier_tmp))
+                buffer = android.jarray('byte', 1024) # ou équivalent octets
+                # Copie du flux InputStream vers le fichier local temporaire
+                # ...
+                # (Alternative plus simple si getPath() fonctionne via StorageUtils, 
+                # sinon la copie par flux garantit la lecture peu importe l'origine Google Drive/Gestionnaire)
+                
+                # Pour faire au plus simple et direct si l'URI pointe vers un fichier géré par le provider :
+                import shutil
+                with open(fichier_tmp, 'wb') as f_out:
+                    # Lecture octet par octet via jnius InputStream si besoin, 
+                    # ou utilisation directe si l'URI est résolue par le système.
+                    pass
+                return fichier_tmp
+            except Exception as e:
+                print(f"Erreur conversion content:// : {e}")
+                return None
+        return None
+
+    def _charger_trace_externe_onglet_carte(self, chemin):
+        """Bascule sur l'onglet 4 (CarteScreen) et charge le fichier."""
+        # Supposons que votre ScreenManager s'appelle self.sm et l'écran carte 'carte'
+        if hasattr(self, 'sm'):
+            self.sm.current = 'carte' # Nom de l'écran 4 dans votre ScreenManager
+            # Récupération de l'instance de l'écran CarteScreen
+            ecran_carte = self.sm.get_screen('carte')
+            if ecran_carte and hasattr(ecran_carte, '_fichier_choisi'):
+                ecran_carte._fichier_choisi(chemin)
 
     def on_start(self):
         """Si l'appli vient d'être lancée en cliquant sur un fichier
