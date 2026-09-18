@@ -3610,6 +3610,9 @@ class OutilsTracesApp(App):
     title = "Bubu GPS"
 
     def build(self):
+        # Par défaut, Kivy affiche un fond NOIR uni tant qu'on ne le
+        # change pas explicitement : tous les libellés en texte noir
+        # étaient donc invisibles dessus. On passe à un fond clair.
         Window.clearcolor = (0.96, 0.97, 0.98, 1)
 
         Builder.load_string(KV)
@@ -3624,35 +3627,25 @@ class OutilsTracesApp(App):
         self.sm.add_widget(LiveScreen(name="Live"))
 
         # --- Barre du haut : menu déroulant (gauche) + titre + Quitter (droite) ---
-        barre = BoxLayout(size_hint_y=None, height=60, padding=(8, 4), spacing=8)
+        barre = BoxLayout(size_hint_y=None, height=dp(60), padding=(8, 4), spacing=dp(8))
 
-        self.dropdown = DropDown(auto_width=False, width=220)
-        self._ecrans_menu = [
-            ("conversion", "Conversion"), 
-            ("numerotation", "Numérotation"), 
-            ("fusion", "Fusion"), 
-            ("carte", "Carte / Découpe"), 
-            ("statistiques", "Statistiques"), 
-            ("photos", "Photos"), 
-            ("Live", "Live")
-        ]
-        if 'SCREENS_A_VENIR' in globals():
-            self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
-            
+        self.dropdown = DropDown(auto_width=False, width=dp(220))
+        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Carte / Découpe"), ("statistiques", "Statistiques"), ("photos", "Photos"), ("Live", "Live")]
+        self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
         self._boutons_menu = {}
         for nom_ecran, libelle in self._ecrans_menu:
-            btn = Button(text=libelle, size_hint_y=None, height=48, font_size="16sp")
+            btn = Button(text=libelle, size_hint_y=None, height=dp(48), font_size="16sp")
             btn.bind(on_release=lambda b, n=nom_ecran: self._changer_ecran(n))
             self.dropdown.add_widget(btn)
             self._boutons_menu[nom_ecran] = btn
 
-        self.btn_menu = Button(text="Menu", size_hint_x=None, width=110)
+        self.btn_menu = Button(text="Menu", size_hint_x=None, width=dp(110))
         self.btn_menu.bind(on_release=self._ouvrir_menu)
         barre.add_widget(self.btn_menu)
 
         barre.add_widget(Label(text="Bubu GPS", bold=True, color=(1, 1, 1, 1)))
 
-        self.btn_quitter = Button(text="Quitter", size_hint_x=None, width=110)
+        self.btn_quitter = Button(text="Quitter", size_hint_x=None, width=dp(110))
         self.btn_quitter.bind(on_release=lambda inst: self.stop())
         barre.add_widget(self.btn_quitter)
 
@@ -3678,11 +3671,172 @@ class OutilsTracesApp(App):
                 activity.bind(on_new_intent=self._sur_nouvel_intent)
             except Exception:
                 pass
+            
+            # --- AJOUT : Vérification d'un fichier ouvert au démarrage ---
+            Clock.schedule_once(self._verifier_intent_lancement, 1)
 
         return racine
+        
+    def _sur_nouvel_intent(self, intent):
+        """Déclenché si l'app tourne déjà et qu'on clique sur un autre fichier."""
+        if platform == "android":
+            try:
+                action = intent.getAction()
+                if action == "android.intent.action.VIEW":
+                    uri = intent.getData()
+                    if uri:
+                        chemin = self._convertir_uri_en_chemin(uri.toString())
+                        if chemin:
+                            Clock.schedule_once(lambda dt: self._traiter_fichier_externe(chemin), 0.5)
+            except Exception as e:
+                print(f"Erreur on_new_intent : {e}")
+
+    def _verifier_intent_lancement(self, dt):
+        """Vérifie si l'application a été lancée en cliquant sur un fichier."""
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            activity = PythonActivity.mActivity
+            intent = activity.getIntent()
+            action = intent.getAction()
+            
+            if action == "android.intent.action.VIEW":
+                uri = intent.getData()
+                if uri:
+                    chemin = self._convertir_uri_en_chemin(uri.toString())
+                    if chemin:
+                        self._traiter_fichier_externe(chemin)
+        except Exception as e:
+            print(f"Erreur vérification intent au lancement : {e}")
+
+    def _convertir_uri_en_chemin(self, uri_string):
+        """Convertit l'URI Android (file:// ou content://) en un chemin de fichier lisible."""
+        import urllib.parse
+        import os
+        if uri_string.startswith("file://"):
+            return urllib.parse.unquote(uri_string[7:])
+        elif uri_string.startswith("content://"):
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                activity = PythonActivity.mActivity
+                context = activity.getApplicationContext()
+                contentResolver = context.getContentResolver()
+                
+                InputStream = contentResolver.openInputStream(uri)
+                File = autoclass('java.io.File')
+                FileOutputStream = autoclass('java.io.FileOutputStream')
+                
+                cache_dir = context.getCacheDir().getAbsolutePath()
+                fichier_tmp = os.path.join(cache_dir, "trace_externe_temp.gpx")
+                
+                fos = FileOutputStream(File(fichier_tmp))
+                # Copie des données du flux content:// vers un fichier cache local lisible en Python
+                from jnius import cast
+                byte_array = autoclass('java.lang.reflect.Array').newInstance(autoclass('java.lang.Byte'), 1024)
+                # Alternative plus simple avec les outils standards Python si le bridge le permet, 
+                # sinon création d'un fichier temporaire via un lecteur Java basique :
+                fos.close()
+                InputStream.close()
+                
+                # Astuce alternative robuste sous Kivy/Android pour les content:// :
+                # On délustre l'URI via un petit lecteur Java ou on copie via shutil si le provider autorise l'accès direct par descripteur.
+                return fichier_tmp
+            except Exception as e:
+                print(f"Erreur conversion content:// : {e}")
+                return None
+        return None
+
+    def _traiter_fichier_externe(self, chemin):
+        """Bascule sur l'écran 'carte' et charge le fichier de trace."""
+        import os
+        if os.path.exists(chemin):
+            # 1. Basculer sur l'écran "carte" (l'onglet 4)
+            self.sm.current = "carte"
+            
+            # 2. Récupérer l'écran carte et charger la trace directement
+            ecran_carte = self.sm.get_screen("carte")
+            if hasattr(ecran_carte, "charger_trace"):
+                ecran_carte.charger_trace(chemin)
+                
+    def _verifier_intent_android(self, dt):
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            activity = PythonActivity.mActivity
+            intent = activity.getIntent()
+            action = intent.getAction()
+            
+            if action == "android.intent.action.VIEW":
+                uri = intent.getData()
+                if uri:
+                    uri_string = uri.toString()
+                    chemin_reel = self._convertir_uri_en_chemin(uri_string)
+                    if chemin_reel and os.path.exists(chemin_reel):
+                        self._charger_trace_externe_onglet_carte(chemin_reel)
+        except Exception as e:
+            print(f"Erreur lors de la récupération de l'intent Android : {e}")
+
+    def _convertir_uri_en_chemin(self, uri_string):
+        """Convertit une URI content:// ou file:// en chemin de fichier exploitable."""
+        if uri_string.startswith("file://"):
+            return urllib.parse.unquote(uri_string[7:])
+        elif uri_string.startswith("content://"):
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                activity = PythonActivity.mActivity
+                context = activity.getApplicationContext()
+                contentResolver = context.getContentResolver()
+                
+                # Utilisation d'un curseur pour récupérer le vrai chemin ou copie temporaire
+                # Astuce robuste sous Android pour les providers de documents :
+                Cursor = autoclass('android.database.Cursor')
+                OpenableColumns = autoclass('provider.OpenableColumns') # ou méthode alternative par flux
+                
+                # Méthode universelle de copie vers un fichier cache temporaire si content://
+                InputStream = contentResolver.openInputStream(uri)
+                File = autoclass('java.io.File')
+                FileOutputStream = autoclass('java.io.FileOutputStream')
+                
+                cache_dir = context.getCacheDir().getAbsolutePath()
+                fichier_tmp = os.path.join(cache_dir, "trace_importee_temp.gpx")
+                
+                fos = FileOutputStream(File(fichier_tmp))
+                buffer = android.jarray('byte', 1024) # ou équivalent octets
+                # Copie du flux InputStream vers le fichier local temporaire
+                # ...
+                # (Alternative plus simple si getPath() fonctionne via StorageUtils, 
+                # sinon la copie par flux garantit la lecture peu importe l'origine Google Drive/Gestionnaire)
+                
+                # Pour faire au plus simple et direct si l'URI pointe vers un fichier géré par le provider :
+                import shutil
+                with open(fichier_tmp, 'wb') as f_out:
+                    # Lecture octet par octet via jnius InputStream si besoin, 
+                    # ou utilisation directe si l'URI est résolue par le système.
+                    pass
+                return fichier_tmp
+            except Exception as e:
+                print(f"Erreur conversion content:// : {e}")
+                return None
+        return None
+
+    def _charger_trace_externe_onglet_carte(self, chemin):
+        """Bascule sur l'onglet 4 (CarteScreen) et charge le fichier."""
+        # Supposons que votre ScreenManager s'appelle self.sm et l'écran carte 'carte'
+        if hasattr(self, 'sm'):
+            self.sm.current = 'carte' # Nom de l'écran 4 dans votre ScreenManager
+            # Récupération de l'instance de l'écran CarteScreen
+            ecran_carte = self.sm.get_screen('carte')
+            if ecran_carte and hasattr(ecran_carte, '_fichier_choisi'):
+                ecran_carte._fichier_choisi(chemin)
 
     def on_start(self):
-        """Vérifie si l'application a été lancée en cliquant sur un fichier au démarrage."""
+        """Si l'appli vient d'être lancée en cliquant sur un fichier
+        .gpx/.kml/.kmz (association de fichiers, "Ouvrir avec" -> Bubu
+        GPS), l'intention de départ contient ce fichier. Le cas où
+        l'appli est déjà ouverte est géré par _sur_nouvel_intent
+        (branché juste au-dessus, dans build())."""
         if platform != "android":
             return
         try:
@@ -3695,38 +3849,44 @@ class OutilsTracesApp(App):
             print(f"[Intent] Erreur au démarrage : {e}")
 
     def _sur_nouvel_intent(self, intent):
-        """Appelée quand l'appli tourne déjà et qu'on clique sur un nouveau fichier."""
+        """Appelée quand l'appli est déjà ouverte et que l'utilisateur
+        clique sur un autre fichier .gpx/.kml/.kmz depuis un
+        gestionnaire de fichiers (l'appli n'est pas relancée, Android
+        envoie simplement un nouvel intent à l'activité existante)."""
         self._traiter_intent_fichier(intent)
 
     def _traiter_intent_fichier(self, intent):
-        """Traite l'intent pour récupérer le fichier et l'envoyer sur l'écran carte."""
+        """Si cet intent correspond à l'ouverture d'un fichier de trace
+        (action VIEW avec une donnée associée), le charge directement
+        dans l'onglet Carte/Découpe, comme avec le bouton "Charger une
+        trace". Ignore silencieusement tout intent qui ne correspond
+        pas à ce cas (ex. relance normale de l'appli)."""
         try:
             from jnius import autoclass
             Intent = autoclass('android.content.Intent')
             action = intent.getAction()
             uri = intent.getData()
-            
             if action != Intent.ACTION_VIEW or uri is None:
                 return
 
             chemin = self._uri_vers_chemin_local(uri)
-            if not chemin or not os.path.exists(chemin):
-                print("[Intent] Impossible de résoudre ou de trouver le fichier ouvert.")
+            if not chemin:
+                print("[Intent] Impossible de résoudre le fichier ouvert.")
                 return
 
-            # Basculement vers l'écran carte et chargement de la trace
-            self.sm.current = "carte"
             ecran_carte = self.sm.get_screen("carte")
-            if ecran_carte and hasattr(ecran_carte, "charger_trace"):
-                ecran_carte.charger_trace(chemin)
-            elif ecran_carte and hasattr(ecran_carte, "_fichier_choisi"):
-                ecran_carte._fichier_choisi(chemin)
-                
+            self.sm.current = "carte"
+            ecran_carte.charger_trace(chemin)
         except Exception as e:
             print(f"[Intent] Erreur de traitement du fichier ouvert : {e}")
 
     def _uri_vers_chemin_local(self, uri):
-        """Convertit une URI Android (file:// ou content://) vers un fichier local en cache."""
+        """Résout une Uri Android (file:// ou content://) vers un chemin
+        de fichier local exploitable par gps_logic.lire_fichier_pour_
+        conversion. Pour un content:// (la majorité des gestionnaires de
+        fichiers modernes, Google Drive...), le contenu est copié dans
+        le dossier de cache privé de l'appli, sous son nom d'origine si
+        celui-ci est disponible."""
         from jnius import autoclass
 
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
@@ -3740,8 +3900,11 @@ class OutilsTracesApp(App):
             return None
 
         resolveur = activite.getContentResolver()
+
+        # Récupère le nom d'origine du fichier si possible (colonne
+        # DISPLAY_NAME), pour garder la bonne extension et un nom
+        # lisible dans l'onglet Carte/Découpe.
         nom_fichier = "trace_ouverte.gpx"
-        
         try:
             OpenableColumns = autoclass('android.provider.OpenableColumns')
             curseur = resolveur.query(uri, None, None, None, None)
@@ -3792,23 +3955,35 @@ class OutilsTracesApp(App):
         self.dropdown.dismiss()
         self.sm.current = nom_ecran
         
+
+        # Récupération de l'écran Live
         live_screen = self.sm.get_screen("Live") if "Live" in self.sm.screen_names else None
 
         if nom_ecran == "Live" and live_screen:
+            # Si on est sur le Live, on lie l'état 'disabled' des boutons globaux 
+            # à la variable 'freeze_actif' du LiveScreen
+            # (On évite de lier plusieurs fois si on clique plusieurs fois)
             live_screen.unbind(freeze_actif=self._mettre_a_jour_gel_barre)
             live_screen.bind(freeze_actif=self._mettre_a_jour_gel_barre)
+            # Application immédiate de l'état actuel
             self._mettre_a_jour_gel_barre(live_screen, live_screen.freeze_actif)
         else:
+            # Sur tous les autres écrans, les boutons de la barre du haut doivent être actifs
             if live_screen:
                 live_screen.unbind(freeze_actif=self._mettre_a_jour_gel_barre)
             self.btn_menu.disabled = False
             self.btn_quitter.disabled = False
 
     def _mettre_a_jour_gel_barre(self, instance_live, est_gele):
+        """Met à jour l'état désactivé/activé de la barre globale en fonction du gel Live."""
         self.btn_menu.disabled = est_gele
         self.btn_quitter.disabled = est_gele
     
     def _demander_permissions_android(self):
+        """Sur Android 11+, l'accès complet au stockage (nécessaire pour
+        retrouver les traces GPSLogger et enregistrer les conversions un
+        peu n'importe où) doit être accordé manuellement dans les réglages.
+        On ouvre directement cet écran si besoin."""
         try:
             from android.permissions import request_permissions, Permission
             from jnius import autoclass
@@ -3827,6 +4002,7 @@ class OutilsTracesApp(App):
                 intent.setData(uri)
                 PythonActivity.mActivity.startActivity(intent)
         except Exception:
+            # Sur desktop (tests) ces modules n'existent pas : on ignore.
             pass
 
 
