@@ -428,11 +428,13 @@ class GrapheProfil(Widget):
                 self._poser_texte("Vitesse (km/h)", zx + zw - tex_v.width, zy + zh + dp(4), VERT, taille_sp=9)
 
     def on_touch_down(self, touch):
-        # Si un parent gèle l'interaction (ex: LiveScreen en mode freeze), on bloque tout
+        # Si un parent gèle l'interaction (ex: LiveScreen en mode freeze)
         if hasattr(self.parent, 'parent') and getattr(self.parent.parent, 'freeze_actif', False):
             return True
-        if self.parent and getattr(self.parent, 'freeze_actif', False):
-            return True
+        if not self.collide_point(*touch.pos):
+            return super().on_touch_down(touch)
+        if not self.distances_km and not self.callback_long_press:
+            return super().on_touch_down(touch)
 
         # Capture le toucher pour suivre le glissement
         touch.grab(self)
@@ -2977,14 +2979,17 @@ class LiveScreen(Screen):
             self.status_text = "Fonction caméra disponible uniquement sur Android."
 
     def _verifier_et_ouvrir_camera(self):
-        # Ne rien faire si l'écran est en mode gelé
-        if self.freeze_actif:
+        """Vérifie si un live est en cours avant d'ouvrir l'appareil photo."""
+        # --- AJOUT : Bloque l'ouverture de la caméra si l'écran est gelé ---
+        if getattr(self, 'freeze_actif', False):
             return
-        
-        # --- VOTRE CODE ACTUEL D'OUVERTURE DE LA CAMERA ---
-        # Exemple : 
-        # self.ouvrir_camera_android()
-        print("Ouverture de la caméra (clic long sur graphique en mode dégelé)")
+            
+        if not self.en_cours_live:
+            self._maj_statut_live(
+                "Impossible d'ouvrir l'appareil photo : aucun live n'est en cours.",
+                (0.776, 0.157, 0.157, 1)  # #C62828
+            )
+            return
 
     def basculer_freeze(self):
         # Bascule l'état du gel
