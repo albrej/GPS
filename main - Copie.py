@@ -223,6 +223,11 @@ class GrapheProfil(Widget):
         self.altitudes_secondaire = []
         self.distance_selection = None
         self.callback_clic = None
+        # Appelé (sans argument) sur un appui long (0.6 s) dans la zone
+        # du graphique — utilisé uniquement par l'onglet Live pour
+        # ouvrir l'appareil photo Android. None par défaut : aucun
+        # comportement ajouté pour les autres écrans.
+        self.callback_long_press = None
         self.afficher_courbe_vitesse = True  # <--- AJOUT ICI
         self.afficher_curseur = True
         self.bind(pos=self._redessiner, size=self._redessiner)
@@ -310,62 +315,11 @@ class GrapheProfil(Widget):
         zx_courbe = zx + decalage_x
         zw_courbe = max(1.0, zw - decalage_x)
 
+        # Fonction de conversion de coordonnées (distance -> abscisse écran)
+        def x_ecran(d):
+            return zx_courbe + (d - d_min) / d_span * zw_courbe
+
         # --- Calculs des échelles ---
-        a_alt = bool(self.altitudes) and len(self.altitudes) == len(self.distances_km)
-        a_vit = bool(self.vitesses_kmh) and len(self.vitesses_kmh) == len(self.distances_km)
-
-        # Fonctions de conversion de coordonnées
-        def x_ecran(d):
-            return zx_courbe + (d - d_min) / d_span * zw_courbe
-
-        if a_alt:
-            alt_bas = min(self.altitudes)
-            alt_haut = max(self.altitudes)
-            if alt_haut == alt_bas:
-                alt_haut += 1.0
-            def y_alt(a):
-                return zy + (a - alt_bas) / (alt_haut - alt_bas) * zh
-        else:
-            def y_alt(a):
-                return zy + zh / 2
-
-        if a_vit:
-            v_bas = min(self.vitesses_kmh)
-            v_haut = max(self.vitesses_kmh)
-            if v_haut == v_bas:
-                v_haut += 1.0
-            def y_vit(v):
-                return zy + (v - v_bas) / (v_haut - v_bas) * zh
-        else:
-            def y_vit(v):
-                return zy + zh / 2
-
-        # --- Tracé des axes et graduations de vitesse (les graduations restent visibles) ---
-        if a_vit:
-            for valeur in self._graduations(v_bas, v_haut, 4):
-                gy = y_vit(valeur)
-                self._poser_texte(f"{int(round(valeur))}", zx + zw + dp(4), gy, VERT,
-                                   taille_sp=9, centre_v=True, gras=False)
-
-            # Tracé de la courbe de vitesse (masqué si self.afficher_courbe_vitesse est False)
-            if self.afficher_courbe_vitesse:
-                points_vit = []
-                for d, v in zip(self.distances_km, self.vitesses_kmh):
-                    points_vit.extend([x_ecran(d), y_vit(v)])
-                Color(*VERT)
-                KivyLine(points=points_vit, width=1.6)
-
-        # --- Tracé de l'altitude ---
-        if a_alt:
-            points_alt = []
-            for d, a in zip(self.distances_km, self.altitudes):
-                points_alt.extend([x_ecran(d), y_alt(a)])
-            Color(*BLEU)
-            KivyLine(points=points_alt, width=1.8)
-
-        def x_ecran(d):
-            return zx_courbe + (d - d_min) / d_span * zw_courbe
-
         a_ele = len(self.altitudes) >= 2
         a_ele_sec = len(self.altitudes_secondaire) >= 2
         a_vit = a_ele and any(v > 0 for v in self.vitesses_kmh)
@@ -477,12 +431,25 @@ class GrapheProfil(Widget):
         # Si un parent gèle l'interaction (ex: LiveScreen en mode freeze)
         if hasattr(self.parent, 'parent') and getattr(self.parent.parent, 'freeze_actif', False):
             return True
-        if not self.collide_point(*touch.pos) or not self.distances_km:
+        if not self.collide_point(*touch.pos):
             return super().on_touch_down(touch)
-        
+        if not self.distances_km and not self.callback_long_press:
+            return super().on_touch_down(touch)
+
         # Capture le toucher pour suivre le glissement
         touch.grab(self)
-        
+
+        # Appui long (0.6 s) dans la zone du graphique : ouvre l'appareil
+        # photo Android (voir callback_long_press ; None sur les écrans
+        # autres que l'onglet Live, donc sans effet pour eux). Fonctionne
+        # même sans trace chargée sur le graphique (contrairement à la
+        # sélection de point ci-dessous).
+        if self.callback_long_press:
+            touch.ud['long_press_clock'] = Clock.schedule_once(lambda dt: self.callback_long_press(), 0.6)
+
+        if not self.distances_km:
+            return True
+
         distance_km_tapee = self._calculer_distance_depuis_touch(touch)
         self.set_selection(distance_km_tapee)  # Met à jour le curseur visuel
         if self.callback_clic:
@@ -491,6 +458,8 @@ class GrapheProfil(Widget):
 
     def on_touch_move(self, touch):
         if touch.grab_current is self:
+            if not self.distances_km:
+                return True
             distance_km_tapee = self._calculer_distance_depuis_touch(touch)
             self.set_selection(distance_km_tapee)  # Suit le mouvement du curseur
             if self.callback_clic:
@@ -501,7 +470,11 @@ class GrapheProfil(Widget):
     def on_touch_up(self, touch):
         if touch.grab_current is self:
             touch.ungrab(self)
-            
+            if 'long_press_clock' in touch.ud:
+                touch.ud['long_press_clock'].cancel()
+            if not self.distances_km:
+                return True
+
             distance_km_tapee = self._calculer_distance_depuis_touch(touch)
             self.set_selection(distance_km_tapee)
             if self.callback_clic:
@@ -1858,33 +1831,6 @@ def _construire_confirmation_oui_non_annuler(message, callback):
     btn_annuler.bind(on_release=lambda inst: callback(None))
     return layout
 
-def _construire_popup_saisie_nom(nom_defaut, callback):
-    """Boîte de dialogue permettant de modifier le nom du fichier par défaut."""
-    layout = BoxLayout(orientation="vertical", spacing=12, padding=12)
-
-    lbl = Label(text="Nom du fichier de sortie :", size_hint_y=None, height=dp(30), halign="left")
-    lbl.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
-    layout.add_widget(lbl)
-
-    champ_saisie = TextInput(
-        text=nom_defaut,
-        multiline=False,
-        size_hint_y=None,
-        height=dp(44)
-    )
-    layout.add_widget(champ_saisie)
-
-    boutons = BoxLayout(size_hint_y=None, height=56, spacing=6)
-    btn_annuler = Button(text="Annuler")
-    btn_valider = Button(text="Enregistrer", background_color=(0.15, 0.68, 0.38, 1))
-    boutons.add_widget(btn_annuler)
-    boutons.add_widget(btn_valider)
-    layout.add_widget(boutons)
-
-    btn_valider.bind(on_release=lambda inst: callback(champ_saisie.text.strip()))
-    btn_annuler.bind(on_release=lambda inst: callback(None))
-    return layout
-
 class FusionScreen(Screen):
     inverser_selection = BooleanProperty(False)
     status_text = StringProperty("Aucune trace chargée.")
@@ -2069,6 +2015,11 @@ class LiveScreen(Screen):
         self.graphe = GrapheProfil()
         self.graphe.afficher_courbe_vitesse = False  # <--- AJOUT : Masque la courbe verte
         self.graphe.afficher_curseur = False  # aucun point n'est sélectionnable sur ce graphique
+        # Appui long sur le graphique -> appareil photo, uniquement si
+        # un live est actif (voir _verifier_et_ouvrir_camera). Limité au
+        # widget du graphique lui-même (et non plus à tout l'écran, y
+        # compris la carte).
+        self.graphe.callback_long_press = self._verifier_et_ouvrir_camera
         self.ids.zone_graphique.add_widget(self.graphe)
         
         self.en_cours_live = False  # Indique si le live est actif ou non
@@ -2299,14 +2250,10 @@ class LiveScreen(Screen):
         "Arrêter l'enregistrement"). GPSLogger n'offrant aucune API pour
         interroger directement son état, la détection se fait en
         observant si son dernier fichier .gpx continue de grossir : on
-        compte ses lignes maintenant, puis on recompte périodiquement
-        (toutes les 10 secondes, jusqu'à 60 secondes au total — voir
-        _verifier_gpslogger_actif_suite) pour tolérer un intervalle
-        d'enregistrement GPSLogger pouvant aller jusqu'à environ une
-        minute. Un nombre de lignes qui grossit à un moment quelconque
-        de cette fenêtre signifie qu'un enregistrement est en cours ;
-        s'il n'a toujours pas bougé au bout de 60 secondes, on considère
-        qu'il n'y a pas d'enregistrement en cours.
+        compte ses lignes maintenant, puis on recompte 20 secondes plus
+        tard (voir _verifier_gpslogger_actif_suite). Un nombre de lignes
+        qui a grossi signifie qu'un enregistrement est en cours ; sinon,
+        on considère qu'il n'y a pas d'enregistrement en cours.
 
         - Si un enregistrement est en cours : tous les points déjà
           enregistrés de cette trace sont affichés (carte + graphique)
@@ -2340,20 +2287,17 @@ class LiveScreen(Screen):
             f"Vérification de GPSLogger... ({os.path.basename(chemin_candidat)})",
             (0.33, 0.33, 0.33, 1)
         )
-        self._verif_gpslogger_essais_restants = 6  # 6 x 10 s = 60 s maximum
         Clock.schedule_once(
             lambda dt: self._verifier_gpslogger_actif_suite(chemin_candidat, nb_lignes_reference),
-            10,
+            20,
         )
 
     def _verifier_gpslogger_actif_suite(self, chemin, nb_lignes_reference):
-        """Un des contrôles périodiques de la détection démarrée par
-        on_click_live_pydroid : si le fichier a grossi depuis le tout
+        """Suite (unique, 20 secondes plus tard) de la détection démarrée
+        par on_click_live_pydroid : si le fichier a grossi depuis le
         premier comptage (nb_lignes_reference), GPSLogger est bien en
-        train d'enregistrer une trace. Sinon, réessaie 10 secondes plus
-        tard tant qu'il reste des essais (jusqu'à 60 secondes au total),
-        puis démarre un nouveau suivi normalement si le fichier n'a
-        toujours pas bougé."""
+        train d'enregistrer une trace. Sinon, démarre un nouveau suivi
+        normalement."""
         try:
             nb_lignes_actuel = self._compter_lignes(chemin)
         except OSError:
@@ -2361,17 +2305,8 @@ class LiveScreen(Screen):
 
         if nb_lignes_actuel != nb_lignes_reference:
             self._reprendre_trace_gpslogger_active(chemin)
-            return
-
-        self._verif_gpslogger_essais_restants -= 1
-        if self._verif_gpslogger_essais_restants <= 0:
+        else:
             self._demarrer_nouveau_suivi_live()
-            return
-
-        Clock.schedule_once(
-            lambda dt: self._verifier_gpslogger_actif_suite(chemin, nb_lignes_reference),
-            10,
-        )
 
     def _demarrer_nouveau_suivi_live(self):
         """Séquence normale de démarrage du suivi en direct (bouton
@@ -2842,7 +2777,7 @@ class LiveScreen(Screen):
                     self._maj_statut_live(f"Erreur lors de l'enregistrement de la trace : {e}", (0.776, 0.157, 0.157, 1))
 
                 self._arreter_gpslogger()
-                self._maj_statut_live("Enregistrement terminé. Arrêtez GPSLogger manuellement.", (0.937, 0.424, 0.0, 1)) # #EF6C00
+                self._maj_statut_live("Aucun live en cours.", (0.937, 0.424, 0.0, 1)) # #EF6C00
 
             # Construction de la boîte de dialogue simple avec un TextInput pour le nom
             layout_sauvegarde = BoxLayout(orientation="vertical", spacing=12, padding=12)
@@ -3025,47 +2960,36 @@ class LiveScreen(Screen):
 
         self._maj_statut_live("Aucun live en cours.", (0.33, 0.33, 0.33, 1))
 
-    def ouvrir_camera_android(self):
-        """Ouvre l'application caméra de l'appareil Android."""
-        if platform == "android":
-            try:
-                from jnius import autoclass
-                Intent = autoclass('android.content.Intent')
-                MediaStore = autoclass('android.provider.MediaStore')
-                PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                
-                intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                current_activity = PythonActivity.mActivity
-                current_activity.startActivity(intent)
-                self.status_text = "Caméra ouverte."
-            except Exception as e:
-                self.status_text = f"Erreur ouverture caméra : {e}"
-        else:
-            self.status_text = "Fonction caméra disponible uniquement sur Android."
+    def _verifier_et_ouvrir_camera(self):
+        """Vérifie les 3 conditions avant d'ouvrir la caméra :
+        1. Onglet dégelé (freeze_actif == False)
+        2. Live actif (en_cours_live == True)
+        3. Clic long sur le graphique (déclenché par le callback_long_press)
+        """
+        # Condition 1 & 2 : Si l'onglet est gelé ou si le live n'est pas actif, on bloque
+        if getattr(self, 'freeze_actif', False) or not getattr(self, 'en_cours_live', False):
+            self._maj_statut_live(
+                "Caméra bloquée : l'onglet doit être dégelé et un live doit être actif.",
+                (0.776, 0.157, 0.157, 1)
+            )
+            return
 
-    def on_touch_down(self, touch):
-        # Vérifie si le live est actif (en cours d'enregistrement)
-        # Ajustez la condition selon la variable booléenne ou l'état de votre live
-        live_en_cours = getattr(self, "en_cours_live", False) # ou votre indicateur d'enregistrement actif
-        
-        if live_en_cours and self.collide_point(*touch.pos):
-            # Programmé pour un appui long (ex: 0.6 seconde, durée similaire à un déclenchement de glisser)
-            self._touch_event_item = touch
-            touch.ud['long_press_clock'] = Clock.schedule_once(lambda dt: self._declencher_long_press(touch), 0.6)
+        # Condition 3 : Si les conditions sont réunies, on ouvre la caméra
+        self._ouvrir_camera_Android()
+
+    def _ouvrir_camera_Android(self):
+        """Logique d'appel de l'appareil photo natif Android."""
+        try:
+            from jnius import autoclass, cast
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Intent = autoclass('android.content.Intent')
+            MediaStore = autoclass('android.provider.MediaStore')
             
-        return super().on_touch_down(touch)
-
-    def on_touch_up(self, touch):
-        # Si le toucher se relève avant la fin du délai, on annule l'appui long
-        if 'long_press_clock' in touch.ud:
-            touch.ud['long_press_clock'].cancel()
-            
-        return super().on_touch_up(touch)
-
-    def _declencher_long_press(self, touch):
-        # S'assure que le toucher est toujours actif
-        if touch.ud.get('long_press_clock'):
-            self.ouvrir_camera_android()
+            intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+            currentActivity = PythonActivity.mActivity
+            currentActivity.startActivity(intent)
+        except Exception as e:
+            print(f"[Caméra] Erreur lors de l'ouverture de la caméra : {e}")
 
     def basculer_freeze(self):
         # Bascule l'état du gel
@@ -3194,6 +3118,14 @@ class CarteScreen(Screen):
 
     def _fichier_choisi(self, chemin):
         self._popup.dismiss()
+        self.charger_trace(chemin)
+
+    def charger_trace(self, chemin):
+        """Charge une trace GPX/KMZ/KML dans cet onglet. Utilisée à la
+        fois par le sélecteur de fichier interne (_fichier_choisi
+        ci-dessus) et par l'ouverture d'un fichier externe via Android
+        (association de fichiers .gpx/.kml/.kmz, "Ouvrir avec" → Bubu
+        GPS), voir OutilsTracesApp._sur_nouvel_intent."""
         if not chemin:
             return
         try:
@@ -3734,8 +3666,276 @@ class OutilsTracesApp(App):
 
         if platform == "android":
             self._demander_permissions_android()
+            try:
+                from android import activity
+                activity.bind(on_new_intent=self._sur_nouvel_intent)
+            except Exception:
+                pass
+            
+            # --- AJOUT : Vérification d'un fichier ouvert au démarrage ---
+            Clock.schedule_once(self._verifier_intent_lancement, 1)
 
         return racine
+        
+    def _sur_nouvel_intent(self, intent):
+        """Déclenché si l'app tourne déjà et qu'on clique sur un autre fichier."""
+        if platform == "android":
+            try:
+                action = intent.getAction()
+                if action == "android.intent.action.VIEW":
+                    uri = intent.getData()
+                    if uri:
+                        chemin = self._convertir_uri_en_chemin(uri.toString())
+                        if chemin:
+                            Clock.schedule_once(lambda dt: self._traiter_fichier_externe(chemin), 0.5)
+            except Exception as e:
+                print(f"Erreur on_new_intent : {e}")
+
+    def _verifier_intent_lancement(self, dt):
+        """Vérifie si l'application a été lancée en cliquant sur un fichier."""
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            activity = PythonActivity.mActivity
+            intent = activity.getIntent()
+            action = intent.getAction()
+            
+            if action == "android.intent.action.VIEW":
+                uri = intent.getData()
+                if uri:
+                    chemin = self._convertir_uri_en_chemin(uri.toString())
+                    if chemin:
+                        self._traiter_fichier_externe(chemin)
+        except Exception as e:
+            print(f"Erreur vérification intent au lancement : {e}")
+
+    def _convertir_uri_en_chemin(self, uri_string):
+        """Convertit l'URI Android (file:// ou content://) en un chemin de fichier lisible."""
+        import urllib.parse
+        import os
+        if uri_string.startswith("file://"):
+            return urllib.parse.unquote(uri_string[7:])
+        elif uri_string.startswith("content://"):
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                activity = PythonActivity.mActivity
+                context = activity.getApplicationContext()
+                contentResolver = context.getContentResolver()
+                
+                InputStream = contentResolver.openInputStream(uri)
+                File = autoclass('java.io.File')
+                FileOutputStream = autoclass('java.io.FileOutputStream')
+                
+                cache_dir = context.getCacheDir().getAbsolutePath()
+                fichier_tmp = os.path.join(cache_dir, "trace_externe_temp.gpx")
+                
+                fos = FileOutputStream(File(fichier_tmp))
+                # Copie des données du flux content:// vers un fichier cache local lisible en Python
+                from jnius import cast
+                byte_array = autoclass('java.lang.reflect.Array').newInstance(autoclass('java.lang.Byte'), 1024)
+                # Alternative plus simple avec les outils standards Python si le bridge le permet, 
+                # sinon création d'un fichier temporaire via un lecteur Java basique :
+                fos.close()
+                InputStream.close()
+                
+                # Astuce alternative robuste sous Kivy/Android pour les content:// :
+                # On délustre l'URI via un petit lecteur Java ou on copie via shutil si le provider autorise l'accès direct par descripteur.
+                return fichier_tmp
+            except Exception as e:
+                print(f"Erreur conversion content:// : {e}")
+                return None
+        return None
+
+    def _traiter_fichier_externe(self, chemin):
+        """Bascule sur l'écran 'carte' et charge le fichier de trace."""
+        import os
+        if os.path.exists(chemin):
+            # 1. Basculer sur l'écran "carte" (l'onglet 4)
+            self.sm.current = "carte"
+            
+            # 2. Récupérer l'écran carte et charger la trace directement
+            ecran_carte = self.sm.get_screen("carte")
+            if hasattr(ecran_carte, "charger_trace"):
+                ecran_carte.charger_trace(chemin)
+                
+    def _verifier_intent_android(self, dt):
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            activity = PythonActivity.mActivity
+            intent = activity.getIntent()
+            action = intent.getAction()
+            
+            if action == "android.intent.action.VIEW":
+                uri = intent.getData()
+                if uri:
+                    uri_string = uri.toString()
+                    chemin_reel = self._convertir_uri_en_chemin(uri_string)
+                    if chemin_reel and os.path.exists(chemin_reel):
+                        self._charger_trace_externe_onglet_carte(chemin_reel)
+        except Exception as e:
+            print(f"Erreur lors de la récupération de l'intent Android : {e}")
+
+    def _convertir_uri_en_chemin(self, uri_string):
+        """Convertit une URI content:// ou file:// en chemin de fichier exploitable."""
+        if uri_string.startswith("file://"):
+            return urllib.parse.unquote(uri_string[7:])
+        elif uri_string.startswith("content://"):
+            try:
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                activity = PythonActivity.mActivity
+                context = activity.getApplicationContext()
+                contentResolver = context.getContentResolver()
+                
+                # Utilisation d'un curseur pour récupérer le vrai chemin ou copie temporaire
+                # Astuce robuste sous Android pour les providers de documents :
+                Cursor = autoclass('android.database.Cursor')
+                OpenableColumns = autoclass('provider.OpenableColumns') # ou méthode alternative par flux
+                
+                # Méthode universelle de copie vers un fichier cache temporaire si content://
+                InputStream = contentResolver.openInputStream(uri)
+                File = autoclass('java.io.File')
+                FileOutputStream = autoclass('java.io.FileOutputStream')
+                
+                cache_dir = context.getCacheDir().getAbsolutePath()
+                fichier_tmp = os.path.join(cache_dir, "trace_importee_temp.gpx")
+                
+                fos = FileOutputStream(File(fichier_tmp))
+                buffer = android.jarray('byte', 1024) # ou équivalent octets
+                # Copie du flux InputStream vers le fichier local temporaire
+                # ...
+                # (Alternative plus simple si getPath() fonctionne via StorageUtils, 
+                # sinon la copie par flux garantit la lecture peu importe l'origine Google Drive/Gestionnaire)
+                
+                # Pour faire au plus simple et direct si l'URI pointe vers un fichier géré par le provider :
+                import shutil
+                with open(fichier_tmp, 'wb') as f_out:
+                    # Lecture octet par octet via jnius InputStream si besoin, 
+                    # ou utilisation directe si l'URI est résolue par le système.
+                    pass
+                return fichier_tmp
+            except Exception as e:
+                print(f"Erreur conversion content:// : {e}")
+                return None
+        return None
+
+    def _charger_trace_externe_onglet_carte(self, chemin):
+        """Bascule sur l'onglet 4 (CarteScreen) et charge le fichier."""
+        # Supposons que votre ScreenManager s'appelle self.sm et l'écran carte 'carte'
+        if hasattr(self, 'sm'):
+            self.sm.current = 'carte' # Nom de l'écran 4 dans votre ScreenManager
+            # Récupération de l'instance de l'écran CarteScreen
+            ecran_carte = self.sm.get_screen('carte')
+            if ecran_carte and hasattr(ecran_carte, '_fichier_choisi'):
+                ecran_carte._fichier_choisi(chemin)
+
+    def on_start(self):
+        """Si l'appli vient d'être lancée en cliquant sur un fichier
+        .gpx/.kml/.kmz (association de fichiers, "Ouvrir avec" -> Bubu
+        GPS), l'intention de départ contient ce fichier. Le cas où
+        l'appli est déjà ouverte est géré par _sur_nouvel_intent
+        (branché juste au-dessus, dans build())."""
+        if platform != "android":
+            return
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            intent = PythonActivity.mActivity.getIntent()
+            if intent is not None:
+                self._traiter_intent_fichier(intent)
+        except Exception as e:
+            print(f"[Intent] Erreur au démarrage : {e}")
+
+    def _sur_nouvel_intent(self, intent):
+        """Appelée quand l'appli est déjà ouverte et que l'utilisateur
+        clique sur un autre fichier .gpx/.kml/.kmz depuis un
+        gestionnaire de fichiers (l'appli n'est pas relancée, Android
+        envoie simplement un nouvel intent à l'activité existante)."""
+        self._traiter_intent_fichier(intent)
+
+    def _traiter_intent_fichier(self, intent):
+        """Si cet intent correspond à l'ouverture d'un fichier de trace
+        (action VIEW avec une donnée associée), le charge directement
+        dans l'onglet Carte/Découpe, comme avec le bouton "Charger une
+        trace". Ignore silencieusement tout intent qui ne correspond
+        pas à ce cas (ex. relance normale de l'appli)."""
+        try:
+            from jnius import autoclass
+            Intent = autoclass('android.content.Intent')
+            action = intent.getAction()
+            uri = intent.getData()
+            if action != Intent.ACTION_VIEW or uri is None:
+                return
+
+            chemin = self._uri_vers_chemin_local(uri)
+            if not chemin:
+                print("[Intent] Impossible de résoudre le fichier ouvert.")
+                return
+
+            ecran_carte = self.sm.get_screen("carte")
+            self.sm.current = "carte"
+            ecran_carte.charger_trace(chemin)
+        except Exception as e:
+            print(f"[Intent] Erreur de traitement du fichier ouvert : {e}")
+
+    def _uri_vers_chemin_local(self, uri):
+        """Résout une Uri Android (file:// ou content://) vers un chemin
+        de fichier local exploitable par gps_logic.lire_fichier_pour_
+        conversion. Pour un content:// (la majorité des gestionnaires de
+        fichiers modernes, Google Drive...), le contenu est copié dans
+        le dossier de cache privé de l'appli, sous son nom d'origine si
+        celui-ci est disponible."""
+        from jnius import autoclass
+
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        activite = PythonActivity.mActivity
+        schema = uri.getScheme()
+
+        if schema == "file":
+            return uri.getPath()
+
+        if schema != "content":
+            return None
+
+        resolveur = activite.getContentResolver()
+
+        # Récupère le nom d'origine du fichier si possible (colonne
+        # DISPLAY_NAME), pour garder la bonne extension et un nom
+        # lisible dans l'onglet Carte/Découpe.
+        nom_fichier = "trace_ouverte.gpx"
+        try:
+            OpenableColumns = autoclass('android.provider.OpenableColumns')
+            curseur = resolveur.query(uri, None, None, None, None)
+            if curseur is not None:
+                if curseur.moveToFirst():
+                    idx = curseur.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if idx >= 0:
+                        nom_fichier = curseur.getString(idx)
+                curseur.close()
+        except Exception:
+            pass
+
+        flux_entree = resolveur.openInputStream(uri)
+        if flux_entree is None:
+            return None
+
+        dossier_cache = activite.getCacheDir().getAbsolutePath()
+        chemin_local = os.path.join(dossier_cache, nom_fichier)
+
+        try:
+            tampon = bytearray(8192)
+            with open(chemin_local, "wb") as f:
+                while True:
+                    n_lus = flux_entree.read(tampon)
+                    if n_lus == -1:
+                        break
+                    f.write(bytes(tampon[:n_lus]))
+        finally:
+            flux_entree.close()
+
+        return chemin_local
 
     def _ouvrir_menu(self, instance):
         BLEU_KIVY = (0.12, 0.58, 0.95, 1)
