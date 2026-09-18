@@ -4,7 +4,7 @@ package.name = outilstraces
 package.domain = org.perso
 
 source.dir = .
-source.include_exts = py,kv,png,jpg,ttf
+source.include_exts = py,kv,png,jpg,gpx,kml,kmz,xml
 
 version = 0.1
 
