@@ -2960,36 +2960,36 @@ class LiveScreen(Screen):
 
         self._maj_statut_live("Aucun live en cours.", (0.33, 0.33, 0.33, 1))
 
-    def ouvrir_camera_android(self):
-        """Ouvre l'application caméra de l'appareil Android."""
-        if platform == "android":
-            try:
-                from jnius import autoclass
-                Intent = autoclass('android.content.Intent')
-                MediaStore = autoclass('android.provider.MediaStore')
-                PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                
-                intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                current_activity = PythonActivity.mActivity
-                current_activity.startActivity(intent)
-                self.status_text = "Caméra ouverte."
-            except Exception as e:
-                self.status_text = f"Erreur ouverture caméra : {e}"
-        else:
-            self.status_text = "Fonction caméra disponible uniquement sur Android."
-
     def _verifier_et_ouvrir_camera(self):
-        """Vérifie si un live est en cours avant d'ouvrir l'appareil photo."""
-        # --- AJOUT : Bloque l'ouverture de la caméra si l'écran est gelé ---
-        if getattr(self, 'freeze_actif', False):
-            return
-            
-        if not self.en_cours_live:
+        """Vérifie les 3 conditions avant d'ouvrir la caméra :
+        1. Onglet dégelé (freeze_actif == False)
+        2. Live actif (en_cours_live == True)
+        3. Clic long sur le graphique (déclenché par le callback_long_press)
+        """
+        # Condition 1 & 2 : Si l'onglet est gelé ou si le live n'est pas actif, on bloque
+        if getattr(self, 'freeze_actif', False) or not getattr(self, 'en_cours_live', False):
             self._maj_statut_live(
-                "Impossible d'ouvrir l'appareil photo : aucun live n'est en cours.",
-                (0.776, 0.157, 0.157, 1)  # #C62828
+                "Caméra bloquée : l'onglet doit être dégelé et un live doit être actif.",
+                (0.776, 0.157, 0.157, 1)
             )
             return
+
+        # Condition 3 : Si les conditions sont réunies, on ouvre la caméra
+        self._ouvrir_camera_Android()
+
+    def _ouvrir_camera_Android(self):
+        """Logique d'appel de l'appareil photo natif Android."""
+        try:
+            from jnius import autoclass, cast
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Intent = autoclass('android.content.Intent')
+            MediaStore = autoclass('android.provider.MediaStore')
+            
+            intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+            currentActivity = PythonActivity.mActivity
+            currentActivity.startActivity(intent)
+        except Exception as e:
+            print(f"[Caméra] Erreur lors de l'ouverture de la caméra : {e}")
 
     def basculer_freeze(self):
         # Bascule l'état du gel
