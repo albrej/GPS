@@ -77,8 +77,22 @@ if CARTE_DISPONIBLE:
         sans zoom tactile ni pincement."""
     
         PAS_DEPLACEMENT_PX = 60
+        freeze_callback = ObjectProperty(None, allownone=True)
     
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.freeze_actif = False  # <--- Assure l'initialisation de l'attribut
+
         def on_touch_down(self, touch):
+            # Le double-tap déclenche le freeze/unfreeze dans tous les cas
+            if touch.is_double_tap:
+                if self.freeze_callback:
+                    self.freeze_callback()
+                return True
+    
+            if getattr(self, 'freeze_actif', False):
+                return True  # Bloque tous les clics et l'amorce de glisser sur la carte en mode freeze
+                
             bouton = getattr(touch, "button", "")
             if bouton in ("scrollup", "scrolldown", "scrollleft", "scrollright"):
                 dx = dy = 0
@@ -98,12 +112,23 @@ if CARTE_DISPONIBLE:
             return super().on_touch_down(touch)
     
         def on_touch_move(self, touch):
+            # ---> Bloque net le glisser-déposer (pan) de la carte si le gel est actif
+            if getattr(self, 'freeze_actif', False):
+                return True
+                
             # Empêche le zoom par pincement en neutralisant l'effet multi-touch de la carte
             if touch.grab_current is not self and len(getattr(self, 'touches', [])) > 1:
                 return True
             return super().on_touch_move(touch)
     
+        def on_touch_up(self, touch):
+            if getattr(self, 'freeze_actif', False):
+                return True
+            return super().on_touch_up(touch)
+
         def scale_at(self, *args, **kwargs):
+            if getattr(self, 'freeze_actif', False):
+                return
             # Désactive l'ajustement d'échelle par pincement tactile
             return
 
@@ -449,6 +474,9 @@ class GrapheProfil(Widget):
                 self._poser_texte("Vitesse (km/h)", zx + zw - tex_v.width, zy + zh + dp(4), VERT, taille_sp=9)
 
     def on_touch_down(self, touch):
+        # Si un parent gèle l'interaction (ex: LiveScreen en mode freeze)
+        if hasattr(self.parent, 'parent') and getattr(self.parent.parent, 'freeze_actif', False):
+            return True
         if not self.collide_point(*touch.pos) or not self.distances_km:
             return super().on_touch_down(touch)
         
@@ -1399,18 +1427,21 @@ KV = """
                 spacing: dp(6)
                 Button:
                     text: "Charger une trace"
+                    disabled: root.freeze_actif
                     background_color: 0.2, 0.6, 0.86, 1
                     on_release: root.ouvrir_selecteur_fichier()
                 ToggleButton:
                     text: "Satellite"
                     group: "vue_carte_live"
                     state: "down"
+                    disabled: root.freeze_actif
                     size_hint_x: None
                     width: dp(100)
                     on_state: if self.state == "down": root.changer_vue_carte("satellite")
                 ToggleButton:
                     text: "Plan"
                     group: "vue_carte_live"
+                    disabled: root.freeze_actif
                     size_hint_x: None
                     width: dp(90)
                     on_state: if self.state == "down": root.changer_vue_carte("plan")
@@ -1421,10 +1452,12 @@ KV = """
                 spacing: dp(6)
                 Button:
                     text: "Live"
+                    disabled: root.freeze_actif
                     on_release: root.on_click_live_pydroid()
                     background_color: 0.15, 0.68, 0.38, 1
                 Button:
                     text: "Terminer"
+                    disabled: root.freeze_actif
                     on_release: root.on_click_terminer_live()
                     background_color: 0.8, 0.2, 0.2, 1
 
@@ -1459,6 +1492,7 @@ KV = """
 
                 Button:
                     text: "-"
+                    disabled: root.freeze_actif
                     font_size: "24sp"
                     bold: True
                     color: 0, 0, 0, 1
@@ -1478,6 +1512,7 @@ KV = """
                             
                 Button:
                     text: "+"
+                    disabled: root.freeze_actif
                     font_size: "24sp"
                     bold: True
                     color: 0, 0, 0, 1
@@ -1974,6 +2009,7 @@ class FusionScreen(Screen):
         Clock.schedule_once(_maj_ui, 0)
 
 class LiveScreen(Screen):
+    freeze_actif = BooleanProperty(False)
     info_fichier = StringProperty("Aucune trace à suivre chargée.")
     info_point_text = StringProperty("")
     status_text = StringProperty("")
@@ -2034,9 +2070,12 @@ class LiveScreen(Screen):
         self.graphe.afficher_courbe_vitesse = False  # <--- AJOUT : Masque la courbe verte
         self.graphe.afficher_curseur = False  # aucun point n'est sélectionnable sur ce graphique
         self.ids.zone_graphique.add_widget(self.graphe)
+        
+        self.en_cours_live = False  # Indique si le live est actif ou non
 
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
+            self.map_view.freeze_callback = self.basculer_freeze
             self.ids.map_container.add_widget(self.map_view)
         else:
             self.ids.map_container.add_widget(Label(
@@ -2144,8 +2183,201 @@ class LiveScreen(Screen):
             zoom = int(12 - math.log2(max_delta * 10))
             self.map_view.zoom = max(2, min(zoom, 18))
         
+    def _trouver_dernier_gpx_gpslogger(self):
+        """Trouve le fichier .gpx le plus récemment modifié dans les
+        dossiers de sortie habituels de GPSLogger, sans présumer s'il
+        est encore activement écrit ou non — cette question est
+        tranchée séparément par on_click_live_pydroid, en surveillant
+        s'il continue de grossir (voir _verifier_gpslogger_actif_suite).
+
+        Renvoie le chemin trouvé, ou None si aucun fichier .gpx n'existe
+        dans ces dossiers. Si GPSLogger a été configuré avec un dossier
+        de sortie personnalisé (différent de ceux listés ci-dessous), ce
+        fichier ne sera pas trouvé : vérifier le dossier réellement
+        utilisé dans GPSLogger (Réglages → Général → Dossier de
+        stockage / "Log file directory") et l'ajouter à la liste si
+        besoin."""
+        dossiers_candidats = [
+            "/storage/emulated/0/GPSLoggerTraces",
+        ]
+
+        meilleur_chemin = None
+        meilleure_date = None
+
+        for dossier in dossiers_candidats:
+            if not os.path.isdir(dossier):
+                continue
+            try:
+                for nom in os.listdir(dossier):
+                    if not nom.lower().endswith(".gpx"):
+                        continue
+                    chemin = os.path.join(dossier, nom)
+                    try:
+                        date_modif = os.path.getmtime(chemin)
+                    except OSError:
+                        continue
+                    if meilleure_date is None or date_modif > meilleure_date:
+                        meilleure_date = date_modif
+                        meilleur_chemin = chemin
+            except OSError:
+                continue
+
+        return meilleur_chemin
+
+    def _compter_lignes(self, chemin):
+        with open(chemin, "r", encoding="utf-8", errors="ignore") as f:
+            return sum(1 for _ in f)
+
+    def _reprendre_trace_gpslogger_active(self, chemin):
+        """GPSLogger est déjà à l'état actif et enregistre déjà une
+        trace (détecté par on_click_live_pydroid/_verifier_gpslogger_
+        actif_suite : le fichier grossit toujours 20 secondes après une
+        première lecture) : affiche directement tous ses points déjà
+        enregistrés sur la carte et le graphique (rouge), puis poursuit
+        l'affichage live à partir de là — le serveur d'écoute est
+        démarré pour les points suivants, sans relancer GPSLogger (déjà
+        actif)."""
+        self.pause_traitement_live = False
+        self.en_cours_live = True
+
+        while not self.file_points_live.empty():
+            try:
+                self.file_points_live.get_nowait()
+            except queue.Empty:
+                break
+
+        try:
+            points = gps_logic.lire_gpx_tolerant(chemin)
+        except Exception as e:
+            print(f"[Live GPSLogger] Erreur de lecture de la trace déjà active ({chemin}) : {e}")
+            points = []
+
+        self.points_trace_live = points
+        self.fichier_gpx_actif_live = chemin
+
+        # Journal silencieux des sources, redémarré à partir de
+        # maintenant : les points déjà présents dans le fichier n'ont
+        # pas d'information de source disponible (elle ne nous parvient
+        # que via le serveur d'écoute live) — seuls les nouveaux points
+        # reçus en direct à partir d'ici seront comptés.
+        self.compteur_sources_live = {}
+
+        if points:
+            self._afficher_trace_live_sur_carte()
+
+            self.profil_live = gps_logic.calculer_profil(points)
+            distances_km, distances_ele, altitudes, vitesses_kmh = self.profil_live
+            self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
+
+            dernier = points[-1]
+            idx = len(points) - 1
+            dist = distances_km[idx] if idx < len(distances_km) else 0.0
+            vit = vitesses_kmh[idx] if idx < len(vitesses_kmh) else 0.0
+            heure = dernier['time'].strftime("%H:%M:%S") if dernier.get('time') else "-"
+            ele_txt = f"{dernier['ele']} m" if dernier.get('ele') is not None else "-"
+            self.info_point_text = (
+                f"Point {idx + 1} (live)  |  GPS: {dernier['lat']:.5f}, {dernier['lon']:.5f}\n"
+                f"Distance: {dist:.2f} km  |  Altitude: {ele_txt}  |  "
+                f"Heure: {heure}  |  Vitesse: {vit} km/h"
+            )
+
+        # Démarre le serveur d'écoute live AVANT le message final
+        # ci-dessous, pour la même raison que dans
+        # _demarrer_nouveau_suivi_live : demarrer_serveur_live() affiche
+        # son propre message transitoire, aussitôt remplacé par
+        # celui-ci qui doit rester affiché.
+        self.demarrer_serveur_live()
+        self._maj_statut_live(
+            f"Trace GPSLogger déjà en cours reprise : {os.path.basename(chemin)} ({len(points)} points).",
+            (0.180, 0.490, 0.196, 1)  # #2E7D32
+        )
+
     def on_click_live_pydroid(self):
         """Bouton "Live" (onglet 7) :
+        Étape 0 : vérifie d'abord si GPSLogger n'est pas déjà à l'état
+        actif (trace déjà en cours d'enregistrement, bouton vert
+        "Arrêter l'enregistrement"). GPSLogger n'offrant aucune API pour
+        interroger directement son état, la détection se fait en
+        observant si son dernier fichier .gpx continue de grossir : on
+        compte ses lignes maintenant, puis on recompte périodiquement
+        (toutes les 10 secondes, jusqu'à 60 secondes au total — voir
+        _verifier_gpslogger_actif_suite) pour tolérer un intervalle
+        d'enregistrement GPSLogger pouvant aller jusqu'à environ une
+        minute. Un nombre de lignes qui grossit à un moment quelconque
+        de cette fenêtre signifie qu'un enregistrement est en cours ;
+        s'il n'a toujours pas bougé au bout de 60 secondes, on considère
+        qu'il n'y a pas d'enregistrement en cours.
+
+        - Si un enregistrement est en cours : tous les points déjà
+          enregistrés de cette trace sont affichés (carte + graphique)
+          et l'affichage live se poursuit à partir de là.
+        - Sinon (ou si aucun fichier .gpx n'existe) : la séquence
+          habituelle démarre un nouveau suivi (_demarrer_nouveau_suivi_
+          live), exactement comme avant.
+
+        Ne touche jamais à la trace "chargée" manuellement (bleue,
+        gérée par ouvrir_selecteur_fichier/_fichier_choisi ci-dessus) ni
+        à aucun autre onglet."""
+        chemin_candidat = self._trouver_dernier_gpx_gpslogger()
+        if chemin_candidat is None:
+            self._demarrer_nouveau_suivi_live()
+            return
+
+        try:
+            nb_lignes_reference = self._compter_lignes(chemin_candidat)
+        except OSError as e:
+            print(f"[Live GPSLogger] Impossible de lire {chemin_candidat} pour la détection ({e}) : nouveau suivi.")
+            self._demarrer_nouveau_suivi_live()
+            return
+
+        # Le nom du fichier candidat est affiché ici (temporairement) :
+        # s'il n'apparaît jamais à l'écran après un clic sur "Live",
+        # c'est que _trouver_dernier_gpx_gpslogger() ne trouve aucun
+        # fichier dans les dossiers surveillés (GPSLogger utilise
+        # probablement un dossier de sortie différent de ceux listés
+        # dans cette méthode).
+        self._maj_statut_live(
+            f"Vérification de GPSLogger... ({os.path.basename(chemin_candidat)})",
+            (0.33, 0.33, 0.33, 1)
+        )
+        self._verif_gpslogger_essais_restants = 6  # 6 x 10 s = 60 s maximum
+        Clock.schedule_once(
+            lambda dt: self._verifier_gpslogger_actif_suite(chemin_candidat, nb_lignes_reference),
+            10,
+        )
+
+    def _verifier_gpslogger_actif_suite(self, chemin, nb_lignes_reference):
+        """Un des contrôles périodiques de la détection démarrée par
+        on_click_live_pydroid : si le fichier a grossi depuis le tout
+        premier comptage (nb_lignes_reference), GPSLogger est bien en
+        train d'enregistrer une trace. Sinon, réessaie 10 secondes plus
+        tard tant qu'il reste des essais (jusqu'à 60 secondes au total),
+        puis démarre un nouveau suivi normalement si le fichier n'a
+        toujours pas bougé."""
+        try:
+            nb_lignes_actuel = self._compter_lignes(chemin)
+        except OSError:
+            nb_lignes_actuel = nb_lignes_reference
+
+        if nb_lignes_actuel != nb_lignes_reference:
+            self._reprendre_trace_gpslogger_active(chemin)
+            return
+
+        self._verif_gpslogger_essais_restants -= 1
+        if self._verif_gpslogger_essais_restants <= 0:
+            self._demarrer_nouveau_suivi_live()
+            return
+
+        Clock.schedule_once(
+            lambda dt: self._verifier_gpslogger_actif_suite(chemin, nb_lignes_reference),
+            10,
+        )
+
+    def _demarrer_nouveau_suivi_live(self):
+        """Séquence normale de démarrage du suivi en direct (bouton
+        "Live") — appelée par on_click_live_pydroid quand GPSLogger
+        n'est pas déjà détecté comme étant en train d'enregistrer une
+        trace :
         Phase 1 : réinitialise le suivi EN DIRECT (rouge) de cet onglet.
         Phase 2 : démarre (ou confirme déjà démarré) le serveur d'écoute
         live local qui reçoit les points GPS envoyés par GPSLogger.
@@ -2171,6 +2403,8 @@ class LiveScreen(Screen):
         # log au moment de l'arrêt (_arreter_gpslogger), sans aucun
         # message ni indicateur visible pendant le suivi.
         self.compteur_sources_live = {}
+        
+        self.en_cours_live = True  # Le live est maintenant actif
         
         # --- AJOUT : Vider la file d'attente pour purger les points obsolètes ---
         while not self.file_points_live.empty():
@@ -2509,7 +2743,7 @@ class LiveScreen(Screen):
 
         self.map_view.center_on(points[-1]['lat'], points[-1]['lon'])
 
-    def on_click_terminer_live(self):
+    def on_click_terminer_live(self, *args):
         """Bouton "Terminer" (onglet 7) :
         1. Met en pause le traitement des points live (ceux reçus
            entre-temps par le serveur local restent en file d'attente,
@@ -2536,6 +2770,8 @@ class LiveScreen(Screen):
         )
         self._popup_terminer = Popup(title="Terminer le suivi en direct", content=contenu, size_hint=(0.9, 0.4))
         self._popup_terminer.open()
+        
+        self.en_cours_live = False  # Le live est arrêté
 
     def _annuler_et_reprendre_live(self):
         """Annule la demande de "Terminer" et reprend le suivi en direct
@@ -2789,7 +3025,79 @@ class LiveScreen(Screen):
 
         self._maj_statut_live("Aucun live en cours.", (0.33, 0.33, 0.33, 1))
 
+    def ouvrir_camera_android(self):
+        """Ouvre l'application caméra de l'appareil Android."""
+        if platform == "android":
+            try:
+                from jnius import autoclass
+                Intent = autoclass('android.content.Intent')
+                MediaStore = autoclass('android.provider.MediaStore')
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                
+                intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                current_activity = PythonActivity.mActivity
+                current_activity.startActivity(intent)
+                self.status_text = "Caméra ouverte."
+            except Exception as e:
+                self.status_text = f"Erreur ouverture caméra : {e}"
+        else:
+            self.status_text = "Fonction caméra disponible uniquement sur Android."
 
+    def on_touch_down(self, touch):
+        # Vérifie si le live est actif (en cours d'enregistrement)
+        # Ajustez la condition selon la variable booléenne ou l'état de votre live
+        live_en_cours = getattr(self, "en_cours_live", False) # ou votre indicateur d'enregistrement actif
+        
+        if live_en_cours and self.collide_point(*touch.pos):
+            # Programmé pour un appui long (ex: 0.6 seconde, durée similaire à un déclenchement de glisser)
+            self._touch_event_item = touch
+            touch.ud['long_press_clock'] = Clock.schedule_once(lambda dt: self._declencher_long_press(touch), 0.6)
+            
+        return super().on_touch_down(touch)
+
+    def on_touch_up(self, touch):
+        # Si le toucher se relève avant la fin du délai, on annule l'appui long
+        if 'long_press_clock' in touch.ud:
+            touch.ud['long_press_clock'].cancel()
+            
+        return super().on_touch_up(touch)
+
+    def _declencher_long_press(self, touch):
+        # S'assure que le toucher est toujours actif
+        if touch.ud.get('long_press_clock'):
+            self.ouvrir_camera_android()
+
+    def basculer_freeze(self):
+        # Bascule l'état du gel
+        self.freeze_actif = not self.freeze_actif
+        
+        if getattr(self.map_view, 'freeze_actif', None) is not None:
+            self.map_view.freeze_actif = self.freeze_actif
+
+        # --- MODIFICATION ICI : Au dégel de l'onglet ---
+        if not self.freeze_actif:
+            if self.points_trace_live:
+                # Récupère le dernier point enregistré
+                dernier_point = self.points_trace_live[-1]
+                idx = len(self.points_trace_live) - 1
+                
+                # Recalcule les données du profil pour s'assurer d'avoir les bonnes valeurs à jour
+                distances_km, _, _, vitesses_kmh = self.profil_live
+                
+                dist = distances_km[idx] if idx < len(distances_km) else 0.0
+                vit = vitesses_kmh[idx] if idx < len(vitesses_kmh) else 0.0
+                heure = dernier_point['time'].strftime("%H:%M:%S") if dernier_point.get('time') else "-"
+                ele_txt = f"{dernier_point['ele']} m" if dernier_point.get('ele') is not None else "-"
+                
+                # Met à jour la première ligne de texte séquentiel avec le nouveau compte de points mis à jour
+                self.info_point_text = (
+                    f"Point {idx + 1} (live)  |  GPS: {dernier_point['lat']:.5f}, {dernier_point['lon']:.5f}\n"
+                    f"Distance: {dist:.2f} km  |  Altitude: {ele_txt}  |  "
+                    f"Heure: {heure}  |  Vitesse: {vit} km/h"
+                )
+            else:
+                self.info_point_text = "Aucun point live enregistré."
+            
 class CarteScreen(Screen):
     fichier_source = StringProperty("")
     info_fichier = StringProperty("Aucune trace chargée.")
@@ -3074,7 +3382,6 @@ class CarteScreen(Screen):
             self.status_color = couleur
 
         Clock.schedule_once(_maj_ui, 0)
-
 
 class LigneStatistique(BoxLayout):
     libelle = StringProperty("")
@@ -3400,15 +3707,15 @@ class OutilsTracesApp(App):
             self.dropdown.add_widget(btn)
             self._boutons_menu[nom_ecran] = btn
 
-        btn_menu = Button(text="Menu", size_hint_x=None, width=dp(110))
-        btn_menu.bind(on_release=self._ouvrir_menu)
-        barre.add_widget(btn_menu)
+        self.btn_menu = Button(text="Menu", size_hint_x=None, width=dp(110))
+        self.btn_menu.bind(on_release=self._ouvrir_menu)
+        barre.add_widget(self.btn_menu)
 
         barre.add_widget(Label(text="Bubu GPS", bold=True, color=(1, 1, 1, 1)))
 
-        btn_quitter = Button(text="Quitter", size_hint_x=None, width=dp(110))
-        btn_quitter.bind(on_release=lambda inst: self.stop())
-        barre.add_widget(btn_quitter)
+        self.btn_quitter = Button(text="Quitter", size_hint_x=None, width=dp(110))
+        self.btn_quitter.bind(on_release=lambda inst: self.stop())
+        barre.add_widget(self.btn_quitter)
 
         from kivy.graphics import Color, Rectangle
         with barre.canvas.before:
@@ -3447,7 +3754,31 @@ class OutilsTracesApp(App):
     def _changer_ecran(self, nom_ecran):
         self.dropdown.dismiss()
         self.sm.current = nom_ecran
+        
 
+        # Récupération de l'écran Live
+        live_screen = self.sm.get_screen("Live") if "Live" in self.sm.screen_names else None
+
+        if nom_ecran == "Live" and live_screen:
+            # Si on est sur le Live, on lie l'état 'disabled' des boutons globaux 
+            # à la variable 'freeze_actif' du LiveScreen
+            # (On évite de lier plusieurs fois si on clique plusieurs fois)
+            live_screen.unbind(freeze_actif=self._mettre_a_jour_gel_barre)
+            live_screen.bind(freeze_actif=self._mettre_a_jour_gel_barre)
+            # Application immédiate de l'état actuel
+            self._mettre_a_jour_gel_barre(live_screen, live_screen.freeze_actif)
+        else:
+            # Sur tous les autres écrans, les boutons de la barre du haut doivent être actifs
+            if live_screen:
+                live_screen.unbind(freeze_actif=self._mettre_a_jour_gel_barre)
+            self.btn_menu.disabled = False
+            self.btn_quitter.disabled = False
+
+    def _mettre_a_jour_gel_barre(self, instance_live, est_gele):
+        """Met à jour l'état désactivé/activé de la barre globale en fonction du gel Live."""
+        self.btn_menu.disabled = est_gele
+        self.btn_quitter.disabled = est_gele
+    
     def _demander_permissions_android(self):
         """Sur Android 11+, l'accès complet au stockage (nécessaire pour
         retrouver les traces GPSLogger et enregistrer les conversions un
