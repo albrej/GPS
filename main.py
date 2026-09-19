@@ -3164,8 +3164,8 @@ class LiveScreen(Screen):
         self._ouvrir_camera_Android()
 
     def _ouvrir_camera_Android(self):
-        """Ouvre l'appareil photo natif Android et force l'enregistrement
-        de la photo sur la carte SD physique (/storage/2EBA-9AD9)."""
+        """Ouvre l'appareil photo natif Android sans contraindre d'emplacement 
+        via EXTRA_OUTPUT, évitant ainsi les échecs d'enregistrement fréquents."""
         self._chemin_photo_en_cours = None
         try:
             from jnius import autoclass
@@ -3174,36 +3174,9 @@ class LiveScreen(Screen):
             MediaStore = autoclass('android.provider.MediaStore')
             activite = PythonActivity.mActivity
 
-            try:
-                File = autoclass('java.io.File')
-                FileProvider = autoclass('androidx.core.content.FileProvider')
-
-                # Définition du chemin sur la carte SD physique demandée
-                sd_physique = "/storage/2EBA-9AD9"
-                
-                # Vous pouvez créer un dossier dédié, par exemple 'BubuGPS' sur la SD
-                dossier_photos = File(sd_physique, "BubuGPS")
-                
-                # Si le dossier n'existe pas, on tente de le créer
-                if not dossier_photos.exists():
-                    dossier_photos.mkdirs()
-
-                nom_fichier = f"BubuGPS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-                fichier_photo = File(dossier_photos, nom_fichier)
-
-                autorite = f"{activite.getPackageName()}.fileprovider"
-                uri_photo = FileProvider.getUriForFile(activite, autorite, fichier_photo)
-
-                intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                intent.putExtra(MediaStore.EXTRA_OUTPUT, uri_photo)
-                intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                self._chemin_photo_en_cours = fichier_photo.getAbsolutePath()
-            except Exception as e_fp:
-                # Repli si l'écriture sur la SD échoue (ex: permissions insuffisantes)
-                print(f"[Caméra] Impossible d'écrire sur la carte SD externe ({e_fp}), repli sans EXTRA_OUTPUT :")
-                intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                self._chemin_photo_en_cours = None
+            # On ouvre l'appareil photo simplement, sans imposer de chemin de sortie
+            intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+            self._chemin_photo_en_cours = None
 
             activite.startActivityForResult(intent, self.CODE_REQUETE_CAMERA)
         except Exception as e:
