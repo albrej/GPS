@@ -3164,15 +3164,8 @@ class LiveScreen(Screen):
         self._ouvrir_camera_Android()
 
     def _ouvrir_camera_Android(self):
-        """Ouvre l'appareil photo natif Android. Précise si possible où
-        enregistrer la photo (EXTRA_OUTPUT, via un FileProvider —
-        nécessaire depuis Android 7 pour partager un chemin de fichier
-        avec une autre appli, et pour que certains appareils photo,
-        notamment sous MIUI/Xiaomi, enregistrent bien la photo et
-        renvoient un résultat exploitable). Si ce mécanisme échoue pour
-        une raison quelconque (composant absent...), on se rabat sur un
-        appel simple sans emplacement précisé plutôt que de ne pas
-        ouvrir la caméra du tout."""
+        """Ouvre l'appareil photo natif Android et force l'enregistrement
+        de la photo sur la carte SD physique (/storage/2EBA-9AD9)."""
         self._chemin_photo_en_cours = None
         try:
             from jnius import autoclass
@@ -3182,15 +3175,19 @@ class LiveScreen(Screen):
             activite = PythonActivity.mActivity
 
             try:
-                Environment = autoclass('android.os.Environment')
                 File = autoclass('java.io.File')
                 FileProvider = autoclass('androidx.core.content.FileProvider')
 
-                dossier_photos = File(
-                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                    "BubuGPS",
-                )
-                dossier_photos.mkdirs()
+                # Définition du chemin sur la carte SD physique demandée
+                sd_physique = "/storage/2EBA-9AD9"
+                
+                # Vous pouvez créer un dossier dédié, par exemple 'BubuGPS' sur la SD
+                dossier_photos = File(sd_physique, "BubuGPS")
+                
+                # Si le dossier n'existe pas, on tente de le créer
+                if not dossier_photos.exists():
+                    dossier_photos.mkdirs()
+
                 nom_fichier = f"BubuGPS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
                 fichier_photo = File(dossier_photos, nom_fichier)
 
@@ -3203,9 +3200,8 @@ class LiveScreen(Screen):
                 intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 self._chemin_photo_en_cours = fichier_photo.getAbsolutePath()
             except Exception as e_fp:
-                # Repli : la caméra s'ouvre quand même, seulement sans
-                # emplacement de sortie précisé (comportement d'avant).
-                print(f"[Caméra] FileProvider indisponible, ouverture sans EXTRA_OUTPUT : {e_fp}")
+                # Repli si l'écriture sur la SD échoue (ex: permissions insuffisantes)
+                print(f"[Caméra] Impossible d'écrire sur la carte SD externe ({e_fp}), repli sans EXTRA_OUTPUT :")
                 intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
                 self._chemin_photo_en_cours = None
 
@@ -3288,15 +3284,26 @@ class LiveScreen(Screen):
         chemin_photo = self._chemin_photo_en_cours
         self._chemin_photo_en_cours = None
 
-        if not (chemin_photo and os.path.exists(chemin_photo)):
-            # EXTRA_OUTPUT n'a pas été respecté par l'appareil photo :
-            # on tente de retrouver la photo dans la galerie (voir
-            # _trouver_derniere_photo_camera).
-            chemin_photo = self._trouver_derniere_photo_camera()
-
+        # 1. Vérification si le fichier fourni via EXTRA_OUTPUT existe et n'est pas vide
+        fichier_valide = False
         if chemin_photo and os.path.exists(chemin_photo):
+            try:
+                if os.path.getsize(chemin_photo) > 0:
+                    fichier_valide = True
+            except Exception:
+                pass
+
+        # 2. Si le fichier n'existe pas ou est vide, on tente le repli MediaStore
+        if not fichier_valide:
+            chemin_trouve = self._trouver_derniere_photo_camera()
+            if chemin_trouve:
+                chemin_photo = chemin_trouve
+                fichier_valide = True
+
+        # 3. Traitement final de la photo si un fichier valide a pu être localisé
+        if fichier_valide and chemin_photo:
             nom_annotation = os.path.basename(chemin_photo)
-            dossier_parent = os.path.dirname(chemin_photo)  # Récupération du dossier d'enregistrement
+            dossier_parent = os.path.dirname(chemin_photo)
             try:
                 gps_logic.enregistrer_exif_gps(
                     chemin_photo,
@@ -3307,12 +3314,12 @@ class LiveScreen(Screen):
             except Exception as e:
                 print(f"[Caméra] Impossible d'écrire les tags GPS de la photo : {e}")
         else:
+            # Mode dégradé ultime : aucun fichier physique récupérable, on nomme quand même l'annotation
             nom_annotation = f"Photo_{wpt_en_attente['time'].strftime('%H%M%S')}"
-            dossier_parent = "Emplacement inconnu"
+            dossier_parent = "Introuvable / Galerie système"
 
         # "Fermeture" du waypoint : nom définitif connu, ajouté aux
-        # annotations de la trace en cours (voir exporter_vers_gpx(...,
-        # waypoints=...) dans gps_logic.py pour l'écriture GPX finale).
+        # annotations de la trace en cours
         self.annotations_live.append({
             'lat': wpt_en_attente['lat'],
             'lon': wpt_en_attente['lon'],
@@ -3322,7 +3329,7 @@ class LiveScreen(Screen):
             'description': "Photo prise pendant le suivi en direct",
         })
 
-        # MODIFICATION : Affichage du nom et de l'emplacement de la photo enregistrée
+        # Affichage clair du nom et de l'emplacement de la photo pour l'utilisateur
         message_succes = f"Photo enregistrée !\nNom : {nom_annotation}\nDossier : {dossier_parent}"
         self._maj_statut_live(message_succes, (0.180, 0.490, 0.196, 1))
 
