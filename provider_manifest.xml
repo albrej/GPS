@@ -1,0 +1,30 @@
+<!--
+    Déclaration du FileProvider utilisé par _ouvrir_camera_Android (onglet
+    Live, main.py) pour indiquer à l'appareil photo où enregistrer la
+    photo (EXTRA_OUTPUT), obligatoire depuis Android 7 pour partager un
+    chemin de fichier avec une autre application (sans ça, certains
+    appareils photo — notamment MIUI/Xiaomi — n'enregistrent nulle part
+    et ne renvoient aucun résultat exploitable).
+
+    L'autorité "org.perso.outilstraces.fileprovider" est construite à
+    partir de package.domain + package.name du buildozer.spec
+    (org.perso + outilstraces) : si l'un de ces deux réglages change un
+    jour, cette ligne ET la ligne correspondante dans main.py
+    (_ouvrir_camera_Android, variable "autorite") doivent être mises à
+    jour ensemble.
+
+    Ce fragment est injecté dans le <application> du manifeste généré
+    par python-for-android via android.extra_manifest_xml (voir
+    buildozer.spec). Le fichier res/xml/file_paths.xml référencé
+    ci-dessous est ajouté via android.add_resources (voir
+    android_res/xml/file_paths.xml).
+-->
+<provider
+    android:name="androidx.core.content.FileProvider"
+    android:authorities="org.perso.outilstraces.fileprovider"
+    android:exported="false"
+    android:grantUriPermissions="true">
+    <meta-data
+        android:name="android.support.FILE_PROVIDER_PATHS"
+        android:resource="@xml/file_paths" />
+</provider>

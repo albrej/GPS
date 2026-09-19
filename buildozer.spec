@@ -36,6 +36,15 @@ android.permissions = READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERN
 # Voir intent_filters.xml et OutilsTracesApp._sur_nouvel_intent dans main.py.
 android.manifest_intent_filters = intent_filters.xml
 
+# FileProvider (partage de fichier avec l'appareil photo natif, voir
+# _ouvrir_camera_Android dans main.py, onglet Live) :
+# - provider_manifest.xml : déclaration <provider> injectée dans le
+#   <application> du manifeste généré.
+# - android_res/ : fournit res/xml/file_paths.xml, référencé par ce
+#   <provider> (dossiers autorisés au partage).
+android.extra_manifest_xml = provider_manifest.xml
+android.add_resources = android_res
+
 # Redmi Note 15 Pro (2026) : Android récent -> viser une API cible actuelle.
 # android.ndk : le NDK auto-téléchargé le plus récent (r28c) embarque un
 # Clang trop strict pour le code SDL2/OpenGL de Kivy 2.3.0 (voir README).

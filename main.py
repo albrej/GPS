@@ -3183,6 +3183,7 @@ class LiveScreen(Screen):
         except Exception as e:
             self._chemin_photo_en_cours = None
             print(f"[Caméra] Erreur lors de l'ouverture de la caméra : {e}")
+            self._maj_statut_live(f"Erreur ouverture caméra : {e}", (0.776, 0.157, 0.157, 1))  # #C62828
 
     def _sur_resultat_camera(self, request_code, result_code, intent):
         """Appelée quand l'appareil photo se ferme après
