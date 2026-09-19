@@ -39,7 +39,6 @@ from kivy.uix.widget import Widget
 from kivy.properties import StringProperty, BooleanProperty, ListProperty, ObjectProperty
 from kivy.utils import platform
 from kivy.uix.textinput import TextInput
-from gps_service import NativeGPSManager
 
 import gps_logic
 
@@ -1489,7 +1488,7 @@ KV = """
                 Button:
                     text: "Live"
                     disabled: root.freeze_actif
-                    on_release: root.on_click_live()
+                    on_release: root.on_click_live_pydroid()
                     background_color: 0.15, 0.68, 0.38, 1
                 Button:
                     text: "Terminer"
@@ -2104,15 +2103,30 @@ class LiveScreen(Screen):
     # par cet onglet : les garder ici les isole totalement des autres
     # onglets (les déplacer ou les supprimer avec l'onglet n'affecte
     # aucun autre onglet).
+    PORT_SERVEUR_LIVE = 8765
+    PACKAGE_GPSLOGGER = "com.mendhak.gpslogger"
+    ACTION_TASKER_GPSLOGGER = "com.mendhak.gpslogger.TASKER_COMMAND"
+    RECEIVER_TASKER_GPSLOGGER = "com.mendhak.gpslogger.TaskerReceiver"
+    CODE_REQUETE_CAMERA = 1001
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        # Instanciation du GPS natif avec la méthode qui reçoit les points
-        self.gps_manager = NativeGPSManager(callback_position=self.sur_nouveau_point_gps)
         self.map_view = None
         self.trace_layer = None
         self.marqueurs_actifs = []
         self.points_courants = []
+        self._chemin_photo_en_cours = None
+        self._wpt_en_attente = None
+
+        # Reçoit le résultat de la prise de photo lancée par
+        # _ouvrir_camera_Android (voir _sur_resultat_camera). Branché une
+        # seule fois ici pour éviter les appels multiples si la caméra
+        # est ouverte plusieurs fois pendant la session.
+        try:
+            from android import activity
+            activity.bind(on_activity_result=self._sur_resultat_camera)
+        except Exception:
+            pass  # environnement non-Android (PC) : ignoré
 
         # --- Trace EN DIRECT (rouge) : totalement indépendante de la
         # trace "chargée" manuellement ci-dessus (bleue). Réinitialisée
@@ -2123,6 +2137,7 @@ class LiveScreen(Screen):
         self.marqueurs_actifs_live = []
         self.fichier_gpx_actif_live = None
         self.compteur_sources_live = {}
+        self.annotations_live = []  # photos prises pendant le live (voir _ouvrir_camera_Android)
 
         # --- Serveur d'écoute live (HTTP local) + file thread-safe des
         # points reçus, consommée côté thread principal (Kivy, comme
@@ -2130,6 +2145,10 @@ class LiveScreen(Screen):
         # planifiée ci-dessous via Clock (pas besoin de se replanifier à
         # la main comme avec after() sous Tkinter : schedule_interval se
         # répète de lui-même).
+        self.serveur_live = None
+        self.thread_serveur_live = None
+        self.file_points_live = queue.Queue()
+        Clock.schedule_interval(self._traiter_file_points_live, 1.0)
 
         self.profil = ([], [], [], [])
         # --- Profil de la trace live (rouge), tenu à part de self.profil
@@ -2166,23 +2185,6 @@ class LiveScreen(Screen):
                 halign="center",
             ))
 
-    def demarrer_suivi_live(self):
-        """Appelé par le bouton 'Démarrer / Live' de l'interface"""
-        # Active la réception GPS toutes les 1000 ms (1 sec) ou dès qu'il y a 1 mètre de déplacement
-        self.gps_manager.start(min_time_ms=1000, min_distance_m=1)
-        
-    def arreter_suivi_live(self):
-        """Appelé par le bouton 'Arrêter'"""
-        self.gps_manager.stop()
-
-    def sur_nouveau_point_gps(self, data):
-        """Reçoit le dictionnaire de données GPS directement depuis Android"""
-        lat = data['lat']
-        lon = data['lon']
-        ele = data['ele']
-        vitesse = data['speed']
-        temps = data['time']
-        
     def dezoomer_carte(self):
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
@@ -2278,19 +2280,215 @@ class LiveScreen(Screen):
             zoom = int(12 - math.log2(max_delta * 10))
             self.map_view.zoom = max(2, min(zoom, 18))
         
+    def _trouver_dernier_gpx_gpslogger(self):
+        """Trouve le fichier .gpx le plus récemment modifié dans les
+        dossiers de sortie habituels de GPSLogger, sans présumer s'il
+        est encore activement écrit ou non — cette question est
+        tranchée séparément par on_click_live_pydroid, en surveillant
+        s'il continue de grossir (voir _verifier_gpslogger_actif_suite).
+
+        Renvoie le chemin trouvé, ou None si aucun fichier .gpx n'existe
+        dans ces dossiers. Si GPSLogger a été configuré avec un dossier
+        de sortie personnalisé (différent de ceux listés ci-dessous), ce
+        fichier ne sera pas trouvé : vérifier le dossier réellement
+        utilisé dans GPSLogger (Réglages → Général → Dossier de
+        stockage / "Log file directory") et l'ajouter à la liste si
+        besoin."""
+        dossiers_candidats = [
+            "/storage/emulated/0/GPSLoggerTraces",
+        ]
+
+        meilleur_chemin = None
+        meilleure_date = None
+
+        for dossier in dossiers_candidats:
+            if not os.path.isdir(dossier):
+                continue
+            try:
+                for nom in os.listdir(dossier):
+                    if not nom.lower().endswith(".gpx"):
+                        continue
+                    chemin = os.path.join(dossier, nom)
+                    try:
+                        date_modif = os.path.getmtime(chemin)
+                    except OSError:
+                        continue
+                    if meilleure_date is None or date_modif > meilleure_date:
+                        meilleure_date = date_modif
+                        meilleur_chemin = chemin
+            except OSError:
+                continue
+
+        return meilleur_chemin
+
     def _compter_lignes(self, chemin):
         with open(chemin, "r", encoding="utf-8", errors="ignore") as f:
             return sum(1 for _ in f)
 
-    def on_click_live(self):
-        """Démarre le suivi en direct sans GPSLogger."""
+    def _reprendre_trace_gpslogger_active(self, chemin):
+        """GPSLogger est déjà à l'état actif et enregistre déjà une
+        trace (détecté par on_click_live_pydroid/_verifier_gpslogger_
+        actif_suite : le fichier grossit toujours 20 secondes après une
+        première lecture) : affiche directement tous ses points déjà
+        enregistrés sur la carte et le graphique (rouge), puis poursuit
+        l'affichage live à partir de là — le serveur d'écoute est
+        démarré pour les points suivants, sans relancer GPSLogger (déjà
+        actif)."""
         self.pause_traitement_live = False
-        self.points_trace_live = []
-        self.profil_live = ([], [], [], [])
-        self.graphe.effacer_donnees_secondaires()
-        self.compteur_sources_live = {}
         self.en_cours_live = True
 
+        while not self.file_points_live.empty():
+            try:
+                self.file_points_live.get_nowait()
+            except queue.Empty:
+                break
+
+        try:
+            points = gps_logic.lire_gpx_tolerant(chemin)
+        except Exception as e:
+            print(f"[Live GPSLogger] Erreur de lecture de la trace déjà active ({chemin}) : {e}")
+            points = []
+
+        self.points_trace_live = points
+        self.fichier_gpx_actif_live = chemin
+
+        # Journal silencieux des sources, redémarré à partir de
+        # maintenant : les points déjà présents dans le fichier n'ont
+        # pas d'information de source disponible (elle ne nous parvient
+        # que via le serveur d'écoute live) — seuls les nouveaux points
+        # reçus en direct à partir d'ici seront comptés.
+        self.compteur_sources_live = {}
+        self.annotations_live = []
+
+        if points:
+            self._afficher_trace_live_sur_carte()
+
+            self.profil_live = gps_logic.calculer_profil(points)
+            distances_km, distances_ele, altitudes, vitesses_kmh = self.profil_live
+            self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
+
+            dernier = points[-1]
+            idx = len(points) - 1
+            self._maj_info_point_live(dernier, idx, distances_km, vitesses_kmh)
+
+        # Démarre le serveur d'écoute live AVANT le message final
+        # ci-dessous, pour la même raison que dans
+        # _demarrer_nouveau_suivi_live : demarrer_serveur_live() affiche
+        # son propre message transitoire, aussitôt remplacé par
+        # celui-ci qui doit rester affiché.
+        self.demarrer_serveur_live()
+        self._maj_statut_live(
+            f"Trace GPSLogger déjà en cours reprise : {os.path.basename(chemin)} ({len(points)} points).",
+            (0.180, 0.490, 0.196, 1)  # #2E7D32
+        )
+
+    def on_click_live_pydroid(self):
+        """Bouton "Live" (onglet 7) :
+        Étape 0 : vérifie d'abord si GPSLogger n'est pas déjà à l'état
+        actif (trace déjà en cours d'enregistrement, bouton vert
+        "Arrêter l'enregistrement"). GPSLogger n'offrant aucune API pour
+        interroger directement son état, la détection se fait en
+        observant si son dernier fichier .gpx continue de grossir : on
+        compte ses lignes maintenant, puis on recompte 20 secondes plus
+        tard (voir _verifier_gpslogger_actif_suite). Un nombre de lignes
+        qui a grossi signifie qu'un enregistrement est en cours ; sinon,
+        on considère qu'il n'y a pas d'enregistrement en cours.
+
+        - Si un enregistrement est en cours : tous les points déjà
+          enregistrés de cette trace sont affichés (carte + graphique)
+          et l'affichage live se poursuit à partir de là.
+        - Sinon (ou si aucun fichier .gpx n'existe) : la séquence
+          habituelle démarre un nouveau suivi (_demarrer_nouveau_suivi_
+          live), exactement comme avant.
+
+        Ne touche jamais à la trace "chargée" manuellement (bleue,
+        gérée par ouvrir_selecteur_fichier/_fichier_choisi ci-dessus) ni
+        à aucun autre onglet."""
+        chemin_candidat = self._trouver_dernier_gpx_gpslogger()
+        if chemin_candidat is None:
+            self._demarrer_nouveau_suivi_live()
+            return
+
+        try:
+            nb_lignes_reference = self._compter_lignes(chemin_candidat)
+        except OSError as e:
+            print(f"[Live GPSLogger] Impossible de lire {chemin_candidat} pour la détection ({e}) : nouveau suivi.")
+            self._demarrer_nouveau_suivi_live()
+            return
+
+        # Le nom du fichier candidat est affiché ici (temporairement) :
+        # s'il n'apparaît jamais à l'écran après un clic sur "Live",
+        # c'est que _trouver_dernier_gpx_gpslogger() ne trouve aucun
+        # fichier dans les dossiers surveillés (GPSLogger utilise
+        # probablement un dossier de sortie différent de ceux listés
+        # dans cette méthode).
+        self._maj_statut_live(
+            f"Vérification de GPSLogger... ({os.path.basename(chemin_candidat)})",
+            (0.33, 0.33, 0.33, 1)
+        )
+        Clock.schedule_once(
+            lambda dt: self._verifier_gpslogger_actif_suite(chemin_candidat, nb_lignes_reference),
+            20,
+        )
+
+    def _verifier_gpslogger_actif_suite(self, chemin, nb_lignes_reference):
+        """Suite (unique, 20 secondes plus tard) de la détection démarrée
+        par on_click_live_pydroid : si le fichier a grossi depuis le
+        premier comptage (nb_lignes_reference), GPSLogger est bien en
+        train d'enregistrer une trace. Sinon, démarre un nouveau suivi
+        normalement."""
+        try:
+            nb_lignes_actuel = self._compter_lignes(chemin)
+        except OSError:
+            nb_lignes_actuel = nb_lignes_reference
+
+        if nb_lignes_actuel != nb_lignes_reference:
+            self._reprendre_trace_gpslogger_active(chemin)
+        else:
+            self._demarrer_nouveau_suivi_live()
+
+    def _demarrer_nouveau_suivi_live(self):
+        """Séquence normale de démarrage du suivi en direct (bouton
+        "Live") — appelée par on_click_live_pydroid quand GPSLogger
+        n'est pas déjà détecté comme étant en train d'enregistrer une
+        trace :
+        Phase 1 : réinitialise le suivi EN DIRECT (rouge) de cet onglet.
+        Phase 2 : démarre (ou confirme déjà démarré) le serveur d'écoute
+        live local qui reçoit les points GPS envoyés par GPSLogger.
+        Phase 3 : tente de lancer GPSLogger et d'y démarrer
+        automatiquement l'enregistrement (best effort : pyjnius, puis
+        commande "am" en secours).
+
+        Ne touche jamais à la trace "chargée" manuellement (bleue,
+        gérée par ouvrir_selecteur_fichier/_fichier_choisi ci-dessus) ni
+        à aucun autre onglet."""
+        # --- Phase 1 : réinitialisation de la trace live (rouge) uniquement ---
+        # a. Le drapeau de pause repasse à False.
+        self.pause_traitement_live = False
+
+        # b. Les listes internes de la trace live (points, marqueurs) sont vidées.
+        self.points_trace_live = []
+        self.fichier_gpx_actif_live = None
+        self.profil_live = ([], [], [], [])
+        self.graphe.effacer_donnees_secondaires()
+
+        # --- AJOUT (silencieux) : compteur de points par source de
+        # géolocalisation (gps/network/fused...), écrit dans un fichier
+        # log au moment de l'arrêt (_arreter_gpslogger), sans aucun
+        # message ni indicateur visible pendant le suivi.
+        self.compteur_sources_live = {}
+        self.annotations_live = []
+        
+        self.en_cours_live = True  # Le live est maintenant actif
+        
+        # --- AJOUT : Vider la file d'attente pour purger les points obsolètes ---
+        while not self.file_points_live.empty():
+            try:
+                self.file_points_live.get_nowait()
+            except queue.Empty:
+                break
+
+        # c. Le tracé rouge et ses marqueurs sur la carte de l'onglet 7 sont supprimés.
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.trace_layer_live is not None:
                 self.map_view.remove_layer(self.trace_layer_live)
@@ -2299,9 +2497,30 @@ class LiveScreen(Screen):
                 self.map_view.remove_marker(m)
             self.marqueurs_actifs_live = []
 
-        # Message séquentiel adapté (sans mention de GPSLogger)
-        self._maj_statut_live("Suivi en direct actif...", (0.180, 0.490, 0.196, 1))
-      
+        # d. Le texte de statut passe à l'orange.
+        self._maj_statut_live("Démarrage du suivi en direct : lancement de GPSLogger...", (0.937, 0.424, 0.0, 1))  # #EF6C00
+
+        # --- Phase 2 : démarrage (ou confirmation) du serveur d'écoute live ---
+        # Fait AVANT la phase 3 : demarrer_serveur_live() affiche son
+        # propre message transitoire ("Serveur d'écoute live démarré
+        # sur ...") aussitôt remplacé par celui de la phase 3 ci-dessous,
+        # qui doit rester le message final visible après un clic sur
+        # "Live".
+        self.demarrer_serveur_live()
+
+        # --- Phase 3 : lancement de GPSLogger + démarrage de l'enregistrement ---
+        ok, message = self._lancer_gpslogger_et_demarrer_enregistrement()
+        if ok:
+            self._maj_statut_live(
+                f"Live en cours... ({len(self.points_trace_live)} points)",
+                (0.180, 0.490, 0.196, 1)  # #2E7D32
+            )
+        else:
+            self._maj_statut_live(
+                f"Enregistrement impossible. Veuillez installer l'application << GPSLogger for Android (Mendhak) >> pour continuer.",
+                (0.776, 0.157, 0.157, 1)  # #C62828
+            )
+
     def _maj_statut_live(self, texte, couleur=(0.33, 0.33, 0.33, 1)):
         """Affiche un message à la fois dans la console et dans le label
         de statut de cet onglet, pour rester visible même si la console
@@ -2339,6 +2558,203 @@ class LiveScreen(Screen):
         self.info_point_alt = ""
         self.info_point_heure = ""
         self.info_point_vit = ""
+
+    def demarrer_serveur_live(self):
+        """Démarre (une seule fois) le petit serveur HTTP local qui
+        reçoit, en temps réel, chaque nouveau point envoyé par GPSLogger
+        via son URL personnalisée :
+            http://127.0.0.1:8765/gps?lat=%LAT&lon=%LON&alt=%ALT&acc=%ACC&prov=%PROV
+
+        Le paramètre "prov" (variable %PROV de GPSLogger) correspond à
+        la source de géolocalisation affichée entre parenthèses dans
+        "Affichage du journal > Localisation uniquement" de GPSLogger
+        (gps, network, fused...) — utilisé pour le comptage silencieux
+        de points par source (voir _ajouter_point_live/_arreter_gpslogger).
+
+        Le serveur tourne dans un thread séparé ; les points reçus sont
+        déposés dans une file thread-safe (self.file_points_live),
+        consommée côté thread principal par _traiter_file_points_live()
+        (Kivy n'est pas thread-safe)."""
+        if self.serveur_live is not None:
+            return
+
+        file_points = self.file_points_live
+
+        class GestionnaireLive(BaseHTTPRequestHandler):
+            def do_GET(self):
+                try:
+                    url_analysee = urllib.parse.urlparse(self.path)
+                    if url_analysee.path != "/gps":
+                        self.send_response(404)
+                        self.end_headers()
+                        return
+
+                    params = urllib.parse.parse_qs(url_analysee.query)
+                    lat_brut = params.get("lat", [None])[0]
+                    lon_brut = params.get("lon", [None])[0]
+                    if lat_brut is None or lon_brut is None:
+                        self.send_response(400)
+                        self.end_headers()
+                        return
+
+                    lat = float(lat_brut)
+                    lon = float(lon_brut)
+                    alt_brut = params.get("alt", [None])[0]
+                    ele = None
+                    if alt_brut not in (None, ""):
+                        try:
+                            ele = round(float(alt_brut), 1)
+                        except ValueError:
+                            ele = None
+
+                    source_brut = params.get("prov", [None])[0]
+                    source = source_brut if source_brut not in (None, "") else "inconnue"
+
+                    file_points.put({
+                        'lat': lat, 'lon': lon, 'ele': ele,
+                        'time': datetime.now(), 'name': None,
+                        'source': source,
+                    })
+
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/plain")
+                    self.end_headers()
+                    self.wfile.write(b"OK")
+                except Exception:
+                    try:
+                        self.send_response(400)
+                        self.end_headers()
+                    except Exception:
+                        pass
+
+            def log_message(self, format, *args):
+                pass  # Silence le log console par défaut de http.server
+
+        try:
+            self.serveur_live = HTTPServer(("127.0.0.1", self.PORT_SERVEUR_LIVE), GestionnaireLive)
+        except OSError as e:
+            print(f"[Live GPSLogger] Impossible de démarrer le serveur local sur le port {self.PORT_SERVEUR_LIVE} : {e}")
+            self.serveur_live = None
+            return
+
+        self.thread_serveur_live = threading.Thread(target=self.serveur_live.serve_forever, daemon=True)
+        self.thread_serveur_live.start()
+        self._maj_statut_live(f"Serveur d'écoute live démarré sur 127.0.0.1:{self.PORT_SERVEUR_LIVE}.", (0.180, 0.490, 0.196, 1))
+
+    def _lancer_gpslogger_et_demarrer_enregistrement(self):
+        """Tente, par les moyens disponibles sous Android, de :
+           a) porter l'application GPSLogger au premier plan (la lancer
+              si elle n'est pas déjà ouverte) ;
+           b) lui envoyer l'ordre de démarrer immédiatement
+              l'enregistrement (extra Android "immediatestart", reconnu
+              nativement par GPSLogger pour l'automatisation externe,
+              ex. Tasker/Automate).
+
+        Renvoie (True, détail) en cas de succès, (False, raison) sinon.
+        Chaque mécanisme est essayé indépendamment et n'importe quel
+        échec est intercepté : cette méthode ne lève jamais d'exception
+        et ne bloque jamais l'affichage live, qui fonctionne dès que
+        GPSLogger envoie effectivement des points, quelle que soit la
+        façon dont il a été démarré (automatique ici, ou manuel par
+        l'utilisateur)."""
+
+        # --- Tentative 1 : pyjnius (accès natif à l'API Android) ---
+        try:
+            from jnius import autoclass, cast
+
+            activite_courante = None
+            for chemin_classe in ("org.kivy.android.PythonActivity", "org.kivy.android.PythonService"):
+                try:
+                    activite_courante = autoclass(chemin_classe).mActivity
+                    if activite_courante:
+                        break
+                except Exception:
+                    continue
+
+            if activite_courante is None:
+                raise RuntimeError("activité Android introuvable via pyjnius")
+
+            Intent = autoclass("android.content.Intent")
+            contexte = cast("android.content.Context", activite_courante)
+
+            # a) Porter GPSLogger au premier plan (son activité principale).
+            gestionnaire_paquets = contexte.getPackageManager()
+            intent_lancement = gestionnaire_paquets.getLaunchIntentForPackage(self.PACKAGE_GPSLOGGER)
+            if intent_lancement is not None:
+                contexte.startActivity(intent_lancement)
+
+            # b) Ordonner à GPSLogger de démarrer l'enregistrement.
+            intent_demarrage = Intent(self.ACTION_TASKER_GPSLOGGER)
+            intent_demarrage.setClassName(self.PACKAGE_GPSLOGGER, self.RECEIVER_TASKER_GPSLOGGER)
+            intent_demarrage.putExtra("immediatestart", True)
+            contexte.sendBroadcast(intent_demarrage)
+
+            return True, "(méthode : pyjnius)"
+        except Exception as e_jnius:
+            # Détail technique complet réservé à la console (utile en
+            # debug), jamais affiché tel quel à l'écran.
+            print(f"[Live GPSLogger] Échec pyjnius (lancement) : {e_jnius}")
+            raison_jnius = "méthode pyjnius indisponible"
+
+        # --- Tentative 2 (secours) : commande Android "am", si disponible ---
+        try:
+            subprocess.run(
+                ["am", "start", "-n", f"{self.PACKAGE_GPSLOGGER}/.GpsMainActivity"],
+                check=False, timeout=5,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            resultat = subprocess.run(
+                [
+                    "am", "broadcast",
+                    "-a", self.ACTION_TASKER_GPSLOGGER,
+                    "-n", f"{self.PACKAGE_GPSLOGGER}/{self.RECEIVER_TASKER_GPSLOGGER}",
+                    "--ez", "immediatestart", "true"
+                ],
+                check=False, timeout=5,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            if resultat.returncode == 0:
+                return True, "(méthode : commande am)"
+            print(f"[Live GPSLogger] Échec commande am (lancement), code {resultat.returncode} : "
+                  f"{resultat.stderr.decode(errors='ignore').strip()}")
+            raison_am = "commande am indisponible ou refusée"
+        except Exception as e_am:
+            print(f"[Live GPSLogger] Échec commande am (lancement) : {e_am}")
+            raison_am = "commande am indisponible ou refusée"
+
+        return False, f"{raison_jnius} ; {raison_am}"
+
+    def _traiter_file_points_live(self, dt):
+        """Boucle planifiée (Clock.schedule_interval, toutes les
+        secondes) : vide la file des points reçus en direct par le
+        serveur local et les applique un par un sur la carte et le
+        profil altimétrique de cet onglet. Equivalent de
+        traiter_file_points_live() dans la version desktop — ici,
+        Clock se replanifie lui-même : pas besoin de le refaire à la
+        main comme avec after() sous Tkinter.
+
+        Un point individuel qui provoquerait une erreur est ignoré sans
+        interrompre le traitement des points suivants ni la
+        planification de cette boucle.
+
+        Si self.pause_traitement_live est actif, la file n'est PAS
+        vidée ici, pour que les points reçus entre-temps ne soient
+        jamais perdus."""
+        if self.pause_traitement_live:
+            return
+
+        nouveaux_points = []
+        try:
+            while True:
+                nouveaux_points.append(self.file_points_live.get_nowait())
+        except queue.Empty:
+            pass
+
+        for point in nouveaux_points:
+            try:
+                self._ajouter_point_live(point)
+            except Exception as e:
+                print(f"[Live GPSLogger] Erreur lors de l'ajout d'un point live (point ignoré) : {e}")
 
     def _ajouter_point_live(self, point):
         """Ajoute un nouveau point reçu en direct à la trace de cet
@@ -2478,44 +2894,201 @@ class LiveScreen(Screen):
         )
 
     def _reponse_terminer_live(self, reponse):
-      self._popup_terminer.dismiss()
+        """reponse : True (Oui), False (Non) ou None (Annuler) — même
+        convention que messagebox.askyesnocancel() dans la version
+        desktop."""
+        self._popup_terminer.dismiss()
 
-      if reponse is None:
-          self._annuler_et_reprendre_live()
-          return
+        if reponse is None:
+            self._annuler_et_reprendre_live()
+            return
 
-      if reponse:
-          nom_defaut = f"trace_live_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gpx"
+        if reponse:
+            # Suggérer un nom par défaut basé sur l'heure actuelle
+            nom_defaut = (
+                os.path.basename(self.fichier_gpx_actif_live) if self.fichier_gpx_actif_live
+                else f"trace_live_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gpx"
+            )
 
-          def _valider_enregistrement_nom(nouveau_nom):
-              self._popup_sauvegarde.dismiss()
-              if not nouveau_nom:
-                  self._annuler_et_reprendre_live()
-                  return
+            # Fonction de callback appelée lors de la validation ou annulation du choix du nom
+            def _valider_enregistrement_nom(nouveau_nom):
+                self._popup_sauvegarde.dismiss()
 
-              if not nouveau_nom.lower().endswith(".gpx"):
-                  nouveau_nom += ".gpx"
+                # Si l'utilisateur a annulé la saisie du nom : on revient
+                # exactement à l'état d'avant le clic sur "Terminer", ni
+                # plus ni moins que l'Annuler direct de la boîte
+                # Oui/Non/Annuler (même reprise, même message).
+                if not nouveau_nom:
+                    self._annuler_et_reprendre_live()
+                    return
 
-              try:
-                  dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
-                  os.makedirs(dossier_cible, exist_ok=True)
-                  chemin_sortie = os.path.join(dossier_cible, nouveau_nom)
+                # S'assurer que le fichier se termine bien par .gpx
+                if not nouveau_nom.lower().endswith(".gpx"):
+                    nouveau_nom += ".gpx"
 
-                  gps_logic.exporter_vers_gpx(self.points_trace_live, chemin_sortie, garder_temps=True)
-                  self._maj_statut_live(f"Trace enregistrée : {os.path.basename(chemin_sortie)}", (0.180, 0.490, 0.196, 1))
-              except Exception as e:
-                  self._maj_statut_live(f"Erreur lors de l'enregistrement de la trace : {e}", (0.776, 0.157, 0.157, 1))
+                try:
+                    # Construction du chemin final dans le dossier de sortie habituel
+                    dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
+                    os.makedirs(dossier_cible, exist_ok=True)
+                    chemin_sortie = os.path.join(dossier_cible, nouveau_nom)
 
-              # Suppression de _arreter_gpslogger()
-              self._maj_statut_live("Aucun live en cours.", (0.937, 0.424, 0.0, 1))
+                    gps_logic.exporter_vers_gpx(
+                        self.points_trace_live, chemin_sortie, garder_temps=True,
+                        waypoints=self.annotations_live,
+                    )
+                    self._maj_statut_live(f"Trace enregistrée : {os.path.basename(chemin_sortie)}", (0.180, 0.490, 0.196, 1))
+                except Exception as e:
+                    self._maj_statut_live(f"Erreur lors de l'enregistrement de la trace : {e}", (0.776, 0.157, 0.157, 1))
 
-          # ... [Construction du popup de sauvegarde inchangée] ...
-          return
-      else:
-          self._maj_statut_live("Trace non enregistrée.", (0.33, 0.33, 0.33, 1))
+                self._arreter_gpslogger()
+                self._maj_statut_live("Aucun live en cours.", (0.937, 0.424, 0.0, 1)) # #EF6C00
 
-      # Suppression de _arreter_gpslogger()
-      self._reinitialiser_onglet7_vierge()
+            # Construction de la boîte de dialogue simple avec un TextInput pour le nom
+            layout_sauvegarde = BoxLayout(orientation="vertical", spacing=12, padding=12)
+
+            lbl = Label(text="Nom du fichier de sortie :", size_hint_y=None, height=dp(30), halign="left")
+            lbl.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
+            layout_sauvegarde.add_widget(lbl)
+
+            champ_saisie = TextInput(
+                text=nom_defaut,
+                multiline=False,
+                size_hint_y=None,
+                height=dp(44)
+            )
+            layout_sauvegarde.add_widget(champ_saisie)
+
+            boutons_sv = BoxLayout(size_hint_y=None, height=dp(48), spacing=6)
+            btn_annul_sv = Button(text="Annuler")
+            btn_val_sv = Button(text="Enregistrer", background_color=(0.15, 0.68, 0.38, 1))
+            boutons_sv.add_widget(btn_annul_sv)
+            boutons_sv.add_widget(btn_val_sv)
+            layout_sauvegarde.add_widget(boutons_sv)
+
+            # Liaison des boutons du pop-up de saisie
+            btn_val_sv.bind(on_release=lambda inst: _valider_enregistrement_nom(champ_saisie.text.strip()))
+            btn_annul_sv.bind(on_release=lambda inst: _valider_enregistrement_nom(None))
+
+            self._popup_sauvegarde = Popup(title="Nommer le fichier GPX", content=layout_sauvegarde, size_hint=(0.9, 0.45))
+            self._popup_sauvegarde.open()
+            return
+        else:
+            self._maj_statut_live("Trace non enregistrée.", (0.33, 0.33, 0.33, 1))
+
+        # --- Arrêt automatique de l'enregistrement (si "Non" a été choisi)
+        self._arreter_gpslogger()
+        self._reinitialiser_onglet7_vierge()
+
+    def _arreter_gpslogger(self):
+        """Opération inverse de _lancer_gpslogger_et_demarrer_enregistrement :
+           a) ordonne à GPSLogger d'arrêter l'enregistrement en cours
+              (extra Android "immediatestop", symétrique de
+              "immediatestart") ;
+           b) tente ensuite de fermer l'application (best effort :
+              Android n'autorise pas une appli tierce non-rootée à
+              forcer l'arrêt d'une autre application de façon garantie ;
+              killBackgroundProcesses est tenté, mais peut ne pas
+              fonctionner selon l'appareil/la version d'Android,
+              notamment si GPSLogger est encore au premier plan).
+
+        Renvoie (ok_arret_enregistrement, ok_fermeture, détail). Ne lève
+        jamais d'exception."""
+        # --- Écriture silencieuse du log de comptage par source de
+        # géolocalisation (aucun message, comme demandé). Toujours
+        # tentée en tout premier, indépendamment du succès du reste de
+        # cette méthode (automatisation Android best-effort ci-dessous).
+        try:
+            dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
+            os.makedirs(dossier_cible, exist_ok=True)
+            nom_log = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            chemin_log = os.path.join(dossier_cible, nom_log)
+            with open(chemin_log, "w", encoding="utf-8") as f:
+                for source, nb in sorted(self.compteur_sources_live.items()):
+                    f.write(f"{source} : {nb}\n")
+        except Exception:
+            pass
+        finally:
+            self.compteur_sources_live = {}
+            self.annotations_live = []
+
+        ok_stop = False
+        ok_fermeture = False
+        details = []
+
+        # --- a) Arrêt de l'enregistrement (fiable, documenté par GPSLogger) ---
+        try:
+            from jnius import autoclass, cast
+
+            activite_courante = None
+            for chemin_classe in ("org.kivy.android.PythonActivity", "org.kivy.android.PythonService"):
+                try:
+                    activite_courante = autoclass(chemin_classe).mActivity
+                    if activite_courante:
+                        break
+                except Exception:
+                    continue
+
+            if activite_courante is None:
+                raise RuntimeError("activité Android introuvable via pyjnius")
+
+            Intent = autoclass("android.content.Intent")
+            contexte = cast("android.content.Context", activite_courante)
+
+            intent_arret = Intent(self.ACTION_TASKER_GPSLOGGER)
+            intent_arret.setClassName(self.PACKAGE_GPSLOGGER, self.RECEIVER_TASKER_GPSLOGGER)
+            intent_arret.putExtra("immediatestop", True)
+            contexte.sendBroadcast(intent_arret)
+            ok_stop = True
+            details.append("enregistrement arrêté (pyjnius)")
+
+            # --- b) Tentative de fermeture de l'application (best effort) ---
+            try:
+                gestionnaire_activites = cast(
+                    "android.app.ActivityManager",
+                    contexte.getSystemService(activite_courante.ACTIVITY_SERVICE)
+                )
+                gestionnaire_activites.killBackgroundProcesses(self.PACKAGE_GPSLOGGER)
+                ok_fermeture = True
+                details.append("fermeture tentée (killBackgroundProcesses)")
+            except Exception:
+                # On évite volontairement d'afficher le détail technique
+                # brut de l'exception Android (souvent une longue trace
+                # Java/Parcel illisible et sans intérêt pour
+                # l'utilisateur) : un message court et indicatif suffit,
+                # l'essentiel (l'arrêt de l'enregistrement, lui, réussi)
+                # étant déjà remonté à part.
+                details.append("fermeture non autorisée par Android sur cet appareil")
+
+            return ok_stop, ok_fermeture, " / ".join(details)
+        except Exception as e_jnius:
+            print(f"[Live GPSLogger] Échec pyjnius (arrêt) : {e_jnius}")
+            raison_jnius = "méthode pyjnius indisponible"
+
+        # --- Secours : commande Android "am", si disponible ---
+        try:
+            resultat = subprocess.run(
+                [
+                    "am", "broadcast",
+                    "-a", self.ACTION_TASKER_GPSLOGGER,
+                    "-n", f"{self.PACKAGE_GPSLOGGER}/{self.RECEIVER_TASKER_GPSLOGGER}",
+                    "--ez", "immediatestop", "true"
+                ],
+                check=False, timeout=5,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            if resultat.returncode == 0:
+                # La fermeture complète via "am force-stop" nécessite des
+                # privilèges (root/ADB) qu'une appli normale n'a pas :
+                # non tentée ici pour éviter un échec silencieux trompeur.
+                return True, False, "enregistrement arrêté (commande am), fermeture non tentée (nécessite root)"
+            print(f"[Live GPSLogger] Échec commande am (arrêt), code {resultat.returncode} : "
+                  f"{resultat.stderr.decode(errors='ignore').strip()}")
+            raison_am = "commande am indisponible ou refusée"
+        except Exception as e_am:
+            print(f"[Live GPSLogger] Échec commande am (arrêt) : {e_am}")
+            raison_am = "commande am indisponible ou refusée"
+
+        return False, False, f"{raison_jnius} ; {raison_am}"
 
     def _reinitialiser_onglet7_vierge(self):
         """Remet l'onglet Live dans son état initial "vierge", identique
@@ -2553,12 +3126,14 @@ class LiveScreen(Screen):
         self._maj_statut_live("Aucun live en cours.", (0.33, 0.33, 0.33, 1))
 
     def _verifier_et_ouvrir_camera(self):
-        """Vérifie les 3 conditions avant d'ouvrir la caméra :
+        """Vérifie les 2 conditions avant d'ouvrir la caméra :
         1. Onglet dégelé (freeze_actif == False)
         2. Live actif (en_cours_live == True)
-        3. Clic long sur le graphique (déclenché par le callback_long_press)
-        """
-        # Condition 1 & 2 : Si l'onglet est gelé ou si le live n'est pas actif, on bloque
+        Si réunies : ouvre "en même temps" la caméra Android et un
+        waypoint ("<wpt>") en attente, ancré sur le dernier point GPS
+        connu de la trace en cours — voir _ouvrir_camera_Android et
+        _sur_resultat_camera pour la suite (fermeture du waypoint dès
+        la fermeture de la caméra)."""
         if getattr(self, 'freeze_actif', False) or not getattr(self, 'en_cours_live', False):
             self._maj_statut_live(
                 "Caméra bloquée : l'onglet doit être dégelé et un live doit être actif.",
@@ -2566,22 +3141,134 @@ class LiveScreen(Screen):
             )
             return
 
-        # Condition 3 : Si les conditions sont réunies, on ouvre la caméra
+        if not self.points_trace_live:
+            self._maj_statut_live(
+                "Caméra bloquée : aucun point GPS enregistré pour l'instant.",
+                (0.776, 0.157, 0.157, 1)
+            )
+            return
+
+        # "Ouverture" du waypoint : on fige dès maintenant le point GPS
+        # de rattachement (le plus récent connu), avant même que la
+        # photo ne soit prise. Il sera "refermé" (nom + enregistrement
+        # définitif) par _sur_resultat_camera, une fois la caméra
+        # fermée et le nom du fichier photo connu.
+        dernier_point = self.points_trace_live[-1]
+        self._wpt_en_attente = {
+            'lat': dernier_point['lat'],
+            'lon': dernier_point['lon'],
+            'ele': dernier_point.get('ele'),
+            'time': datetime.now(),
+        }
+        self._maj_statut_live("Prise de photo en cours...", (0.33, 0.33, 0.33, 1))
         self._ouvrir_camera_Android()
 
     def _ouvrir_camera_Android(self):
-        """Logique d'appel de l'appareil photo natif Android."""
+        """Ouvre l'appareil photo natif Android. Précise si possible où
+        enregistrer la photo (EXTRA_OUTPUT, via un FileProvider —
+        nécessaire depuis Android 7 pour partager un chemin de fichier
+        avec une autre appli, et pour que certains appareils photo,
+        notamment sous MIUI/Xiaomi, enregistrent bien la photo et
+        renvoient un résultat exploitable). Si ce mécanisme échoue pour
+        une raison quelconque (composant absent...), on se rabat sur un
+        appel simple sans emplacement précisé plutôt que de ne pas
+        ouvrir la caméra du tout."""
+        self._chemin_photo_en_cours = None
         try:
-            from jnius import autoclass, cast
+            from jnius import autoclass
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
             Intent = autoclass('android.content.Intent')
             MediaStore = autoclass('android.provider.MediaStore')
-            
-            intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-            currentActivity = PythonActivity.mActivity
-            currentActivity.startActivity(intent)
+            activite = PythonActivity.mActivity
+
+            try:
+                Environment = autoclass('android.os.Environment')
+                File = autoclass('java.io.File')
+                FileProvider = autoclass('androidx.core.content.FileProvider')
+
+                dossier_photos = File(
+                    Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                    "BubuGPS",
+                )
+                dossier_photos.mkdirs()
+                nom_fichier = f"BubuGPS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+                fichier_photo = File(dossier_photos, nom_fichier)
+
+                autorite = f"{activite.getPackageName()}.fileprovider"
+                uri_photo = FileProvider.getUriForFile(activite, autorite, fichier_photo)
+
+                intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                intent.putExtra(MediaStore.EXTRA_OUTPUT, uri_photo)
+                intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                self._chemin_photo_en_cours = fichier_photo.getAbsolutePath()
+            except Exception as e_fp:
+                # Repli : la caméra s'ouvre quand même, seulement sans
+                # emplacement de sortie précisé (comportement d'avant).
+                print(f"[Caméra] FileProvider indisponible, ouverture sans EXTRA_OUTPUT : {e_fp}")
+                intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                self._chemin_photo_en_cours = None
+
+            activite.startActivityForResult(intent, self.CODE_REQUETE_CAMERA)
         except Exception as e:
+            self._wpt_en_attente = None
             print(f"[Caméra] Erreur lors de l'ouverture de la caméra : {e}")
+
+    def _sur_resultat_camera(self, request_code, result_code, intent):
+        """Appelée quand l'appareil photo se ferme après
+        _ouvrir_camera_Android : "referme" le waypoint ouvert par
+        _verifier_et_ouvrir_camera (nom = fichier photo pris), l'ajoute
+        aux annotations de la trace en cours, puis revient à
+        l'affichage normal de l'enregistrement live."""
+        if request_code != self.CODE_REQUETE_CAMERA:
+            return
+
+        wpt_en_attente = getattr(self, '_wpt_en_attente', None)
+        self._wpt_en_attente = None
+        if wpt_en_attente is None:
+            return
+
+        try:
+            from jnius import autoclass
+            Activity = autoclass('android.app.Activity')
+            capture_reussie = (result_code == Activity.RESULT_OK)
+        except Exception:
+            capture_reussie = False
+
+        if not capture_reussie:
+            self._chemin_photo_en_cours = None
+            self._maj_statut_live("Photo annulée, aucune annotation ajoutée.", (0.937, 0.424, 0.0, 1))
+            return
+
+        chemin_photo = self._chemin_photo_en_cours
+        self._chemin_photo_en_cours = None
+
+        if chemin_photo and os.path.exists(chemin_photo):
+            nom_annotation = os.path.basename(chemin_photo)
+            try:
+                gps_logic.enregistrer_exif_gps(
+                    chemin_photo,
+                    wpt_en_attente['lat'], wpt_en_attente['lon'],
+                    altitude=wpt_en_attente.get('ele'),
+                    date_heure=wpt_en_attente['time'].strftime("%Y:%m:%d %H:%M:%S"),
+                )
+            except Exception as e:
+                print(f"[Caméra] Impossible d'écrire les tags GPS de la photo : {e}")
+        else:
+            nom_annotation = f"Photo_{wpt_en_attente['time'].strftime('%H%M%S')}"
+
+        # "Fermeture" du waypoint : nom définitif connu, ajouté aux
+        # annotations de la trace en cours (voir exporter_vers_gpx(...,
+        # waypoints=...) dans gps_logic.py pour l'écriture GPX finale).
+        self.annotations_live.append({
+            'lat': wpt_en_attente['lat'],
+            'lon': wpt_en_attente['lon'],
+            'ele': wpt_en_attente.get('ele'),
+            'time': wpt_en_attente['time'],
+            'name': nom_annotation,
+            'description': "Photo prise pendant le suivi en direct",
+        })
+
+        self._maj_statut_live(f"Annotation ajoutée à la trace : {nom_annotation}.", (0.180, 0.490, 0.196, 1))
 
     def basculer_freeze(self):
         # Bascule l'état du gel

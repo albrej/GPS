@@ -294,7 +294,7 @@ def lire_gpx_tolerant(chemin_fichier):
     return nettoyer_points_parasites(points)
 
 
-def exporter_vers_gpx(points, chemin_sortie, garder_temps=True):
+def exporter_vers_gpx(points, chemin_sortie, garder_temps=True, waypoints=None):
     gpx = gpxpy.gpx.GPX()
     trk = gpxpy.gpx.GPXTrack()
     gpx.tracks.append(trk)
@@ -304,6 +304,22 @@ def exporter_vers_gpx(points, chemin_sortie, garder_temps=True):
         t_val = p['time'] if garder_temps else None
         pt = gpxpy.gpx.GPXTrackPoint(p['lat'], p['lon'], elevation=p['ele'], time=t_val, name=p.get('name'))
         seg.points.append(pt)
+
+    # Annotations (photos prises pendant un suivi live via un clic long
+    # sur le graphique, voir LiveScreen._ouvrir_camera_Android) :
+    # ajoutées comme waypoints GPX ("<wpt>"), visibles comme repères
+    # dans n'importe quel logiciel GPS.
+    if waypoints:
+        for w in waypoints:
+            wpt = gpxpy.gpx.GPXWaypoint(
+                w['lat'], w['lon'],
+                elevation=w.get('ele'),
+                time=w['time'] if garder_temps else None,
+                name=w.get('name'),
+                description=w.get('description'),
+            )
+            gpx.waypoints.append(wpt)
+
     with open(chemin_sortie, "w", encoding="utf-8") as f:
         f.write(gpx.to_xml())
 
