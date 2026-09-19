@@ -3296,6 +3296,7 @@ class LiveScreen(Screen):
 
         if chemin_photo and os.path.exists(chemin_photo):
             nom_annotation = os.path.basename(chemin_photo)
+            dossier_parent = os.path.dirname(chemin_photo)  # Récupération du dossier d'enregistrement
             try:
                 gps_logic.enregistrer_exif_gps(
                     chemin_photo,
@@ -3307,6 +3308,7 @@ class LiveScreen(Screen):
                 print(f"[Caméra] Impossible d'écrire les tags GPS de la photo : {e}")
         else:
             nom_annotation = f"Photo_{wpt_en_attente['time'].strftime('%H%M%S')}"
+            dossier_parent = "Emplacement inconnu"
 
         # "Fermeture" du waypoint : nom définitif connu, ajouté aux
         # annotations de la trace en cours (voir exporter_vers_gpx(...,
@@ -3320,7 +3322,9 @@ class LiveScreen(Screen):
             'description': "Photo prise pendant le suivi en direct",
         })
 
-        self._maj_statut_live(f"Annotation ajoutée à la trace : {nom_annotation}.", (0.180, 0.490, 0.196, 1))
+        # MODIFICATION : Affichage du nom et de l'emplacement de la photo enregistrée
+        message_succes = f"Photo enregistrée !\nNom : {nom_annotation}\nDossier : {dossier_parent}"
+        self._maj_statut_live(message_succes, (0.180, 0.490, 0.196, 1))
 
     def basculer_freeze(self):
         # Bascule l'état du gel
