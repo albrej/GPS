@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Déclare les dossiers que le FileProvider de l'appli est autorisé à
+    partager (obligatoire pour l'ouverture de l'appareil photo avec
+    EXTRA_OUTPUT, voir _ouvrir_camera_Android dans main.py).
+
+    Les photos sont enregistrées dans :
+        Environment.getExternalStoragePublicDirectory(DIRECTORY_PICTURES)/BubuGPS/
+    c'est-à-dire /storage/emulated/0/Pictures/BubuGPS/ — couvert par
+    l'entrée "pictures" ci-dessous (external-path pointe sur tout le
+    dossier public "Pictures", sous-dossiers compris).
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <external-path name="pictures" path="Pictures/" />
+</paths>

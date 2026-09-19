@@ -39,6 +39,7 @@ from kivy.uix.widget import Widget
 from kivy.properties import StringProperty, BooleanProperty, ListProperty, ObjectProperty
 from kivy.utils import platform
 from kivy.uix.textinput import TextInput
+from gps_service import NativeGPSManager
 
 import gps_logic
 
@@ -2110,6 +2111,8 @@ class LiveScreen(Screen):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        # Instanciation du GPS natif avec la méthode qui reçoit les points
+        self.gps_manager = NativeGPSManager(callback_position=self.sur_nouveau_point_gps)
         self.map_view = None
         self.trace_layer = None
         self.marqueurs_actifs = []
@@ -2171,6 +2174,23 @@ class LiveScreen(Screen):
                 halign="center",
             ))
 
+    def demarrer_suivi_live(self):
+        """Appelé par le bouton 'Démarrer / Live' de l'interface"""
+        # Active la réception GPS toutes les 1000 ms (1 sec) ou dès qu'il y a 1 mètre de déplacement
+        self.gps_manager.start(min_time_ms=1000, min_distance_m=1)
+        
+    def arreter_suivi_live(self):
+        """Appelé par le bouton 'Arrêter'"""
+        self.gps_manager.stop()
+
+    def sur_nouveau_point_gps(self, data):
+        """Reçoit le dictionnaire de données GPS directement depuis Android"""
+        lat = data['lat']
+        lon = data['lon']
+        ele = data['ele']
+        vitesse = data['speed']
+        temps = data['time']
+        
     def dezoomer_carte(self):
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
