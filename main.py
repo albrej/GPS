@@ -2107,7 +2107,6 @@ class LiveScreen(Screen):
     PACKAGE_GPSLOGGER = "com.mendhak.gpslogger"
     ACTION_TASKER_GPSLOGGER = "com.mendhak.gpslogger.TASKER_COMMAND"
     RECEIVER_TASKER_GPSLOGGER = "com.mendhak.gpslogger.TaskerReceiver"
-    CODE_REQUETE_CAMERA = 1001
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -2115,17 +2114,6 @@ class LiveScreen(Screen):
         self.trace_layer = None
         self.marqueurs_actifs = []
         self.points_courants = []
-
-        # Reçoit le résultat de la prise de photo/vidéo lancée par
-        # _ouvrir_camera_Android (voir _sur_resultat_camera). Branché une
-        # seule fois ici pour éviter les appels multiples si la caméra
-        # est ouverte plusieurs fois pendant la session.
-        try:
-            from android import activity
-            activity.bind(on_activity_result=self._sur_resultat_camera)
-        except Exception:
-            pass  # environnement non-Android (PC) : ignoré
-        self._chemin_photo_en_cours = None
 
         # --- Trace EN DIRECT (rouge) : totalement indépendante de la
         # trace "chargée" manuellement ci-dessus (bleue). Réinitialisée
@@ -2136,7 +2124,6 @@ class LiveScreen(Screen):
         self.marqueurs_actifs_live = []
         self.fichier_gpx_actif_live = None
         self.compteur_sources_live = {}
-        self.annotations_live = []  # photos/vidéos prises pendant le live (voir _ouvrir_camera_Android)
 
         # --- Serveur d'écoute live (HTTP local) + file thread-safe des
         # points reçus, consommée côté thread principal (Kivy, comme
@@ -2357,7 +2344,6 @@ class LiveScreen(Screen):
         # que via le serveur d'écoute live) — seuls les nouveaux points
         # reçus en direct à partir d'ici seront comptés.
         self.compteur_sources_live = {}
-        self.annotations_live = []
 
         if points:
             self._afficher_trace_live_sur_carte()
@@ -2476,7 +2462,6 @@ class LiveScreen(Screen):
         # log au moment de l'arrêt (_arreter_gpslogger), sans aucun
         # message ni indicateur visible pendant le suivi.
         self.compteur_sources_live = {}
-        self.annotations_live = []
         
         self.en_cours_live = True  # Le live est maintenant actif
         
@@ -2931,10 +2916,7 @@ class LiveScreen(Screen):
                     os.makedirs(dossier_cible, exist_ok=True)
                     chemin_sortie = os.path.join(dossier_cible, nouveau_nom)
 
-                    gps_logic.exporter_vers_gpx(
-                        self.points_trace_live, chemin_sortie, garder_temps=True,
-                        waypoints=self.annotations_live,
-                    )
+                    gps_logic.exporter_vers_gpx(self.points_trace_live, chemin_sortie, garder_temps=True)
                     self._maj_statut_live(f"Trace enregistrée : {os.path.basename(chemin_sortie)}", (0.180, 0.490, 0.196, 1))
                 except Exception as e:
                     self._maj_statut_live(f"Erreur lors de l'enregistrement de la trace : {e}", (0.776, 0.157, 0.157, 1))
@@ -3008,7 +2990,6 @@ class LiveScreen(Screen):
             pass
         finally:
             self.compteur_sources_live = {}
-            self.annotations_live = []
 
         ok_stop = False
         ok_fermeture = False
@@ -3142,107 +3123,18 @@ class LiveScreen(Screen):
         self._ouvrir_camera_Android()
 
     def _ouvrir_camera_Android(self):
-        """Logique d'appel de l'appareil photo natif Android. Précise
-        systématiquement où enregistrer la photo (EXTRA_OUTPUT, via un
-        FileProvider — obligatoire depuis Android 7 pour partager un
-        chemin de fichier avec une autre appli) : sans ça, certains
-        appareils photo (notamment sous MIUI/Xiaomi) n'enregistrent
-        nulle part et ne renvoient pas non plus de résultat exploitable.
-        Utilise startActivityForResult pour être informé précisément du
-        moment où la photo est prise (voir _sur_resultat_camera),
-        nécessaire pour horodater l'annotation."""
-        self._chemin_photo_en_cours = None
+        """Logique d'appel de l'appareil photo natif Android."""
         try:
-            from jnius import autoclass
+            from jnius import autoclass, cast
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
             Intent = autoclass('android.content.Intent')
             MediaStore = autoclass('android.provider.MediaStore')
-            Environment = autoclass('android.os.Environment')
-            File = autoclass('java.io.File')
-            FileProvider = autoclass('androidx.core.content.FileProvider')
-
-            activite = PythonActivity.mActivity
-
-            dossier_photos = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                "BubuGPS",
-            )
-            dossier_photos.mkdirs()
-            nom_fichier = f"BubuGPS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
-            fichier_photo = File(dossier_photos, nom_fichier)
-
-            autorite = f"{activite.getPackageName()}.fileprovider"
-            uri_photo = FileProvider.getUriForFile(activite, autorite, fichier_photo)
-
+            
             intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-            intent.putExtra(MediaStore.EXTRA_OUTPUT, uri_photo)
-            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-
-            self._chemin_photo_en_cours = fichier_photo.getAbsolutePath()
-            activite.startActivityForResult(intent, self.CODE_REQUETE_CAMERA)
+            currentActivity = PythonActivity.mActivity
+            currentActivity.startActivity(intent)
         except Exception as e:
-            self._chemin_photo_en_cours = None
             print(f"[Caméra] Erreur lors de l'ouverture de la caméra : {e}")
-            self._maj_statut_live(f"Erreur ouverture caméra : {e}", (0.776, 0.157, 0.157, 1))  # #C62828
-
-    def _sur_resultat_camera(self, request_code, result_code, intent):
-        """Appelée quand l'appareil photo se ferme après
-        _ouvrir_camera_Android. Si la prise a réussi, écrit les tags
-        EXIF GPS/horodatage dans la photo elle-même (comme l'onglet
-        Photos) ET ajoute une annotation (waypoint GPX) au point le
-        plus récent de la trace live — voir exporter_vers_gpx(...,
-        waypoints=...) dans gps_logic.py pour l'écriture effective au
-        moment de l'enregistrement final."""
-        if request_code != self.CODE_REQUETE_CAMERA:
-            return
-        try:
-            from jnius import autoclass
-            Activity = autoclass('android.app.Activity')
-            if result_code != Activity.RESULT_OK:
-                return
-        except Exception:
-            return
-
-        if not self.points_trace_live:
-            self._maj_statut_live(
-                "Photo prise, mais aucun point de trace disponible pour l'annoter.",
-                (0.937, 0.424, 0.0, 1)  # #EF6C00
-            )
-            return
-
-        horodatage = datetime.now()
-        dernier_point = self.points_trace_live[-1]
-        chemin_photo = getattr(self, "_chemin_photo_en_cours", None)
-
-        if chemin_photo and os.path.exists(chemin_photo):
-            nom_annotation = os.path.basename(chemin_photo)
-            try:
-                gps_logic.enregistrer_exif_gps(
-                    chemin_photo,
-                    dernier_point['lat'], dernier_point['lon'],
-                    altitude=dernier_point.get('ele'),
-                    date_heure=horodatage.strftime("%Y:%m:%d %H:%M:%S"),
-                )
-            except Exception as e:
-                print(f"[Caméra] Impossible d'écrire les tags GPS de la photo : {e}")
-        else:
-            nom_annotation = f"Photo_{horodatage.strftime('%H%M%S')}"
-
-        self._chemin_photo_en_cours = None
-
-        self.annotations_live.append({
-            'lat': dernier_point['lat'],
-            'lon': dernier_point['lon'],
-            'ele': dernier_point.get('ele'),
-            'time': horodatage,
-            'name': nom_annotation,
-            'description': "Photo prise pendant le suivi en direct",
-        })
-
-        self._maj_statut_live(
-            f"Annotation ajoutée à la trace : {nom_annotation}.",
-            (0.180, 0.490, 0.196, 1)  # #2E7D32
-        )
 
     def basculer_freeze(self):
         # Bascule l'état du gel
