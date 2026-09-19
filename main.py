@@ -2125,6 +2125,7 @@ class LiveScreen(Screen):
             activity.bind(on_activity_result=self._sur_resultat_camera)
         except Exception:
             pass  # environnement non-Android (PC) : ignoré
+        self._chemin_photo_en_cours = None
 
         # --- Trace EN DIRECT (rouge) : totalement indépendante de la
         # trace "chargée" manuellement ci-dessus (bleue). Réinitialisée
@@ -3141,29 +3142,56 @@ class LiveScreen(Screen):
         self._ouvrir_camera_Android()
 
     def _ouvrir_camera_Android(self):
-        """Logique d'appel de l'appareil photo natif Android. Utilise
-        startActivityForResult (et non startActivity) pour être informé
-        précisément du moment où la photo est prise (voir
-        _sur_resultat_camera), nécessaire pour horodater l'annotation."""
+        """Logique d'appel de l'appareil photo natif Android. Précise
+        systématiquement où enregistrer la photo (EXTRA_OUTPUT, via un
+        FileProvider — obligatoire depuis Android 7 pour partager un
+        chemin de fichier avec une autre appli) : sans ça, certains
+        appareils photo (notamment sous MIUI/Xiaomi) n'enregistrent
+        nulle part et ne renvoient pas non plus de résultat exploitable.
+        Utilise startActivityForResult pour être informé précisément du
+        moment où la photo est prise (voir _sur_resultat_camera),
+        nécessaire pour horodater l'annotation."""
+        self._chemin_photo_en_cours = None
         try:
             from jnius import autoclass
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
             Intent = autoclass('android.content.Intent')
             MediaStore = autoclass('android.provider.MediaStore')
+            Environment = autoclass('android.os.Environment')
+            File = autoclass('java.io.File')
+            FileProvider = autoclass('androidx.core.content.FileProvider')
+
+            activite = PythonActivity.mActivity
+
+            dossier_photos = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                "BubuGPS",
+            )
+            dossier_photos.mkdirs()
+            nom_fichier = f"BubuGPS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
+            fichier_photo = File(dossier_photos, nom_fichier)
+
+            autorite = f"{activite.getPackageName()}.fileprovider"
+            uri_photo = FileProvider.getUriForFile(activite, autorite, fichier_photo)
 
             intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-            currentActivity = PythonActivity.mActivity
-            currentActivity.startActivityForResult(intent, self.CODE_REQUETE_CAMERA)
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, uri_photo)
+            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+
+            self._chemin_photo_en_cours = fichier_photo.getAbsolutePath()
+            activite.startActivityForResult(intent, self.CODE_REQUETE_CAMERA)
         except Exception as e:
+            self._chemin_photo_en_cours = None
             print(f"[Caméra] Erreur lors de l'ouverture de la caméra : {e}")
 
     def _sur_resultat_camera(self, request_code, result_code, intent):
         """Appelée quand l'appareil photo se ferme après
-        _ouvrir_camera_Android. Si la prise a réussi, ajoute une
-        annotation (waypoint GPX) au point le plus récent de la trace
-        live, horodatée à cet instant précis — voir
-        exporter_vers_gpx(..., waypoints=...) dans gps_logic.py pour
-        l'écriture effective au moment de l'enregistrement final."""
+        _ouvrir_camera_Android. Si la prise a réussi, écrit les tags
+        EXIF GPS/horodatage dans la photo elle-même (comme l'onglet
+        Photos) ET ajoute une annotation (waypoint GPX) au point le
+        plus récent de la trace live — voir exporter_vers_gpx(...,
+        waypoints=...) dans gps_logic.py pour l'écriture effective au
+        moment de l'enregistrement final."""
         if request_code != self.CODE_REQUETE_CAMERA:
             return
         try:
@@ -3183,7 +3211,23 @@ class LiveScreen(Screen):
 
         horodatage = datetime.now()
         dernier_point = self.points_trace_live[-1]
-        nom_annotation = f"Photo_{horodatage.strftime('%H%M%S')}"
+        chemin_photo = getattr(self, "_chemin_photo_en_cours", None)
+
+        if chemin_photo and os.path.exists(chemin_photo):
+            nom_annotation = os.path.basename(chemin_photo)
+            try:
+                gps_logic.enregistrer_exif_gps(
+                    chemin_photo,
+                    dernier_point['lat'], dernier_point['lon'],
+                    altitude=dernier_point.get('ele'),
+                    date_heure=horodatage.strftime("%Y:%m:%d %H:%M:%S"),
+                )
+            except Exception as e:
+                print(f"[Caméra] Impossible d'écrire les tags GPS de la photo : {e}")
+        else:
+            nom_annotation = f"Photo_{horodatage.strftime('%H%M%S')}"
+
+        self._chemin_photo_en_cours = None
 
         self.annotations_live.append({
             'lat': dernier_point['lat'],
