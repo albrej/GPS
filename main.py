@@ -3200,6 +3200,7 @@ class LiveScreen(Screen):
                 intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
                 intent.putExtra(MediaStore.EXTRA_OUTPUT, uri_photo)
                 intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 self._chemin_photo_en_cours = fichier_photo.getAbsolutePath()
             except Exception as e_fp:
                 # Repli : la caméra s'ouvre quand même, seulement sans
@@ -3212,6 +3213,51 @@ class LiveScreen(Screen):
         except Exception as e:
             self._wpt_en_attente = None
             print(f"[Caméra] Erreur lors de l'ouverture de la caméra : {e}")
+
+    def _trouver_derniere_photo_camera(self):
+        """Repli lorsque l'appareil photo n'a pas respecté EXTRA_OUTPUT —
+        très fréquent sur certains appareils (notamment Xiaomi/Redmi sous
+        MIUI/HyperOS), qui enregistrent quand même la photo, mais dans
+        leur propre galerie plutôt qu'à l'emplacement demandé.
+
+        Interroge le MediaStore Android pour retrouver la toute dernière
+        photo ajoutée à la galerie (moins de 60 secondes) : dans ce cas
+        précis (juste après la fermeture de l'appareil photo), il s'agit
+        très probablement de la photo qui vient d'être prise. Renvoie
+        son chemin, ou None si rien de pertinent n'est trouvé."""
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Images = autoclass('android.provider.MediaStore$Images$Media')
+            activite = PythonActivity.mActivity
+            resolveur = activite.getContentResolver()
+
+            curseur = resolveur.query(Images.EXTERNAL_CONTENT_URI, None, None, None, "date_added DESC")
+            if curseur is None:
+                return None
+            try:
+                if curseur.getCount() == 0 or not curseur.moveToFirst():
+                    return None
+
+                idx_chemin = curseur.getColumnIndex("_data")
+                idx_date = curseur.getColumnIndex("date_added")
+                chemin = curseur.getString(idx_chemin) if idx_chemin >= 0 else None
+                date_ajout = curseur.getLong(idx_date) if idx_date >= 0 else 0
+            finally:
+                curseur.close()
+
+            if not chemin:
+                return None
+            # date_added est en secondes depuis l'epoch (colonne MediaStore
+            # standard) : on vérifie que la photo trouvée est bien toute
+            # récente, pour ne jamais aller récupérer une ancienne photo
+            # de la galerie sans rapport avec celle qui vient d'être prise.
+            if abs(datetime.now().timestamp() - date_ajout) > 60:
+                return None
+            return chemin
+        except Exception as e:
+            print(f"[Caméra] Repli MediaStore impossible : {e}")
+            return None
 
     def _sur_resultat_camera(self, request_code, result_code, intent):
         """Appelée quand l'appareil photo se ferme après
@@ -3241,6 +3287,12 @@ class LiveScreen(Screen):
 
         chemin_photo = self._chemin_photo_en_cours
         self._chemin_photo_en_cours = None
+
+        if not (chemin_photo and os.path.exists(chemin_photo)):
+            # EXTRA_OUTPUT n'a pas été respecté par l'appareil photo :
+            # on tente de retrouver la photo dans la galerie (voir
+            # _trouver_derniere_photo_camera).
+            chemin_photo = self._trouver_derniere_photo_camera()
 
         if chemin_photo and os.path.exists(chemin_photo):
             nom_annotation = os.path.basename(chemin_photo)
