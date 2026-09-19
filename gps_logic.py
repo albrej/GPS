@@ -223,7 +223,78 @@ def lire_fichier_pour_conversion(chemin_fichier):
     return nettoyer_points_parasites(points)
 
 
-def exporter_vers_gpx(points, chemin_sortie, garder_temps=True, waypoints=None):
+_RE_TRKPT = re.compile(
+    r'<trkpt\s+lat="([\-0-9.]+)"\s+lon="([\-0-9.]+)"\s*>(.*?)</trkpt>',
+    re.DOTALL,
+)
+_RE_ELE = re.compile(r'<ele>\s*([\-0-9.]+)\s*</ele>')
+_RE_TIME = re.compile(r'<time>\s*([^<]+?)\s*</time>')
+
+
+def lire_gpx_tolerant(chemin_fichier):
+    """Lit un fichier GPX en tolérant un document XML incomplet ou mal
+    fermé — typiquement un fichier encore en cours d'écriture par
+    GPSLogger au moment de la lecture, dont les balises de fermeture
+    </trkseg></trk></gpx> n'ont pas encore été écrites (GPSLogger ne les
+    écrit qu'à l'arrêt de l'enregistrement).
+
+    Essaie d'abord une lecture normale et stricte (lire_fichier_pour_
+    conversion, gpxpy) ; si celle-ci échoue à cause du document
+    incomplet, extrait directement les blocs <trkpt>...</trkpt>
+    complets du texte brut par expression régulière (un <trkpt> tronqué
+    en toute fin de fichier, sans balise de fermeture, est alors
+    naturellement ignoré, sans lever d'exception).
+
+    Renvoie toujours une liste de points (éventuellement vide)."""
+    try:
+        return lire_fichier_pour_conversion(chemin_fichier)
+    except Exception:
+        pass
+
+    points = []
+    try:
+        with open(chemin_fichier, "r", encoding="utf-8", errors="ignore") as f:
+            contenu = f.read()
+    except OSError:
+        return points
+
+    for m in _RE_TRKPT.finditer(contenu):
+        try:
+            lat = float(m.group(1))
+            lon = float(m.group(2))
+        except ValueError:
+            continue
+
+        bloc = m.group(3)
+
+        ele = None
+        m_ele = _RE_ELE.search(bloc)
+        if m_ele:
+            try:
+                ele = round(float(m_ele.group(1)), 1)
+            except ValueError:
+                ele = None
+
+        t_val = None
+        m_time = _RE_TIME.search(bloc)
+        if m_time:
+            t_str = m_time.group(1).strip()
+            try:
+                if t_str.endswith("Z"):
+                    t_val = datetime.fromisoformat(t_str[:-1] + "+00:00")
+                else:
+                    t_val = datetime.fromisoformat(t_str)
+                if t_val.tzinfo is not None:
+                    t_val = t_val.astimezone().replace(tzinfo=None)
+            except ValueError:
+                t_val = None
+
+        points.append({'lat': lat, 'lon': lon, 'ele': ele, 'time': t_val, 'name': None})
+
+    return nettoyer_points_parasites(points)
+
+
+def exporter_vers_gpx(points, chemin_sortie, garder_temps=True):
     gpx = gpxpy.gpx.GPX()
     trk = gpxpy.gpx.GPXTrack()
     gpx.tracks.append(trk)
@@ -233,21 +304,6 @@ def exporter_vers_gpx(points, chemin_sortie, garder_temps=True, waypoints=None):
         t_val = p['time'] if garder_temps else None
         pt = gpxpy.gpx.GPXTrackPoint(p['lat'], p['lon'], elevation=p['ele'], time=t_val, name=p.get('name'))
         seg.points.append(pt)
-
-    # Annotations (photos/vidéos prises pendant un suivi live, voir
-    # LiveScreen._ouvrir_camera_Android) : ajoutées comme waypoints GPX,
-    # visibles comme repères dans n'importe quel logiciel GPS.
-    if waypoints:
-        for w in waypoints:
-            wpt = gpxpy.gpx.GPXWaypoint(
-                w['lat'], w['lon'],
-                elevation=w.get('ele'),
-                time=w['time'] if garder_temps else None,
-                name=w.get('name'),
-                description=w.get('description'),
-            )
-            gpx.waypoints.append(wpt)
-
     with open(chemin_sortie, "w", encoding="utf-8") as f:
         f.write(gpx.to_xml())
 
@@ -1052,21 +1108,3 @@ def enregistrer_exif_gps(chemin_photo, latitude, longitude, altitude=None, date_
 
     exif_bytes = piexif.dump(exif_dict)
     piexif.insert(exif_bytes, chemin_photo)
-
-
-def calculer_vitesse_kmh_entre_points(p_precedent, p_suivant):
-    """Calcule la vitesse instantanee (km/h) entre deux points GPS
-    successifs, a partir de leur horodatage. Retourne None si le calcul
-    est impossible."""
-    if not p_precedent or not p_suivant:
-        return None
-    if not p_precedent.get('time') or not p_suivant.get('time'):
-        return None
-    dt = (p_suivant['time'] - p_precedent['time']).total_seconds()
-    if dt <= 0:
-        return None
-    d = calculer_distance_haversine(p_precedent['lat'], p_precedent['lon'], p_suivant['lat'], p_suivant['lon'])
-    return round((d / dt) * 3.6, 1)
-
-
-PORT_SERVEUR_LIVE = 8765
