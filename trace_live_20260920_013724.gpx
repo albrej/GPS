@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx xmlns="http://www.topografix.com/GPX/1/1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd" version="1.1" creator="gpx.py -- https://github.com/tkrajina/gpxpy">
+  <wpt lat="43.85196359" lon="1.82329846">
+    <ele>188.8</ele>
+    <time>2026-09-20T01:36:25.766983</time>
+    <name>Photo_013625</name>
+    <desc>Photo prise pendant le suivi en direct</desc>
+  </wpt>
+  <trk>
+    <trkseg>
+      <trkpt lat="43.8519216" lon="1.8233523">
+        <ele>178.2</ele>
+        <time>2026-09-20T01:35:54.937818</time>
+      </trkpt>
+      <trkpt lat="43.85196779" lon="1.82335484">
+        <ele>188.7</ele>
+        <time>2026-09-20T01:36:11.213097</time>
+      </trkpt>
+      <trkpt lat="43.85196359" lon="1.82329846">
+        <ele>188.8</ele>
+        <time>2026-09-20T01:36:19.206285</time>
+      </trkpt>
+      <trkpt lat="43.85197214" lon="1.82330248">
+        <ele>189.1</ele>
+        <time>2026-09-20T01:36:25.358935</time>
+      </trkpt>
+      <trkpt lat="43.85198245" lon="1.82330484">
+        <ele>189.3</ele>
+        <time>2026-09-20T01:36:34.165318</time>
+      </trkpt>
+      <trkpt lat="43.85198217" lon="1.82330688">
+        <ele>189.5</ele>
+        <time>2026-09-20T01:37:18.928180</time>
+      </trkpt>
+      <trkpt lat="43.85197636" lon="1.82331807">
+        <ele>189.6</ele>
+        <time>2026-09-20T01:37:18.940094</time>
+      </trkpt>
+      <trkpt lat="43.8519791" lon="1.82334327">
+        <ele>190.1</ele>
+        <time>2026-09-20T01:37:18.944234</time>
+      </trkpt>
+      <trkpt lat="43.85198166" lon="1.82333962">
+        <ele>190.2</ele>
+        <time>2026-09-20T01:37:18.945943</time>
+      </trkpt>
+      <trkpt lat="43.85198965" lon="1.82336335">
+        <ele>189.4</ele>
+        <time>2026-09-20T01:37:18.952746</time>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>

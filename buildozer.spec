@@ -30,7 +30,7 @@ fullscreen = 0
 # desktop avec DOSSIER_GPSLOGGER en chemin absolu). MANAGE_EXTERNAL_STORAGE
 # doit être activé manuellement par l'utilisateur dans les réglages Android
 # après l'installation (voir README.md).
-android.permissions = READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE,INTERNET,ACCESS_FINE_LOCATION,ACCESS_COARSE_LOCATION
+android.permissions = READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE,INTERNET,ACCESS_FINE_LOCATION,ACCESS_COARSE_LOCATION,CAMERA
 
 # Associe l'appli aux fichiers .gpx/.kml/.kmz ("Ouvrir avec" -> Bubu GPS).
 # Voir intent_filters.xml et OutilsTracesApp._sur_nouvel_intent dans main.py.
