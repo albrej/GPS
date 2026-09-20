@@ -84,15 +84,14 @@ if CARTE_DISPONIBLE:
             self.freeze_actif = False  # <--- Assure l'initialisation de l'attribut
 
         def on_touch_down(self, touch):
-            # Le double-tap déclenche le freeze/unfreeze dans tous les cas
-            if touch.is_double_tap:
-                if self.freeze_callback:
-                    self.freeze_callback()
-                return True
-    
+            if not self.collide_point(*touch.pos):
+                return super().on_touch_down(touch)
+
+            # Si gelé, on ignore la molette et les drags, mais on laisse passer 
+            # l'événement à super() pour que Kivy continue d'analyser le double-tap.
             if getattr(self, 'freeze_actif', False):
-                return True  # Bloque tous les clics et l'amorce de glisser sur la carte en mode freeze
-                
+                return False 
+
             bouton = getattr(touch, "button", "")
             if bouton in ("scrollup", "scrolldown", "scrollleft", "scrollright"):
                 dx = dy = 0
@@ -104,11 +103,12 @@ if CARTE_DISPONIBLE:
                     dx = self.PAS_DEPLACEMENT_PX
                 elif bouton == "scrollleft":
                     dx = -self.PAS_DEPLACEMENT_PX
-    
+
                 cx, cy = gps_logic.projeter_mercator(self.lat, self.lon, self.zoom)
                 nouvelle_lat, nouvelle_lon = gps_logic.deprojeter_mercator(cx + dx, cy + dy, self.zoom)
                 self.center_on(nouvelle_lat, nouvelle_lon)
                 return True
+
             return super().on_touch_down(touch)
     
         def on_touch_move(self, touch):
@@ -122,8 +122,18 @@ if CARTE_DISPONIBLE:
             return super().on_touch_move(touch)
     
         def on_touch_up(self, touch):
+            if not self.collide_point(*touch.pos):
+                return super().on_touch_up(touch)
+
+            # C'est ici, au relâchement du 2nd clic, que Kivy valide is_double_tap
+            if touch.is_double_tap:
+                if self.freeze_callback:
+                    self.freeze_callback()
+                return True
+
             if getattr(self, 'freeze_actif', False):
                 return True
+
             return super().on_touch_up(touch)
 
         def scale_at(self, *args, **kwargs):
@@ -506,9 +516,9 @@ if platform == "android":
     sd_physique = "/storage/2EBA-9AD9"
     # On vérifie si la carte SD est bien montée/présente, sinon on bascule sur la mémoire interne
     if os.path.exists(sd_physique):
-        DOSSIER_SORTIE = os.path.join(sd_physique, "Bubu_GPS_files")
+        DOSSIER_SORTIE = os.path.join(sd_physique, "GPX-Speed_ok", "Bubu_GPS_files")
     else:
-        DOSSIER_SORTIE = "/storage/emulated/0/Bubu_GPS_files"
+        DOSSIER_SORTIE = "/storage/emulated/0/GPX-Speed_ok/Bubu_GPS_files"
 else:
     DOSSIER_CHARGEMENT = os.path.join(os.path.expanduser("~"), "Desktop", "GPX-Speed_ok")
     DOSSIER_SORTIE = DOSSIER_CHARGEMENT
