@@ -2107,7 +2107,6 @@ class LiveScreen(Screen):
     PACKAGE_GPSLOGGER = "com.mendhak.gpslogger"
     ACTION_TASKER_GPSLOGGER = "com.mendhak.gpslogger.TASKER_COMMAND"
     RECEIVER_TASKER_GPSLOGGER = "com.mendhak.gpslogger.TaskerReceiver"
-    CODE_REQUETE_CAMERA = 1001
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -2115,18 +2114,6 @@ class LiveScreen(Screen):
         self.trace_layer = None
         self.marqueurs_actifs = []
         self.points_courants = []
-        self._chemin_photo_en_cours = None
-        self._wpt_en_attente = None
-
-        # Reçoit le résultat de la prise de photo lancée par
-        # _ouvrir_camera_Android (voir _sur_resultat_camera). Branché une
-        # seule fois ici pour éviter les appels multiples si la caméra
-        # est ouverte plusieurs fois pendant la session.
-        try:
-            from android import activity
-            activity.bind(on_activity_result=self._sur_resultat_camera)
-        except Exception:
-            pass  # environnement non-Android (PC) : ignoré
 
         # --- Trace EN DIRECT (rouge) : totalement indépendante de la
         # trace "chargée" manuellement ci-dessus (bleue). Réinitialisée
@@ -3126,186 +3113,36 @@ class LiveScreen(Screen):
         self._maj_statut_live("Aucun live en cours.", (0.33, 0.33, 0.33, 1))
 
     def _verifier_et_ouvrir_camera(self):
-        """Vérifie les 2 conditions avant d'ouvrir la caméra :
-        1. Onglet dégelé (freeze_actif == False)
-        2. Live actif (en_cours_live == True)
-        Si réunies : ouvre "en même temps" la caméra Android et un
-        waypoint ("<wpt>") en attente, ancré sur le dernier point GPS
-        connu de la trace en cours — voir _ouvrir_camera_Android et
-        _sur_resultat_camera pour la suite (fermeture du waypoint dès
-        la fermeture de la caméra)."""
-        if getattr(self, 'freeze_actif', False) or not getattr(self, 'en_cours_live', False):
-            self._maj_statut_live(
-                "Caméra bloquée : l'onglet doit être dégelé et un live doit être actif.",
-                (0.776, 0.157, 0.157, 1)
-            )
+        """Vérifie si un live est en cours avant d'autoriser la prise de photo par appui long."""
+        if not getattr(self, 'en_cours_live', False):
+            self._maj_statut_live("Impossible de prendre une photo : aucun live en cours.", (0.776, 0.157, 0.157, 1))
             return
-
-        if not self.points_trace_live:
-            self._maj_statut_live(
-                "Caméra bloquée : aucun point GPS enregistré pour l'instant.",
-                (0.776, 0.157, 0.157, 1)
-            )
-            return
-
-        # "Ouverture" du waypoint : on fige dès maintenant le point GPS
-        # de rattachement (le plus récent connu), avant même que la
-        # photo ne soit prise. Il sera "refermé" (nom + enregistrement
-        # définitif) par _sur_resultat_camera, une fois la caméra
-        # fermée et le nom du fichier photo connu.
-        dernier_point = self.points_trace_live[-1]
-        self._wpt_en_attente = {
-            'lat': dernier_point['lat'],
-            'lon': dernier_point['lon'],
-            'ele': dernier_point.get('ele'),
-            'time': datetime.now(),
-        }
-        self._maj_statut_live("Prise de photo en cours...", (0.33, 0.33, 0.33, 1))
         self._ouvrir_camera_Android()
 
     def _ouvrir_camera_Android(self):
-        """Ouvre l'appareil photo natif Android sans contraindre d'emplacement 
-        via EXTRA_OUTPUT, évitant ainsi les échecs d'enregistrement fréquents."""
-        self._chemin_photo_en_cours = None
-        try:
-            from jnius import autoclass
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            Intent = autoclass('android.content.Intent')
-            MediaStore = autoclass('android.provider.MediaStore')
-            activite = PythonActivity.mActivity
-
-            # On ouvre l'appareil photo simplement, sans imposer de chemin de sortie
-            intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-            self._chemin_photo_en_cours = None
-
-            activite.startActivityForResult(intent, self.CODE_REQUETE_CAMERA)
-        except Exception as e:
-            self._wpt_en_attente = None
-            print(f"[Caméra] Erreur lors de l'ouverture de la caméra : {e}")
-
-    def _trouver_derniere_photo_camera(self):
-        """Repli lorsque l'appareil photo n'a pas respecté EXTRA_OUTPUT —
-        très fréquent sur certains appareils (notamment Xiaomi/Redmi sous
-        MIUI/HyperOS), qui enregistrent quand même la photo, mais dans
-        leur propre galerie plutôt qu'à l'emplacement demandé.
-
-        Interroge le MediaStore Android pour retrouver la toute dernière
-        photo ajoutée à la galerie (moins de 60 secondes) : dans ce cas
-        précis (juste après la fermeture de l'appareil photo), il s'agit
-        très probablement de la photo qui vient d'être prise. Renvoie
-        son chemin, ou None si rien de pertinent n'est trouvé."""
-        try:
-            from jnius import autoclass
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            Images = autoclass('android.provider.MediaStore$Images$Media')
-            activite = PythonActivity.mActivity
-            resolveur = activite.getContentResolver()
-
-            curseur = resolveur.query(Images.EXTERNAL_CONTENT_URI, None, None, None, "date_added DESC")
-            if curseur is None:
-                return None
+        """Ouvre l'application Appareil photo sous Android ou simule l'action sur PC."""
+        self._maj_statut_live("Prise de photo en cours...", (0.937, 0.424, 0.0, 1))
+        
+        if platform == 'android':
             try:
-                if curseur.getCount() == 0 or not curseur.moveToFirst():
-                    return None
-
-                idx_chemin = curseur.getColumnIndex("_data")
-                idx_date = curseur.getColumnIndex("date_added")
-                chemin = curseur.getString(idx_chemin) if idx_chemin >= 0 else None
-                date_ajout = curseur.getLong(idx_date) if idx_date >= 0 else 0
-            finally:
-                curseur.close()
-
-            if not chemin:
-                return None
-            # date_added est en secondes depuis l'epoch (colonne MediaStore
-            # standard) : on vérifie que la photo trouvée est bien toute
-            # récente, pour ne jamais aller récupérer une ancienne photo
-            # de la galerie sans rapport avec celle qui vient d'être prise.
-            if abs(datetime.now().timestamp() - date_ajout) > 60:
-                return None
-            return chemin
-        except Exception as e:
-            print(f"[Caméra] Repli MediaStore impossible : {e}")
-            return None
-
-    def _sur_resultat_camera(self, request_code, result_code, intent):
-        """Appelée quand l'appareil photo se ferme après
-        _ouvrir_camera_Android : "referme" le waypoint ouvert par
-        _verifier_et_ouvrir_camera (nom = fichier photo pris), l'ajoute
-        aux annotations de la trace en cours, puis revient à
-        l'affichage normal de l'enregistrement live."""
-        if request_code != self.CODE_REQUETE_CAMERA:
-            return
-
-        wpt_en_attente = getattr(self, '_wpt_en_attente', None)
-        self._wpt_en_attente = None
-        if wpt_en_attente is None:
-            return
-
-        try:
-            from jnius import autoclass
-            Activity = autoclass('android.app.Activity')
-            capture_reussie = (result_code == Activity.RESULT_OK)
-        except Exception:
-            capture_reussie = False
-
-        if not capture_reussie:
-            self._chemin_photo_en_cours = None
-            self._maj_statut_live("Photo annulée, aucune annotation ajoutée.", (0.937, 0.424, 0.0, 1))
-            return
-
-        chemin_photo = self._chemin_photo_en_cours
-        self._chemin_photo_en_cours = None
-
-        # 1. Vérification si le fichier fourni via EXTRA_OUTPUT existe et n'est pas vide
-        fichier_valide = False
-        if chemin_photo and os.path.exists(chemin_photo):
-            try:
-                if os.path.getsize(chemin_photo) > 0:
-                    fichier_valide = True
-            except Exception:
-                pass
-
-        # 2. Si le fichier n'existe pas ou est vide, on tente le repli MediaStore
-        if not fichier_valide:
-            chemin_trouve = self._trouver_derniere_photo_camera()
-            if chemin_trouve:
-                chemin_photo = chemin_trouve
-                fichier_valide = True
-
-        # 3. Traitement final de la photo si un fichier valide a pu être localisé
-        if fichier_valide and chemin_photo:
-            nom_annotation = os.path.basename(chemin_photo)
-            dossier_parent = os.path.dirname(chemin_photo)
-            try:
-                gps_logic.enregistrer_exif_gps(
-                    chemin_photo,
-                    wpt_en_attente['lat'], wpt_en_attente['lon'],
-                    altitude=wpt_en_attente.get('ele'),
-                    date_heure=wpt_en_attente['time'].strftime("%Y:%m:%d %H:%M:%S"),
-                )
+                from jnius import autoclass
+                # Utilisation de l'Intent Android pour lancer l'appareil photo
+                Intent = autoclass('android.content.Intent')
+                MediaStore = autoclass('android.provider.MediaStore')
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                
+                intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                current_activity = PythonActivity.mActivity
+                current_activity.startActivity(intent)
+                
+                self._maj_statut_live("Appareil photo ouvert.", (0.180, 0.490, 0.196, 1))
             except Exception as e:
-                print(f"[Caméra] Impossible d'écrire les tags GPS de la photo : {e}")
+                self._maj_statut_live(f"Erreur ouverture appareil photo : {e}", (0.776, 0.157, 0.157, 1))
         else:
-            # Mode dégradé ultime : aucun fichier physique récupérable, on nomme quand même l'annotation
-            nom_annotation = f"Photo_{wpt_en_attente['time'].strftime('%H%M%S')}"
-            dossier_parent = "Introuvable / Galerie système"
-
-        # "Fermeture" du waypoint : nom définitif connu, ajouté aux
-        # annotations de la trace en cours
-        self.annotations_live.append({
-            'lat': wpt_en_attente['lat'],
-            'lon': wpt_en_attente['lon'],
-            'ele': wpt_en_attente.get('ele'),
-            'time': wpt_en_attente['time'],
-            'name': nom_annotation,
-            'description': "Photo prise pendant le suivi en direct",
-        })
-
-        # Affichage clair du nom et de l'emplacement de la photo pour l'utilisateur
-        message_succes = f"Photo enregistrée !\nNom : {nom_annotation}\nDossier : {dossier_parent}"
-        self._maj_statut_live(message_succes, (0.180, 0.490, 0.196, 1))
-
+            # Comportement de secours sur PC (Test/Simulation)
+            print("[Live GPSLogger] Simulation : Ouverture de la caméra non disponible sur PC.")
+            Clock.schedule_once(lambda dt: self._maj_statut_live("Live en cours... (Caméra simulée sur PC)", (0.180, 0.490, 0.196, 1)), 2.0)
+            
     def basculer_freeze(self):
         # Bascule l'état du gel
         self.freeze_actif = not self.freeze_actif
