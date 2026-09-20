@@ -2186,6 +2186,7 @@ class LiveScreen(Screen):
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
             self.map_view.freeze_callback = self.basculer_freeze
+            Window.bind(on_touch_down=self._debut_touch_carte, on_touch_up=self._sur_touch_carte)
             self.ids.map_container.add_widget(self.map_view)
         else:
             self.ids.map_container.add_widget(Label(
@@ -2218,6 +2219,7 @@ class LiveScreen(Screen):
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         self.map_view.map_source = SOURCE_SATELLITE if valeur == "satellite" else SOURCE_PLAN
+        # <--- Ligne indispensable pour rafraîchir les tuiles
         self.map_view.trigger_update(True)
 
     def ouvrir_selecteur_fichier(self):
@@ -3303,6 +3305,26 @@ class LiveScreen(Screen):
             else:
                 self._effacer_info_point_live("Aucun point live enregistré.")
 
+
+    def _debut_touch_carte(self, window, touch):
+        """Mémorise la position de l'appui si le toucher démarre sur la carte."""
+        if (
+            self.manager is not None and self.manager.current == self.name
+            and self.map_view is not None and self.map_view.collide_point(*touch.pos)
+        ):
+            touch.ud["carte_pos_depart"] = (touch.x, touch.y)
+        return False
+
+    def _sur_touch_carte(self, window, touch):
+        """Force le rafraîchissement et la ré-attribution des tuiles au relâchement."""
+        if self.manager is None or self.manager.current != self.name:
+            return False
+        if CARTE_DISPONIBLE and self.map_view is not None:
+            # Force la mise à jour des tuiles manquantes lors des actions de zoom/déplacement
+            self.map_view.trigger_update(True)
+        return False
+        
+        
 class CarteScreen(Screen):
     fichier_source = StringProperty("")
     info_fichier = StringProperty("Aucune trace chargée.")
