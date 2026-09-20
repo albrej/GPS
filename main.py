@@ -3120,27 +3120,39 @@ class LiveScreen(Screen):
         self._ouvrir_camera_Android()
 
     def _ouvrir_camera_Android(self):
-        """Ouvre l'application Appareil photo sous Android ou simule l'action sur PC."""
+        """Ouvre l'appareil photo après avoir vérifié les permissions sous Android."""
         self._maj_statut_live("Prise de photo en cours...", (0.937, 0.424, 0.0, 1))
         
         if platform == 'android':
             try:
                 from jnius import autoclass
-                # Utilisation de l'Intent Android pour lancer l'appareil photo
-                Intent = autoclass('android.content.Intent')
-                MediaStore = autoclass('android.provider.MediaStore')
-                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                from android.permissions import request_permissions, Permission
                 
-                intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                current_activity = PythonActivity.mActivity
-                current_activity.startActivity(intent)
+                # Callback de vérification de permission
+                def callback(permissions, grant_results):
+                    if all(grant_results):
+                        try:
+                            Intent = autoclass('android.content.Intent')
+                            MediaStore = autoclass('android.provider.MediaStore')
+                            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                            
+                            intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                            current_activity = PythonActivity.mActivity
+                            current_activity.startActivity(intent)
+                            
+                            self._maj_statut_live("Appareil photo ouvert.", (0.180, 0.490, 0.196, 1))
+                        except Exception as e:
+                            self._maj_statut_live(f"Erreur lancement : {e}", (0.776, 0.157, 0.157, 1))
+                    else:
+                        self._maj_statut_live("Permission caméra refusée.", (0.776, 0.157, 0.157, 1))
+
+                # Demande la permission d'utiliser la caméra
+                request_permissions([Permission.CAMERA], callback)
                 
-                self._maj_statut_live("Appareil photo ouvert.", (0.180, 0.490, 0.196, 1))
             except Exception as e:
-                self._maj_statut_live(f"Erreur ouverture appareil photo : {e}", (0.776, 0.157, 0.157, 1))
+                self._maj_statut_live(f"Erreur permission : {e}", (0.776, 0.157, 0.157, 1))
         else:
-            # Comportement de secours sur PC (Test/Simulation)
-            print("[Live GPSLogger] Simulation : Ouverture de la caméra non disponible sur PC.")
+            print("[Live GPSLogger] Simulation : Caméra non disponible sur PC.")
             Clock.schedule_once(lambda dt: self._maj_statut_live("Live en cours... (Caméra simulée sur PC)", (0.180, 0.490, 0.196, 1)), 2.0)
             
     def basculer_freeze(self):
