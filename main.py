@@ -2125,6 +2125,11 @@ class LiveScreen(Screen):
         self.fichier_gpx_actif_live = None
         self.compteur_sources_live = {}
         self.annotations_live = []  # photos prises pendant le live (voir _ouvrir_camera_Android)
+        # Balise <wpt> "en attente" : ouverte par _verifier_et_ouvrir_camera
+        # au lancement de l'appareil photo, refermée par
+        # _fermer_waypoint_photo au retour sur l'appli (voir
+        # OutilsTracesApp.on_resume). None = aucune balise en attente.
+        self._wpt_en_attente = None
 
         # --- Serveur d'écoute live (HTTP local) + file thread-safe des
         # points reçus, consommée côté thread principal (Kivy, comme
@@ -3113,11 +3118,100 @@ class LiveScreen(Screen):
         self._maj_statut_live("Aucun live en cours.", (0.33, 0.33, 0.33, 1))
 
     def _verifier_et_ouvrir_camera(self):
-        """Vérifie si un live est en cours avant d'autoriser la prise de photo par appui long."""
+        """Vérifie si un live est en cours avant d'autoriser la prise de
+        photo par appui long, puis ouvre une balise <wpt> "en attente"
+        sur le dernier point GPS connu de la trace en cours — refermée
+        par _fermer_waypoint_photo dès que l'utilisateur revient sur
+        l'appli après avoir quitté l'appareil photo (voir
+        OutilsTracesApp.on_resume, qui détecte ce retour)."""
         if not getattr(self, 'en_cours_live', False):
             self._maj_statut_live("Impossible de prendre une photo : aucun live en cours.", (0.776, 0.157, 0.157, 1))
             return
+        if not self.points_trace_live:
+            self._maj_statut_live(
+                "Impossible de prendre une photo : aucun point GPS enregistré pour l'instant.",
+                (0.776, 0.157, 0.157, 1)
+            )
+            return
+
+        dernier_point = self.points_trace_live[-1]
+        self._wpt_en_attente = {
+            'lat': dernier_point['lat'],
+            'lon': dernier_point['lon'],
+            'ele': dernier_point.get('ele'),
+            'time': datetime.now(),
+        }
         self._ouvrir_camera_Android()
+
+    def _fermer_waypoint_photo(self):
+        """Appelée par OutilsTracesApp.on_resume dès que l'utilisateur
+        revient sur l'appli après avoir ouvert l'appareil photo :
+        "referme" la balise <wpt> ouverte par _verifier_et_ouvrir_camera
+        en y inscrivant le nom de la ou des photo(s) prise(s) depuis
+        (interrogation du MediaStore Android), puis l'ajoute aux
+        annotations de la trace en cours."""
+        wpt_en_attente = self._wpt_en_attente
+        self._wpt_en_attente = None
+        if wpt_en_attente is None:
+            return
+
+        noms_photos = self._lister_photos_depuis(wpt_en_attente['time'])
+        if noms_photos:
+            nom_annotation = ", ".join(noms_photos)
+            description = f"{len(noms_photos)} photo(s) prise(s) pendant le suivi en direct"
+        else:
+            nom_annotation = f"Photo_{wpt_en_attente['time'].strftime('%H%M%S')}"
+            description = "Photo prise pendant le suivi en direct (nom non confirmé)"
+
+        self.annotations_live.append({
+            'lat': wpt_en_attente['lat'],
+            'lon': wpt_en_attente['lon'],
+            'ele': wpt_en_attente.get('ele'),
+            'time': wpt_en_attente['time'],
+            'name': nom_annotation,
+            'description': description,
+        })
+        self._maj_statut_live(f"Photo(s) enregistrée(s) : {nom_annotation}", (0.180, 0.490, 0.196, 1))
+
+    def _lister_photos_depuis(self, temps_ouverture):
+        """Interroge le MediaStore Android pour lister le nom de toutes
+        les photos ajoutées à la galerie depuis temps_ouverture (avec 2
+        secondes de marge en arrière, pour absorber un léger écart
+        d'horloge) — c'est-à-dire, dans les faits, celles prises pendant
+        que l'appareil photo était ouvert. Renvoie une liste de noms de
+        fichier (vide si rien de pertinent trouvé, ou hors Android)."""
+        try:
+            from jnius import autoclass
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            Images = autoclass('android.provider.MediaStore$Images$Media')
+            activite = PythonActivity.mActivity
+            resolveur = activite.getContentResolver()
+
+            seuil = int(temps_ouverture.timestamp()) - 2
+            curseur = resolveur.query(
+                Images.EXTERNAL_CONTENT_URI, None,
+                "date_added >= ?", [str(seuil)],
+                "date_added ASC"
+            )
+            if curseur is None:
+                return []
+            noms = []
+            try:
+                idx_data = curseur.getColumnIndex("_data")
+                if curseur.moveToFirst():
+                    while True:
+                        if idx_data >= 0:
+                            chemin = curseur.getString(idx_data)
+                            if chemin:
+                                noms.append(os.path.basename(chemin))
+                        if not curseur.moveToNext():
+                            break
+            finally:
+                curseur.close()
+            return noms
+        except Exception as e:
+            print(f"[Caméra] Impossible de lister les photos prises : {e}")
+            return []
 
     def _ouvrir_camera_Android(self):
         """Ouvre l'application Appareil photo du système de manière classique sous Android."""
@@ -3157,13 +3251,16 @@ class LiveScreen(Screen):
                             
                             self._maj_statut_live("Appareil photo lancé.", (0.180, 0.490, 0.196, 1))
                         except Exception as e:
+                            self._wpt_en_attente = None
                             self._maj_statut_live(f"Erreur lancement : {e}", (0.776, 0.157, 0.157, 1))
                     else:
+                        self._wpt_en_attente = None
                         self._maj_statut_live("Permission caméra refusée.", (0.776, 0.157, 0.157, 1))
 
                 request_permissions([Permission.CAMERA], callback)
                 
             except Exception as e:
+                self._wpt_en_attente = None
                 self._maj_statut_live(f"Erreur permission : {e}", (0.776, 0.157, 0.157, 1))
         else:
             print("[Live GPSLogger] Simulation : Caméra non disponible sur PC.")
@@ -3792,6 +3889,23 @@ class EcranAVenir(Screen):
 
 class OutilsTracesApp(App):
     title = "Bubu GPS"
+
+    def on_resume(self):
+        """Appelé automatiquement par Kivy/Android quand l'appli repasse
+        au premier plan (ex: retour depuis l'appareil photo, ou depuis
+        n'importe quelle autre appli/l'écran d'accueil). Si l'onglet
+        Live a une balise <wpt> en attente (voir LiveScreen._verifier_
+        et_ouvrir_camera), la referme maintenant — sinon (retour au
+        premier plan sans rapport avec l'appareil photo), ne fait rien.
+        Un court délai laisse le temps au MediaStore Android d'indexer
+        la photo tout juste prise avant qu'on l'interroge."""
+        try:
+            ecran_live = self.sm.get_screen("Live")
+        except Exception:
+            return True
+        if getattr(ecran_live, '_wpt_en_attente', None) is not None:
+            Clock.schedule_once(lambda dt: ecran_live._fermer_waypoint_photo(), 0.5)
+        return True
 
     def build(self):
         # Par défaut, Kivy affiche un fond NOIR uni tant qu'on ne le
