@@ -2807,14 +2807,13 @@ class LiveScreen(Screen):
 
 
     def _afficher_trace_live_sur_carte(self):
-        """Affiche, sur la carte de cet onglet, la trace suivie EN
-        DIRECT (rouge) : chemin et marqueurs qui lui sont propres, sans
-        jamais toucher au chemin/marqueurs de la trace chargée
-        manuellement (cyan, voir _fichier_choisi/_afficher_trace_sur_carte
-        ci-dessus)."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
+        points = self.points_trace_live
+        if not points:
+            return
 
+        # Supprimer l'ancien calque live s'il existe
         if self.trace_layer_live is not None:
             self.map_view.remove_layer(self.trace_layer_live)
             self.trace_layer_live = None
@@ -2822,36 +2821,28 @@ class LiveScreen(Screen):
             self.map_view.remove_marker(m)
         self.marqueurs_actifs_live = []
 
-        points = self.points_trace_live
-        if not points:
-            return
-
         liste_coords = [(p['lat'], p['lon']) for p in points]
-        self.trace_layer_live = TraceLayer(couleur=(0.898, 0.224, 0.208, 1))  # rouge #E53935
+        
+        # Utilisation de TraceLayer avec la couleur rouge pour le Live (Référence identique à l'onglet 4)
+        self.trace_layer_live = TraceLayer(couleur=(0.8, 0.1, 0.1, 1))
         self.map_view.add_layer(self.trace_layer_live)
         self.trace_layer_live.set_points(liste_coords)
 
-        if len(points) >= 2:
-            dist_dep_arr = gps_logic.calculer_distance_haversine(
-                points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
-            )
-            if dist_dep_arr <= 20.0:
-                m_unique = MarqueurTexte(texte="D/A", lat=points[0]['lat'], lon=points[0]['lon'])
-                self.map_view.add_marker(m_unique)
-                self.marqueurs_actifs_live.append(m_unique)
-            else:
-                m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
-                m_arrivee = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
-                self.map_view.add_marker(m_depart)
-                self.map_view.add_marker(m_arrivee)
-                self.marqueurs_actifs_live.extend([m_depart, m_arrivee])
-        else:
-            m_unique = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
-            self.map_view.add_marker(m_unique)
-            self.marqueurs_actifs_live.append(m_unique)
+        # Marqueur de position actuelle / départ
+        if len(points) > 0:
+            m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
+            self.map_view.add_marker(m_depart)
+            self.marqueurs_actifs_live.append(m_depart)
+            
+        if len(points) > 1:
+            m_actuel = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
+            self.map_view.add_marker(m_actuel)
+            self.marqueurs_actifs_live.append(m_actuel)
 
-        self.map_view.center_on(points[-1]['lat'], points[-1]['lon'])
-
+        # Centrage fluide sur le dernier point enregistré
+        dernier = points[-1]
+        self.map_view.center_on(dernier['lat'], dernier['lon'])
+        
     def on_click_terminer_live(self, *args):
         """Bouton "Terminer" (onglet 7) :
         1. Met en pause le traitement des points live (ceux reçus
