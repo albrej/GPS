@@ -228,6 +228,13 @@ class GrapheProfil(Widget):
         # ouvrir l'appareil photo Android. None par défaut : aucun
         # comportement ajouté pour les autres écrans.
         self.callback_long_press = None
+        # Bloque toute interaction tactile (sélection de point, appui
+        # long) quand True — même principe et même nom que sur
+        # MapViewMolette, propagé par LiveScreen.basculer_freeze() pour
+        # que le gel/dégel s'applique de la même façon partout. False
+        # par défaut : aucun effet pour les écrans qui ne le touchent
+        # jamais (Carte/Découpe, Photos).
+        self.freeze_actif = False
         self.afficher_courbe_vitesse = True  # <--- AJOUT ICI
         self.afficher_curseur = True
         self.bind(pos=self._redessiner, size=self._redessiner)
@@ -428,8 +435,10 @@ class GrapheProfil(Widget):
                 self._poser_texte("Vitesse (km/h)", zx + zw - tex_v.width, zy + zh + dp(4), VERT, taille_sp=9)
 
     def on_touch_down(self, touch):
-        # Si un parent gèle l'interaction (ex: LiveScreen en mode freeze)
-        if hasattr(self.parent, 'parent') and getattr(self.parent.parent, 'freeze_actif', False):
+        # Gel/dégel (propagé par LiveScreen.basculer_freeze(), même
+        # principe que sur MapViewMolette) : bloque toute interaction
+        # tactile sur le graphique quand actif.
+        if getattr(self, 'freeze_actif', False):
             return True
         if not self.collide_point(*touch.pos):
             return super().on_touch_down(touch)
@@ -457,6 +466,8 @@ class GrapheProfil(Widget):
         return True
 
     def on_touch_move(self, touch):
+        if getattr(self, 'freeze_actif', False):
+            return True
         if touch.grab_current is self:
             if not self.distances_km:
                 return True
@@ -472,7 +483,7 @@ class GrapheProfil(Widget):
             touch.ungrab(self)
             if 'long_press_clock' in touch.ud:
                 touch.ud['long_press_clock'].cancel()
-            if not self.distances_km:
+            if getattr(self, 'freeze_actif', False) or not self.distances_km:
                 return True
 
             distance_km_tapee = self._calculer_distance_depuis_touch(touch)
@@ -3272,6 +3283,9 @@ class LiveScreen(Screen):
         
         if getattr(self.map_view, 'freeze_actif', None) is not None:
             self.map_view.freeze_actif = self.freeze_actif
+
+        if getattr(self.graphe, 'freeze_actif', None) is not None:
+            self.graphe.freeze_actif = self.freeze_actif
 
         # --- MODIFICATION ICI : Au dégel de l'onglet ---
         if not self.freeze_actif:
