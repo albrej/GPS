@@ -39,6 +39,7 @@ from kivy.uix.widget import Widget
 from kivy.properties import StringProperty, BooleanProperty, ListProperty, ObjectProperty
 from kivy.utils import platform
 from kivy.uix.textinput import TextInput
+from kivy.properties import BooleanProperty
 
 import gps_logic
 
@@ -72,16 +73,26 @@ if CARTE_DISPONIBLE:
 
     class MapViewMolette(MapView):
         """MapView identique, sauf que la molette/le défilement trackpad
-        (PC) DÉPLACE la carte au lieu de zoomer — le zoom ne se fait plus
+        (PC) DÉPLACE la carte au lieu de zoomer — le zoom ne se plus
         que via les boutons +/- dédiés. Le glisser déplace la carte,
         sans zoom tactile ni pincement."""
     
         PAS_DEPLACEMENT_PX = 60
         freeze_callback = ObjectProperty(None, allownone=True)
-    
+        
+        # ---> TRANSFORMATION ICI : Utilisation d'une BooleanProperty Kivy
+        freeze_actif = BooleanProperty(False)
+
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
-            self.freeze_actif = False  # <--- Assure l'initialisation de l'attribut
+            # self.freeze_actif = False # Plus nécessaire ici car géré par la propriété ci-dessus
+
+        # ---> AJOUT DE CETTE MÉTHODE MAGIQUE KIVY
+        def on_freeze_actif(self, instance, value):
+            """Déclenché automatiquement dès que freeze_actif change."""
+            if not value:  # Si value passe à False (dégel)
+                # Force le rechargement immédiat et complet des tuiles manquantes
+                self.trigger_update(True)
 
         def on_touch_down(self, touch):
             if not self.collide_point(*touch.pos):
@@ -127,11 +138,46 @@ if CARTE_DISPONIBLE:
 
             # C'est ici, au relâchement du 2nd clic, que Kivy valide is_double_tap
             if touch.is_double_tap:
+                # Anti-rebond : le journal de diagnostic a montré qu'un
+                # seul geste de double-tap physique déclenche ici DEUX
+                # appels consécutifs (is_double_tap=True vu deux fois de
+                # suite, quasi instantanément — cause précise non confirmée
+                # côté dispatch tactile Kivy, mais le symptôme, lui, est
+                # parfaitement reproductible). On ignore donc toute
+                # nouvelle détection de double-tap trop rapprochée de la
+                # précédente bascule, pour n'en garder qu'une seule par
+                # geste réel de l'utilisateur.
+                maintenant = Clock.get_time()
+                dernier = getattr(self, '_dernier_bascule_freeze_temps', -999)
+                if maintenant - dernier < 0.75:
+                    super().on_touch_up(touch)
+                    return True
+                self._dernier_bascule_freeze_temps = maintenant
+
                 if self.freeze_callback:
                     self.freeze_callback()
+                # IMPORTANT : ce toucher a quand même été "grabbé" par
+                # on_touch_down de la classe de base MapView (tant que
+                # freeze_actif n'était pas encore actif à ce moment précis),
+                # qui y a incrémenté self._touch_count et mis self._pause à
+                # True. Il FAUT donc laisser la classe de base le "dégrabber"
+                # ici (elle redescend _touch_count à 0 et repasse _pause à
+                # False) — sinon _pause reste bloqué à True pour toujours,
+                # et load_tile_for_source() (kivy_garden.mapview) ne charge
+                # plus jamais aucune nouvelle tuile ensuite. On ignore sa
+                # valeur de retour et on renvoie toujours True nous-mêmes,
+                # pour ne rien changer d'autre au comportement du double-tap.
+                super().on_touch_up(touch)
                 return True
 
             if getattr(self, 'freeze_actif', False):
+                # Même raison que ci-dessus : si ce toucher avait déjà été
+                # grabbé par la classe de base avant que le gel ne s'active
+                # (ex: gelé via la barre d'outils pendant un glisser en
+                # cours), on la laisse le dégrabber correctement, mais on
+                # renvoie toujours True nous-mêmes.
+                if touch.grab_current is self:
+                    super().on_touch_up(touch)
                 return True
 
             return super().on_touch_up(touch)
@@ -2186,6 +2232,7 @@ class LiveScreen(Screen):
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
             self.map_view.freeze_callback = self.basculer_freeze
+            # AJOUT : Lier le suivi tactile global de la fenêtre comme sur l'onglet 4
             Window.bind(on_touch_down=self._debut_touch_carte, on_touch_up=self._sur_touch_carte)
             self.ids.map_container.add_widget(self.map_view)
         else:
@@ -2206,6 +2253,8 @@ class LiveScreen(Screen):
         if self.map_view.zoom > min_z:
             self.map_view.zoom -= 1
             self.map_view.center_on(self.map_view.lat, self.map_view.lon)
+            # AJOUT : Force le rechargement immédiat des tuiles après un dézoom
+            self.map_view.trigger_update(True)
 
     def zoomer_carte(self):
         if not CARTE_DISPONIBLE or self.map_view is None:
@@ -2214,12 +2263,14 @@ class LiveScreen(Screen):
         if self.map_view.zoom < max_z:
             self.map_view.zoom += 1
             self.map_view.center_on(self.map_view.lat, self.map_view.lon)
+            # AJOUT : Force le rechargement immédiat des tuiles après un zoom
+            self.map_view.trigger_update(True)
 
     def changer_vue_carte(self, valeur):
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         self.map_view.map_source = SOURCE_SATELLITE if valeur == "satellite" else SOURCE_PLAN
-        # <--- Ligne indispensable pour rafraîchir les tuiles
+        # Indispensable pour éviter les zones grises ou non redessinées au zoom/dézoom
         self.map_view.trigger_update(True)
 
     def ouvrir_selecteur_fichier(self):
@@ -3283,7 +3334,20 @@ class LiveScreen(Screen):
     def basculer_freeze(self):
         # Bascule l'état du gel
         self.freeze_actif = not self.freeze_actif
-        
+
+        # --- DIAGNOSTIC TEMPORAIRE : compte chaque appel de cette
+        # méthode et l'affiche à l'écran (zone "info_fichier", peu
+        # sollicitée par ailleurs sur cet onglet, pour ne pas être
+        # aussitôt recouvert par les messages de statut live). Objectif :
+        # voir si un seul double-tap déclenche 1 seul appel (normal) ou
+        # 2+ appels d'affilée (double bascule = gel qui "ne tient pas").
+        self._compteur_bascule_freeze = getattr(self, '_compteur_bascule_freeze', 0) + 1
+        print(f"[DIAG FREEZE] appel #{self._compteur_bascule_freeze} -> freeze_actif={self.freeze_actif}")
+        self.info_fichier = (
+            f"[DIAG] bascule #{self._compteur_bascule_freeze} -> "
+            f"{'GEL' if self.freeze_actif else 'DÉGEL'}"
+        )
+
         if getattr(self.map_view, 'freeze_actif', None) is not None:
             self.map_view.freeze_actif = self.freeze_actif
 
@@ -3292,6 +3356,10 @@ class LiveScreen(Screen):
 
         # --- MODIFICATION ICI : Au dégel de l'onglet ---
         if not self.freeze_actif:
+            # AJOUT : Force le rechargement immédiat et complet des tuiles de la carte
+            if self.map_view and hasattr(self.map_view, 'trigger_update'):
+                self.map_view.trigger_update(True)
+
             if self.points_trace_live:
                 # Récupère le dernier point enregistré
                 dernier_point = self.points_trace_live[-1]
@@ -3307,7 +3375,6 @@ class LiveScreen(Screen):
 
 
     def _debut_touch_carte(self, window, touch):
-        """Mémorise la position de l'appui si le toucher démarre sur la carte."""
         if (
             self.manager is not None and self.manager.current == self.name
             and self.map_view is not None and self.map_view.collide_point(*touch.pos)
@@ -3316,11 +3383,11 @@ class LiveScreen(Screen):
         return False
 
     def _sur_touch_carte(self, window, touch):
-        """Force le rafraîchissement et la ré-attribution des tuiles au relâchement."""
         if self.manager is None or self.manager.current != self.name:
             return False
-        if CARTE_DISPONIBLE and self.map_view is not None:
-            # Force la mise à jour des tuiles manquantes lors des actions de zoom/déplacement
+        depart = touch.ud.get("carte_pos_depart")
+        if CARTE_DISPONIBLE and self.map_view is not None and depart is not None:
+            # Force la mise à jour des tuiles après un zoom ou un déplacement
             self.map_view.trigger_update(True)
         return False
         
