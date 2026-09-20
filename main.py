@@ -1921,7 +1921,7 @@ def _construire_confirmation_oui_non_annuler(message, callback):
         text=message,
         halign="center",
         valign="middle",
-        color=(0, 0, 0, 1),
+        color=(1, 1, 1, 1),
         font_size="15sp"
     )
     lbl_message.bind(width=lambda inst, w: setattr(inst, "text_size", (w, None)))
@@ -3120,33 +3120,47 @@ class LiveScreen(Screen):
         self._ouvrir_camera_Android()
 
     def _ouvrir_camera_Android(self):
-        """Ouvre l'appareil photo après avoir vérifié les permissions sous Android."""
-        self._maj_statut_live("Prise de photo en cours...", (0.937, 0.424, 0.0, 1))
+        """Ouvre l'application Appareil photo du système de manière classique sous Android."""
+        self._maj_statut_live("Ouverture de la caméra...", (0.937, 0.424, 0.0, 1))
         
         if platform == 'android':
             try:
                 from jnius import autoclass
                 from android.permissions import request_permissions, Permission
                 
-                # Callback de vérification de permission
                 def callback(permissions, grant_results):
                     if all(grant_results):
                         try:
                             Intent = autoclass('android.content.Intent')
-                            MediaStore = autoclass('android.provider.MediaStore')
                             PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                            
-                            intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
                             current_activity = PythonActivity.mActivity
+                            package_manager = current_activity.getPackageManager()
+                            
+                            # Recherche de l'application caméra principale du système
+                            # On crée un intent générique de capture ou d'action principale
+                            intent = package_manager.getLaunchIntentForPackage("com.android.camera")
+                            
+                            if not intent:
+                                # Fallback sur d'autres packages constructeurs courants si "com.android.camera" n'est pas trouvé
+                                for pkg in ["com.sec.android.app.camera", "com.huawei.camera", "com.google.android.GoogleCamera", "com.oneplus.camera"]:
+                                    intent = package_manager.getLaunchIntentForPackage(pkg)
+                                    if intent:
+                                        break
+                                        
+                            if not intent:
+                                # Si aucun package spécifique n'est trouvé, on utilise l'intent global de démarrage d'application media
+                                intent = Intent(Intent.ACTION_MAIN)
+                                intent.addCategory(Intent.CATEGORY_APP_CAMERA)
+                            
+                            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             current_activity.startActivity(intent)
                             
-                            self._maj_statut_live("Appareil photo ouvert.", (0.180, 0.490, 0.196, 1))
+                            self._maj_statut_live("Appareil photo lancé.", (0.180, 0.490, 0.196, 1))
                         except Exception as e:
                             self._maj_statut_live(f"Erreur lancement : {e}", (0.776, 0.157, 0.157, 1))
                     else:
                         self._maj_statut_live("Permission caméra refusée.", (0.776, 0.157, 0.157, 1))
 
-                # Demande la permission d'utiliser la caméra
                 request_permissions([Permission.CAMERA], callback)
                 
             except Exception as e:
