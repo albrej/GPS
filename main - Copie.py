@@ -1723,13 +1723,11 @@ class ConversionScreen(Screen):
 
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
-        if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+        self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
 
     def _fichier_choisi(self, chemin):
-        if hasattr(self, '_popup'):
-            self._popup.dismiss()
+        self._popup.dismiss()
         if not chemin:
             return
         self.fichier_source = chemin
@@ -1799,13 +1797,11 @@ class NumerotationScreen(Screen):
 
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
-        if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+        self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
 
     def _fichier_choisi(self, chemin):
-        if hasattr(self, '_popup'):
-            self._popup.dismiss()
+        self._popup.dismiss()
         if not chemin:
             return
         try:
@@ -1925,40 +1921,10 @@ class NumerotationScreen(Screen):
 
         Clock.schedule_once(_maj_ui, 0)
         
-def _dialogue_natif_fichier(filtres, multiple=False):
-    """Ouvre l'explorateur de fichiers natif du système (Explorateur
-    Windows, ou l'équivalent macOS/Linux) via tkinter.filedialog.
-    Utilisé uniquement sur PC : sur Android, tkinter n'est pas
-    disponible/pertinent, on garde le FileChooserListView de Kivy (voir
-    les fonctions _construire_selecteur_* ci-dessous)."""
-    import tkinter as tk
-    from tkinter import filedialog
-
-    racine = tk.Tk()
-    racine.withdraw()
-    racine.attributes("-topmost", True)
-    try:
-        if multiple:
-            resultat = filedialog.askopenfilenames(filetypes=filtres, initialdir=DOSSIER_RACINE)
-            return list(resultat) if resultat else None
-        else:
-            resultat = filedialog.askopenfilename(filetypes=filtres, initialdir=DOSSIER_RACINE)
-            return resultat if resultat else None
-    finally:
-        racine.destroy()
-
-
 def _construire_selecteur_fichier(callback):
-    """Sélecteur de fichier : explorateur natif du système sur PC,
-    FileChooserListView de Kivy sur Android (aucune dépendance
-    supplémentaire, fonctionne une fois la permission de stockage
-    accordée)."""
-    if platform != "android":
-        callback(_dialogue_natif_fichier(
-            filtres=[("Traces GPS", "*.gpx *.kmz *.kml"), ("Tous les fichiers", "*.*")]
-        ))
-        return None
-
+    """Sélecteur de fichier basé sur FileChooserListView (aucune dépendance
+    supplémentaire, fonctionne pareil sur desktop et Android une fois la
+    permission de stockage accordée)."""
     layout = BoxLayout(orientation="vertical", spacing=6, padding=6)
     chooser = FileChooserListView(path=DOSSIER_RACINE, filters=["*.gpx", "*.kmz", "*.kml"])
     layout.add_widget(chooser)
@@ -1978,13 +1944,6 @@ def _construire_selecteur_fichier(callback):
 def _construire_selecteur_fichiers_multiples(callback):
     """Variante du sélecteur ci-dessus permettant de choisir plusieurs
     fichiers d'un coup (nécessaire pour l'onglet Fusion)."""
-    if platform != "android":
-        callback(_dialogue_natif_fichier(
-            filtres=[("Traces GPS", "*.gpx *.kmz *.kml"), ("Tous les fichiers", "*.*")],
-            multiple=True,
-        ))
-        return None
-
     layout = BoxLayout(orientation="vertical", spacing=6, padding=6)
     chooser = FileChooserListView(path=DOSSIER_RACINE, filters=["*.gpx", "*.kmz", "*.kml"], multiselect=True)
     layout.add_widget(chooser)
@@ -2004,12 +1963,6 @@ def _construire_selecteur_fichiers_multiples(callback):
 def _construire_selecteur_fichier_photo(callback):
     """Variante du sélecteur de fichier ci-dessus filtrée sur les photos
     JPEG (nécessaire pour l'onglet Photos)."""
-    if platform != "android":
-        callback(_dialogue_natif_fichier(
-            filtres=[("Photos JPEG", "*.jpg *.jpeg *.JPG *.JPEG"), ("Tous les fichiers", "*.*")]
-        ))
-        return None
-
     layout = BoxLayout(orientation="vertical", spacing=6, padding=6)
     chooser = FileChooserListView(path=DOSSIER_RACINE, filters=["*.jpg", "*.jpeg", "*.JPG", "*.JPEG"])
     layout.add_widget(chooser)
@@ -2083,13 +2036,11 @@ class FusionScreen(Screen):
 
     def ajouter_fichiers(self):
         contenu = _construire_selecteur_fichiers_multiples(self._fichiers_choisis)
-        if contenu is not None:
-            self._popup = Popup(title="Choisir les traces à fusionner", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+        self._popup = Popup(title="Choisir les traces à fusionner", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
 
     def _fichiers_choisis(self, chemins):
-        if hasattr(self, '_popup'):
-            self._popup.dismiss()
+        self._popup.dismiss()
         if not chemins:
             return
         chemins_existants = {item["path"] for item in self.fichiers_fusion}
@@ -2324,13 +2275,11 @@ class LiveScreen(Screen):
 
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
-        if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+        self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
 
     def _fichier_choisi(self, chemin):
-        if hasattr(self, '_popup'):
-            self._popup.dismiss()
+        self._popup.dismiss()
         if not chemin:
             return
         try:
@@ -3538,15 +3487,11 @@ class CarteScreen(Screen):
 
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
-        if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+        self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
 
     def _fichier_choisi(self, chemin):
-        if hasattr(self, '_popup'):
-            self._popup.dismiss()
-        if not chemin:
-            return
+        self._popup.dismiss()
         self.charger_trace(chemin)
 
     def charger_trace(self, chemin):
@@ -3778,13 +3723,11 @@ class StatistiquesScreen(Screen):
 
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
-        if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+        self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
 
     def _fichier_choisi(self, chemin):
-        if hasattr(self, '_popup'):
-            self._popup.dismiss()
+        self._popup.dismiss()
         if not chemin:
             return
         try:
@@ -3886,13 +3829,11 @@ class PhotosScreen(Screen):
 
     def ouvrir_selecteur_trace(self):
         contenu = _construire_selecteur_fichier(self._trace_choisie)
-        if contenu is not None:
-            self._popup = Popup(title="Choisir une trace", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+        self._popup = Popup(title="Choisir une trace", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
 
     def _trace_choisie(self, chemin):
-        if hasattr(self, '_popup'):
-            self._popup.dismiss()
+        self._popup.dismiss()
         if not chemin:
             return
         try:
@@ -3912,13 +3853,11 @@ class PhotosScreen(Screen):
 
     def ouvrir_selecteur_photo(self):
         contenu = _construire_selecteur_fichier_photo(self._photo_choisie)
-        if contenu is not None:
-            self._popup = Popup(title="Choisir une photo", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+        self._popup = Popup(title="Choisir une photo", content=contenu, size_hint=(0.95, 0.95))
+        self._popup.open()
 
     def _photo_choisie(self, chemin):
-        if hasattr(self, '_popup'):
-            self._popup.dismiss()
+        self._popup.dismiss()
         if not chemin:
             return
 
