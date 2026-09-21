@@ -40,6 +40,7 @@ from kivy.properties import StringProperty, BooleanProperty, ListProperty, Objec
 from kivy.utils import platform
 from kivy.uix.textinput import TextInput
 from kivy.properties import BooleanProperty
+from kivy.uix.scrollview import ScrollView
 
 import gps_logic
 
