@@ -1973,7 +1973,7 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
         halign="left",
         valign="middle"
     )
-    lbl_chemin.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+    lbl_chemin.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0]), val[1])))
     layout_principal.add_widget(lbl_chemin)
 
     # Bouton "Dossier parent" (flèche vers le haut)
@@ -1985,7 +1985,7 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
         color=(0, 0, 0, 1),
         halign="left"
     )
-    btn_haut.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0] - dp(15), val[1])))
+    btn_haut.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(15)), val[1])))
 
     # Conteneur scrollable pour la liste des fichiers/dossiers
     scroll = ScrollView(size_hint=(1, 1))
@@ -2031,7 +2031,7 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
                 color=(0.1, 0.1, 0.1, 1),
                 halign="left"
             )
-            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0] - dp(20), val[1])))
+            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(20)), val[1])))
             b.bind(on_release=lambda inst, c=chemin_complet: changer_dossier(c))
             box_contenu.add_widget(b)
 
@@ -2045,7 +2045,7 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
                 color=(0, 0, 0, 1),
                 halign="left"
             )
-            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0] - dp(20), val[1])))
+            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(20)), val[1])))
             b.bind(on_release=lambda inst, c=chemin_complet: callback(c))
             box_contenu.add_widget(b)
 
