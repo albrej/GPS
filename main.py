@@ -13,6 +13,7 @@
 """
 
 import os
+import json
 import math
 import threading
 import queue
@@ -1574,6 +1575,17 @@ KV = """
                 color: root.statut_live_color
 
             Label:
+                text: root.temp_live_text
+                size_hint_y: None
+                height: max(dp(24), self.texture_size[1] + dp(6)) if self.text else 0
+                opacity: 1 if self.text else 0
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                italic: True
+                color: 0.10, 0.30, 0.60, 1
+
+            Label:
                 text: root.info_fichier
                 size_hint_y: None
                 height: max(dp(30), self.texture_size[1] + dp(8))
@@ -2433,6 +2445,9 @@ class LiveScreen(Screen):
     # "chargée" manuellement (bleue).
     statut_live_text = StringProperty("Aucun live en cours.")
     statut_live_color = ListProperty([0.33, 0.33, 0.33, 1])
+    # Message persistant sur le fichier temporaire des annotations photo
+    # (nom + emplacement) ; vide tant qu'aucune photo n'a été prise.
+    temp_live_text = StringProperty("")
 
     # Identifiants propres à l'intégration GPSLogger, utilisés uniquement
     # par cet onglet : les garder ici les isole totalement des autres
@@ -2465,6 +2480,13 @@ class LiveScreen(Screen):
         # _fermer_waypoint_photo au retour sur l'appli (voir
         # OutilsTracesApp.on_resume). None = aucune balise en attente.
         self._wpt_en_attente = None
+        # Fichier temporaire des annotations photo du live (waypoints,
+        # noms des photos, nom de la trace) : créé à la première photo,
+        # supprimé à la fin de l'enregistrement (voir
+        # _ecrire_fichier_temp_live / _supprimer_fichier_temp_live).
+        self.fichier_temp_live = None
+        self.journal_temp_live = []
+        self.debut_live_temp = None
 
         # --- Serveur d'écoute live (HTTP local) + file thread-safe des
         # points reçus, consommée côté thread principal (Kivy, comme
@@ -2696,6 +2718,7 @@ class LiveScreen(Screen):
         # reçus en direct à partir d'ici seront comptés.
         self.compteur_sources_live = {}
         self.annotations_live = []
+        self._reinitialiser_temp_live()
 
         if points:
             self._afficher_trace_live_sur_carte()
@@ -2815,6 +2838,7 @@ class LiveScreen(Screen):
         # message ni indicateur visible pendant le suivi.
         self.compteur_sources_live = {}
         self.annotations_live = []
+        self._reinitialiser_temp_live()
         
         self.en_cours_live = True  # Le live est maintenant actif
         
@@ -3265,8 +3289,13 @@ class LiveScreen(Screen):
                         waypoints=self.annotations_live,
                     )
                     self._maj_statut_live(f"Trace enregistrée : {os.path.basename(chemin_sortie)}", (0.180, 0.490, 0.196, 1))
+                    # Enregistrement du GPX validé : le fichier temporaire
+                    # des annotations n'a plus de raison d'être.
+                    self._supprimer_fichier_temp_live()
                 except Exception as e:
                     self._maj_statut_live(f"Erreur lors de l'enregistrement de la trace : {e}", (0.776, 0.157, 0.157, 1))
+                    # Échec : on GARDE le fichier temporaire (filet de sécurité).
+                    self._signaler_fichier_temp_conserve()
 
                 self._arreter_gpslogger()
                 self._maj_statut_live("Aucun live en cours.", (0.937, 0.424, 0.0, 1)) # #EF6C00
@@ -3302,6 +3331,8 @@ class LiveScreen(Screen):
             return
         else:
             self._maj_statut_live("Trace non enregistrée.", (0.33, 0.33, 0.33, 1))
+            # Non-enregistrement validé : suppression du fichier temporaire.
+            self._supprimer_fichier_temp_live()
 
         # --- Arrêt automatique de l'enregistrement (si "Non" a été choisi)
         self._arreter_gpslogger()
@@ -3453,6 +3484,104 @@ class LiveScreen(Screen):
 
         self._maj_statut_live("Aucun live en cours.", (0.33, 0.33, 0.33, 1))
 
+    # ------------------------------------------------------------------
+    # Fichier temporaire des annotations photo du live
+    # ------------------------------------------------------------------
+    def _reinitialiser_temp_live(self):
+        """Repart à zéro au démarrage d'un live. Ne supprime AUCUN fichier
+        sur le disque : un fichier temporaire resté d'un live précédent
+        non terminé (plantage, appli fermée) est volontairement conservé."""
+        self.fichier_temp_live = None
+        self.journal_temp_live = []
+        self.debut_live_temp = datetime.now()
+        self.temp_live_text = ""
+
+    def _nom_trace_live_courant(self):
+        """Nom de la trace en cours : celui du fichier GPSLogger repris si
+        connu, sinon un nom provisoire daté du début du live (le nom
+        définitif est saisi à l'enregistrement)."""
+        if self.fichier_gpx_actif_live:
+            return os.path.basename(self.fichier_gpx_actif_live)
+        if self.debut_live_temp is None:
+            self.debut_live_temp = datetime.now()
+        return f"trace_live_{self.debut_live_temp.strftime('%Y%m%d_%H%M%S')}.gpx"
+
+    def _ecrire_fichier_temp_live(self):
+        """(Ré)écrit le fichier temporaire : nom de la trace, waypoints et
+        noms des photos. Créé à la première photo, mis à jour à chaque
+        suivante ; écriture atomique (fichier .part puis renommage) pour
+        ne jamais laisser un fichier tronqué. Affiche son nom et son
+        emplacement dans le label persistant de l'onglet. Renvoie True si
+        l'écriture a réussi ; ne lève jamais d'exception."""
+        try:
+            if self.debut_live_temp is None:
+                self.debut_live_temp = datetime.now()
+            if self.fichier_temp_live is None:
+                dossier = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
+                os.makedirs(dossier, exist_ok=True)
+                self.fichier_temp_live = os.path.join(
+                    dossier, f"live_temp_{self.debut_live_temp.strftime('%Y%m%d_%H%M%S')}.json"
+                )
+
+            donnees = {
+                "fichier_temporaire": "annotations photo du live (supprimé après l'enregistrement de la trace)",
+                "trace": self._nom_trace_live_courant(),
+                "debut_live": self.debut_live_temp.isoformat(),
+                "derniere_mise_a_jour": datetime.now().isoformat(),
+                "nb_points_trace": len(self.points_trace_live),
+                "waypoints": self.journal_temp_live,
+            }
+            chemin_part = self.fichier_temp_live + ".part"
+            with open(chemin_part, "w", encoding="utf-8") as f:
+                json.dump(donnees, f, ensure_ascii=False, indent=2, default=str)
+            os.replace(chemin_part, self.fichier_temp_live)
+
+            self.temp_live_text = (
+                "Fichier temporaire (supprimé après l'enregistrement de la trace) :\n"
+                f"{os.path.basename(self.fichier_temp_live)}\n"
+                f"Emplacement : {os.path.dirname(self.fichier_temp_live)}"
+            )
+            return True
+        except Exception as e:
+            print(f"[Live] Écriture du fichier temporaire impossible : {e}")
+            self.temp_live_text = f"Fichier temporaire non écrit : {e}"
+            return False
+
+    def _supprimer_fichier_temp_live(self):
+        """Supprime le fichier temporaire (s'il existe) une fois
+        l'enregistrement de la trace validé, ou le non-enregistrement
+        validé, et l'indique dans le label persistant. Ne lève jamais
+        d'exception ; en cas d'échec de suppression, le fichier et son
+        emplacement restent affichés."""
+        chemin = self.fichier_temp_live
+        if not chemin:
+            return
+        nom = os.path.basename(chemin)
+        dossier = os.path.dirname(chemin)
+        try:
+            for f in (chemin, chemin + ".part"):
+                if os.path.exists(f):
+                    os.remove(f)
+            self.fichier_temp_live = None
+            self.journal_temp_live = []
+            self.temp_live_text = f"Fichier temporaire supprimé : {nom}\nEmplacement : {dossier}"
+        except Exception as e:
+            print(f"[Live] Suppression du fichier temporaire impossible : {e}")
+            self.temp_live_text = (
+                f"Fichier temporaire NON supprimé : {nom}\nEmplacement : {dossier}\n({e})"
+            )
+
+    def _signaler_fichier_temp_conserve(self):
+        """Échec de l'enregistrement du GPX : le fichier temporaire est
+        gardé, et son nom/emplacement restent affichés pour pouvoir
+        récupérer les waypoints et les noms de photos."""
+        if self.fichier_temp_live:
+            self.temp_live_text = (
+                "Trace non enregistrée : waypoints et photos conservés dans le fichier temporaire :\n"
+                f"{os.path.basename(self.fichier_temp_live)}\n"
+                f"Emplacement : {os.path.dirname(self.fichier_temp_live)}"
+            )
+
     def _verifier_et_ouvrir_camera(self):
         """Vérifie si un live est en cours avant d'autoriser la prise de
         photo par appui long, puis ouvre une balise <wpt> "en attente"
@@ -3464,11 +3593,13 @@ class LiveScreen(Screen):
             self._maj_statut_live("Impossible de prendre une photo : aucun live en cours.", (0.776, 0.157, 0.157, 1))
             return
         if not self.points_trace_live:
-            self._maj_statut_live(
-                "Impossible de prendre une photo : aucun point GPS enregistré pour l'instant.",
-                (0.776, 0.157, 0.157, 1)
-            )
+            ...
+            self._maj_statut_live("Aucun live en cours.", (0.33, 0.33, 0.33, 1))
             return
+
+        self.en_cours_live = True   # <-- ligne à ajouter
+
+        self._maj_statut_live("Reprise du suivi en direct.", (0.180, 0.490, 0.196, 1))  
 
         dernier_point = self.points_trace_live[-1]
         self._wpt_en_attente = {
@@ -3507,7 +3638,18 @@ class LiveScreen(Screen):
             'name': nom_annotation,
             'description': description,
         })
-        self._maj_statut_live(f"Photo(s) enregistrée(s) : {nom_annotation}", (0.180, 0.490, 0.196, 1))
+        self.journal_temp_live.append({
+            'lat': wpt_en_attente['lat'],
+            'lon': wpt_en_attente['lon'],
+            'ele': wpt_en_attente.get('ele'),
+            'time': wpt_en_attente['time'].isoformat(),
+            'name': nom_annotation,
+            'description': description,
+            'photos': list(noms_photos),
+        })
+        ok_temp = self._ecrire_fichier_temp_live()
+        suffixe = " — fichier temporaire mis à jour." if ok_temp else ""
+        self._maj_statut_live(f"Photo(s) enregistrée(s) : {nom_annotation}{suffixe}", (0.180, 0.490, 0.196, 1))
 
     def _lister_photos_depuis(self, temps_ouverture):
         """Interroge le MediaStore Android pour lister le nom de toutes
