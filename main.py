@@ -556,7 +556,7 @@ class GrapheProfil(Widget):
 # Dossier racine utilisé pour parcourir/enregistrer les fichiers.
 # ----------------------------------------------------------------------
 if platform == "android":
-    DOSSIER_CHARGEMENT = "/storage/emulated/0/Download/"
+    DOSSIER_CHARGEMENT = "/storage/emulated/0/GPX_Files/"
     # Nouveau dossier de sortie demandé
     DOSSIER_SORTIE = "/storage/emulated/0/GPX_Files/Bubu_GPS_Files"
     
@@ -2229,7 +2229,7 @@ def _construire_selecteur_fichiers_multiples(callback):
 
 def _construire_selecteur_fichier_photo(callback):
     """Variante du sélecteur de fichier ci-dessus filtrée sur les photos
-    JPEG (nécessaire pour l'onglet Photos). Démarre dans DCIM/Camera si
+    JPEG (nécessaire pour l'onglet Photos). Démarre dans GPX_Files si
     ce dossier existe, sinon dans le dossier de chargement habituel."""
     if platform != "android":
         callback(_dialogue_natif_fichier(
@@ -2241,7 +2241,7 @@ def _construire_selecteur_fichier_photo(callback):
         callback,
         filtre_extensions=(".jpg", ".jpeg"),
         multiple=False,
-        dossier_depart="/storage/emulated/0/DCIM/Camera/",
+        dossier_depart="/storage/emulated/0/GPX_Files/",
     )
 
 
