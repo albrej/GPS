@@ -30,6 +30,7 @@ from kivy.uix.dropdown import DropDown
 from kivy.uix.button import Button
 from kivy.uix.popup import Popup
 from kivy.uix.filechooser import FileChooserListView
+from kivy.uix.scrollview import ScrollView
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.metrics import dp
@@ -40,7 +41,6 @@ from kivy.properties import StringProperty, BooleanProperty, ListProperty, Objec
 from kivy.utils import platform
 from kivy.uix.textinput import TextInput
 from kivy.properties import BooleanProperty
-from kivy.uix.scrollview import ScrollView
 
 import gps_logic
 
@@ -2091,6 +2091,197 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
 
     return layout_principal
     
+def _construire_explorateur_android(callback, filtre_extensions, multiple=False, dossier_depart=None):
+    """Explorateur de fichiers Android (dossiers + fichiers), même style
+    que _construire_selecteur_fichier, avec en plus :
+      - multiple=False : un clic sur un fichier le renvoie aussitôt
+        (callback(chemin)) ;
+      - multiple=True  : un clic coche/décoche le fichier (surligné en
+        bleu) et le bouton "Valider (N)" renvoie la liste
+        (callback([chemins])). La sélection est conservée quand on change
+        de dossier.
+    Annuler renvoie callback(None) dans les deux cas."""
+    dossier_initial = DOSSIER_CHARGEMENT
+    if dossier_depart and os.path.isdir(dossier_depart):
+        dossier_initial = dossier_depart
+    if not os.path.exists(dossier_initial):
+        try:
+            os.makedirs(dossier_initial, exist_ok=True)
+        except Exception:
+            dossier_initial = "/storage/emulated/0/"
+
+    dossier_actuel = [dossier_initial]
+    selection = []            # chemins cochés (mode multiple), dans l'ordre des clics
+    boutons_fichiers = {}     # chemin -> Button, pour restyler sans tout reconstruire
+
+    layout_principal = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
+
+    lbl_chemin = Label(
+        text=dossier_actuel[0],
+        size_hint_y=None,
+        height=dp(36),
+        bold=True,
+        color=(0.1, 0.1, 0.1, 1),
+        halign="left",
+        valign="middle"
+    )
+    lbl_chemin.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0]), val[1])))
+    layout_principal.add_widget(lbl_chemin)
+
+    btn_haut = Button(
+        text="📁 .. (Dossier parent)",
+        size_hint_y=None,
+        height=dp(44),
+        background_color=(0.85, 0.85, 0.85, 1),
+        color=(0, 0, 0, 1),
+        halign="left"
+    )
+    btn_haut.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(15)), val[1])))
+
+    scroll = ScrollView(size_hint=(1, 1))
+    box_contenu = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(2))
+    box_contenu.bind(minimum_height=box_contenu.setter('height'))
+    scroll.add_widget(box_contenu)
+
+    def styler_fichier(btn, coche):
+        if coche:
+            btn.background_color = (0.2, 0.6, 0.86, 1)
+            btn.color = (1, 1, 1, 1)
+        else:
+            btn.background_color = (1, 1, 1, 1)
+            btn.color = (0, 0, 0, 1)
+
+    def maj_bouton_valider():
+        if btn_valider is not None:
+            btn_valider.text = f"Valider ({len(selection)})"
+            btn_valider.disabled = (len(selection) == 0)
+
+    def basculer_fichier(chemin):
+        if chemin in selection:
+            selection.remove(chemin)
+        else:
+            selection.append(chemin)
+        btn = boutons_fichiers.get(chemin)
+        if btn is not None:
+            styler_fichier(btn, chemin in selection)
+        maj_bouton_valider()
+
+    def clic_fichier(chemin):
+        if multiple:
+            basculer_fichier(chemin)
+        else:
+            callback(chemin)
+
+    def rafraichir_liste():
+        box_contenu.clear_widgets()
+        boutons_fichiers.clear()
+        chemin_courant = dossier_actuel[0]
+        lbl_chemin.text = chemin_courant
+
+        if chemin_courant != "/" and os.path.dirname(chemin_courant) != chemin_courant:
+            box_contenu.add_widget(btn_haut)
+
+        try:
+            elements = sorted(os.listdir(chemin_courant))
+        except Exception as e:
+            box_contenu.add_widget(Label(
+                text=f"Erreur d'accès ou permissions requises : {e}",
+                color=(0.8, 0.2, 0.2, 1),
+                size_hint_y=None,
+                height=dp(60),
+                text_size=(Window.width - dp(40), None)
+            ))
+            return
+
+        dossiers = []
+        fichiers = []
+
+        for nom in elements:
+            if nom.startswith('.'):
+                continue
+            chemin_complet = os.path.join(chemin_courant, nom)
+            try:
+                if os.path.isdir(chemin_complet):
+                    dossiers.append((nom, chemin_complet))
+                elif os.path.isfile(chemin_complet):
+                    if not filtre_extensions or nom.lower().endswith(filtre_extensions):
+                        fichiers.append((nom, chemin_complet))
+            except Exception:
+                continue
+
+        for nom, chemin_complet in dossiers:
+            b = Button(
+                text=f"📁  {nom}",
+                size_hint_y=None,
+                height=dp(48),
+                background_color=(0.95, 0.95, 0.95, 1),
+                color=(0.1, 0.1, 0.1, 1),
+                halign="left"
+            )
+            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(20)), val[1])))
+            b.bind(on_release=lambda inst, c=chemin_complet: changer_dossier(c))
+            box_contenu.add_widget(b)
+
+        for nom, chemin_complet in fichiers:
+            b = Button(
+                text=f"📄  {nom}",
+                size_hint_y=None,
+                height=dp(48),
+                halign="left"
+            )
+            styler_fichier(b, chemin_complet in selection)
+            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(20)), val[1])))
+            b.bind(on_release=lambda inst, c=chemin_complet: clic_fichier(c))
+            boutons_fichiers[chemin_complet] = b
+            box_contenu.add_widget(b)
+
+    def changer_dossier(nouveau_chemin):
+        if os.path.exists(nouveau_chemin) and os.access(nouveau_chemin, os.R_OK):
+            dossier_actuel[0] = nouveau_chemin
+            rafraichir_liste()
+
+    def remonter_parent(instance):
+        parent = os.path.dirname(dossier_actuel[0])
+        if parent and os.path.exists(parent):
+            changer_dossier(parent)
+
+    btn_haut.bind(on_release=remonter_parent)
+
+    # Bouton Valider (mode multiple uniquement) : créé avant le premier
+    # rafraichir_liste() car maj_bouton_valider() y fait référence.
+    btn_valider = None
+    if multiple:
+        btn_valider = Button(
+            text="Valider (0)",
+            disabled=True,
+            background_color=(0.2, 0.6, 0.86, 1),
+            color=(1, 1, 1, 1)
+        )
+        btn_valider.bind(on_release=lambda inst: callback(list(selection)) if selection else None)
+
+    rafraichir_liste()
+    layout_principal.add_widget(scroll)
+
+    btn_annuler = Button(
+        text="Annuler",
+        background_color=(0.8, 0.2, 0.2, 1),
+        color=(1, 1, 1, 1)
+    )
+    btn_annuler.bind(on_release=lambda inst: callback(None))
+
+    if multiple:
+        barre = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        barre.add_widget(btn_annuler)
+        barre.add_widget(btn_valider)
+        layout_principal.add_widget(barre)
+    else:
+        btn_annuler.size_hint_y = None
+        btn_annuler.height = dp(48)
+        layout_principal.add_widget(btn_annuler)
+
+    return layout_principal
+
+
 def _construire_selecteur_fichiers_multiples(callback):
     """Variante du sélecteur ci-dessus permettant de choisir plusieurs
     fichiers d'un coup (nécessaire pour l'onglet Fusion)."""
@@ -2101,45 +2292,29 @@ def _construire_selecteur_fichiers_multiples(callback):
         ))
         return None
 
-    layout = BoxLayout(orientation="vertical", spacing=6, padding=6)
-    chooser = FileChooserListView(path=DOSSIER_RACINE, filters=["*.gpx", "*.kmz", "*.kml"], multiselect=True)
-    layout.add_widget(chooser)
-
-    boutons = BoxLayout(size_hint_y=None, height=48, spacing=6)
-    btn_annuler = Button(text="Annuler")
-    btn_valider = Button(text="Valider")
-    boutons.add_widget(btn_annuler)
-    boutons.add_widget(btn_valider)
-    layout.add_widget(boutons)
-
-    btn_valider.bind(on_release=lambda inst: callback(list(chooser.selection) if chooser.selection else None))
-    btn_annuler.bind(on_release=lambda inst: callback(None))
-    return layout
+    return _construire_explorateur_android(
+        callback,
+        filtre_extensions=(".gpx", ".kmz", ".kml"),
+        multiple=True,
+    )
 
 
 def _construire_selecteur_fichier_photo(callback):
     """Variante du sélecteur de fichier ci-dessus filtrée sur les photos
-    JPEG (nécessaire pour l'onglet Photos)."""
+    JPEG (nécessaire pour l'onglet Photos). Démarre dans DCIM/Camera si
+    ce dossier existe, sinon dans le dossier de chargement habituel."""
     if platform != "android":
         callback(_dialogue_natif_fichier(
             filtres=[("Photos JPEG", "*.jpg *.jpeg *.JPG *.JPEG"), ("Tous les fichiers", "*.*")]
         ))
         return None
 
-    layout = BoxLayout(orientation="vertical", spacing=6, padding=6)
-    chooser = FileChooserListView(path=DOSSIER_RACINE, filters=["*.jpg", "*.jpeg", "*.JPG", "*.JPEG"])
-    layout.add_widget(chooser)
-
-    boutons = BoxLayout(size_hint_y=None, height=48, spacing=6)
-    btn_annuler = Button(text="Annuler")
-    btn_valider = Button(text="Valider")
-    boutons.add_widget(btn_annuler)
-    boutons.add_widget(btn_valider)
-    layout.add_widget(boutons)
-
-    btn_valider.bind(on_release=lambda inst: callback(chooser.selection[0] if chooser.selection else None))
-    btn_annuler.bind(on_release=lambda inst: callback(None))
-    return layout
+    return _construire_explorateur_android(
+        callback,
+        filtre_extensions=(".jpg", ".jpeg"),
+        multiple=False,
+        dossier_depart="/storage/emulated/0/DCIM/Camera/",
+    )
 
 
 def _construire_confirmation_oui_non_annuler(message, callback):
