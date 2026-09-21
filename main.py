@@ -1948,32 +1948,134 @@ def _dialogue_natif_fichier(filtres, multiple=False):
         racine.destroy()
 
 
-def _construire_selecteur_fichier(callback):
-    """Sélecteur de fichier : explorateur natif du système sur PC,
-    FileChooserListView de Kivy sur Android (aucune dépendance
-    supplémentaire, fonctionne une fois la permission de stockage
-    accordée)."""
+def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", ".kml")):
+    """Explorateur de fichiers personnalisé style Windows (dossiers + fichiers)
+    adapté pour Android et PC."""
     if platform != "android":
+        # Conserve l'explorateur natif sur PC
         callback(_dialogue_natif_fichier(
             filtres=[("Traces GPS", "*.gpx *.kmz *.kml"), ("Tous les fichiers", "*.*")]
         ))
         return None
 
-    layout = BoxLayout(orientation="vertical", spacing=6, padding=6)
-    chooser = FileChooserListView(path=DOSSIER_RACINE, filters=["*.gpx", "*.kmz", "*.kml"])
-    layout.add_widget(chooser)
+    # État interne pour l'explorateur
+    dossier_actuel = [DOSSIER_CHARGEMENT]
 
-    boutons = BoxLayout(size_hint_y=None, height=48, spacing=6)
-    btn_annuler = Button(text="Annuler")
-    btn_valider = Button(text="Valider")
-    boutons.add_widget(btn_annuler)
-    boutons.add_widget(btn_valider)
-    layout.add_widget(boutons)
+    layout_principal = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
 
-    btn_valider.bind(on_release=lambda inst: callback(chooser.selection[0] if chooser.selection else None))
+    # Barre de chemin (fil d'Ariane)
+    lbl_chemin = Label(
+        text=dossier_actuel[0],
+        size_hint_y=None,
+        height=dp(36),
+        bold=True,
+        color=(0.1, 0.1, 0.1, 1),
+        halign="left",
+        valign="middle"
+    )
+    lbl_chemin.bind(size=lambda inst, val: setattr(inst, 'text_size', val))
+    layout_principal.add_widget(lbl_chemin)
+
+    # Bouton "Dossier parent" (flèche vers le haut)
+    btn_haut = Button(
+        text="📁 .. (Dossier parent)",
+        size_hint_y=None,
+        height=dp(44),
+        background_color=(0.85, 0.85, 0.85, 1),
+        color=(0, 0, 0, 1),
+        halign="left"
+    )
+    btn_haut.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0] - dp(15), val[1])))
+
+    # Conteneur scrollable pour la liste des fichiers/dossiers
+    scroll = ScrollView(size_hint=(1, 1))
+    box_contenu = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(2))
+    box_contenu.bind(minimum_height=box_contenu.setter('height'))
+    scroll.add_widget(box_contenu)
+
+    def rafraichir_liste():
+        box_contenu.clear_widgets()
+        chemin_courant = dossier_actuel[0]
+        lbl_chemin.text = chemin_courant
+
+        # Bouton dossier parent si on n'est pas à la racine absolue
+        if chemin_courant != "/" and os.path.dirname(chemin_courant) != chemin_courant:
+            box_contenu.add_widget(btn_haut)
+
+        try:
+            elements = sorted(os.listdir(chemin_courant))
+        except Exception as e:
+            box_contenu.add_widget(Label(text=f"Erreur d'accès : {e}", color=(0.8, 0.2, 0.2, 1), size_hint_y=None, height=dp(40)))
+            return
+
+        dossiers = []
+        fichiers = []
+
+        for nom in elements:
+            if nom.startswith('.'):
+                continue  # Masquer les fichiers cachés
+            chemin_complet = os.path.join(chemin_courant, nom)
+            if os.path.isdir(chemin_complet):
+                dossiers.append((nom, chemin_complet))
+            elif os.path.isfile(chemin_complet):
+                if not filtre_extensions or nom.lower().endswith(filtre_extensions):
+                    fichiers.append((nom, chemin_complet))
+
+        # Afficher d'abord les dossiers
+        for nom, chemin_complet in dossiers:
+            b = Button(
+                text=f"📁  {nom}",
+                size_hint_y=None,
+                height=dp(48),
+                background_color=(0.95, 0.95, 0.95, 1),
+                color=(0.1, 0.1, 0.1, 1),
+                halign="left"
+            )
+            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0] - dp(20), val[1])))
+            b.bind(on_release=lambda inst, c=chemin_complet: changer_dossier(c))
+            box_contenu.add_widget(b)
+
+        # Afficher ensuite les fichiers filtrés
+        for nom, chemin_complet in fichiers:
+            b = Button(
+                text=f"📄  {nom}",
+                size_hint_y=None,
+                height=dp(48),
+                background_color=(1, 1, 1, 1),
+                color=(0, 0, 0, 1),
+                halign="left"
+            )
+            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (val[0] - dp(20), val[1])))
+            b.bind(on_release=lambda inst, c=chemin_complet: callback(c))
+            box_contenu.add_widget(b)
+
+    def changer_dossier(nouveau_chemin):
+        if os.path.exists(nouveau_chemin) and os.access(nouveau_chemin, os.R_OK):
+            dossier_actuel[0] = nouveau_chemin
+            rafraichir_liste()
+
+    def remonter_parent(instance):
+        parent = os.path.dirname(dossier_actuel[0])
+        if parent and os.path.exists(parent):
+            changer_dossier(parent)
+
+    btn_haut.bind(on_release=remonter_parent)
+    rafraichir_liste()
+
+    layout_principal.add_widget(scroll)
+
+    # Bouton Annuler en bas
+    btn_annuler = Button(
+        text="Annuler",
+        size_hint_y=None,
+        height=dp(48),
+        background_color=(0.8, 0.2, 0.2, 1),
+        color=(1, 1, 1, 1)
+    )
     btn_annuler.bind(on_release=lambda inst: callback(None))
-    return layout
+    layout_principal.add_widget(btn_annuler)
 
+    return layout_principal
 
 def _construire_selecteur_fichiers_multiples(callback):
     """Variante du sélecteur ci-dessus permettant de choisir plusieurs
