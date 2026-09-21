@@ -1958,8 +1958,16 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
         ))
         return None
 
+    # Vérification et création sécurisée du dossier de base sur Android
+    dossier_initial = DOSSIER_CHARGEMENT
+    if not os.path.exists(dossier_initial):
+        try:
+            os.makedirs(dossier_initial, exist_ok=True)
+        except Exception:
+            dossier_initial = "/storage/emulated/0/"
+
     # État interne pour l'explorateur
-    dossier_actuel = [DOSSIER_CHARGEMENT]
+    dossier_actuel = [dossier_initial]
 
     layout_principal = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
 
@@ -1976,7 +1984,7 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
     lbl_chemin.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0]), val[1])))
     layout_principal.add_widget(lbl_chemin)
 
-    # Bouton "Dossier parent" (flèche vers le haut)
+    # Bouton "Dossier parent"
     btn_haut = Button(
         text="📁 .. (Dossier parent)",
         size_hint_y=None,
@@ -1998,14 +2006,19 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
         chemin_courant = dossier_actuel[0]
         lbl_chemin.text = chemin_courant
 
-        # Bouton dossier parent si on n'est pas à la racine absolue
         if chemin_courant != "/" and os.path.dirname(chemin_courant) != chemin_courant:
             box_contenu.add_widget(btn_haut)
 
         try:
             elements = sorted(os.listdir(chemin_courant))
         except Exception as e:
-            box_contenu.add_widget(Label(text=f"Erreur d'accès : {e}", color=(0.8, 0.2, 0.2, 1), size_hint_y=None, height=dp(40)))
+            box_contenu.add_widget(Label(
+                text=f"Erreur d'accès ou permissions requises : {e}", 
+                color=(0.8, 0.2, 0.2, 1), 
+                size_hint_y=None, 
+                height=dp(60),
+                text_size=(Window.width - dp(40), None)
+            ))
             return
 
         dossiers = []
@@ -2013,15 +2026,17 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
 
         for nom in elements:
             if nom.startswith('.'):
-                continue  # Masquer les fichiers cachés
+                continue
             chemin_complet = os.path.join(chemin_courant, nom)
-            if os.path.isdir(chemin_complet):
-                dossiers.append((nom, chemin_complet))
-            elif os.path.isfile(chemin_complet):
-                if not filtre_extensions or nom.lower().endswith(filtre_extensions):
-                    fichiers.append((nom, chemin_complet))
+            try:
+                if os.path.isdir(chemin_complet):
+                    dossiers.append((nom, chemin_complet))
+                elif os.path.isfile(chemin_complet):
+                    if not filtre_extensions or nom.lower().endswith(filtre_extensions):
+                        fichiers.append((nom, chemin_complet))
+            except Exception:
+                continue
 
-        # Afficher d'abord les dossiers
         for nom, chemin_complet in dossiers:
             b = Button(
                 text=f"📁  {nom}",
@@ -2035,7 +2050,6 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
             b.bind(on_release=lambda inst, c=chemin_complet: changer_dossier(c))
             box_contenu.add_widget(b)
 
-        # Afficher ensuite les fichiers filtrés
         for nom, chemin_complet in fichiers:
             b = Button(
                 text=f"📄  {nom}",
@@ -2064,7 +2078,6 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
 
     layout_principal.add_widget(scroll)
 
-    # Bouton Annuler en bas
     btn_annuler = Button(
         text="Annuler",
         size_hint_y=None,
@@ -2076,7 +2089,7 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
     layout_principal.add_widget(btn_annuler)
 
     return layout_principal
-
+    
 def _construire_selecteur_fichiers_multiples(callback):
     """Variante du sélecteur ci-dessus permettant de choisir plusieurs
     fichiers d'un coup (nécessaire pour l'onglet Fusion)."""
@@ -4153,6 +4166,20 @@ class EcranAVenir(Screen):
 class OutilsTracesApp(App):
     title = "Bubu GPS"
 
+    def build(self):
+        # --- VOTRE CODE D'INITIALISATION EXISTANT ---
+        # (chargement des écrans, builder, etc.)
+        return ...
+
+    def on_start(self):
+        """Méthode exécutée automatiquement au démarrage de l'application."""
+        if platform == 'android':
+            from android.permissions import request_permissions, Permission
+            request_permissions([
+                Permission.WRITE_EXTERNAL_STORAGE, 
+                Permission.READ_EXTERNAL_STORAGE
+            ])
+            
     def on_resume(self):
         """Appelé automatiquement par Kivy/Android quand l'appli repasse
         au premier plan (ex: retour depuis l'appareil photo, ou depuis
