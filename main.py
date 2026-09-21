@@ -39,6 +39,7 @@ from kivy.core.text import Label as CoreLabel
 from kivy.uix.widget import Widget
 from kivy.properties import StringProperty, BooleanProperty, ListProperty, ObjectProperty
 from kivy.utils import platform
+from kivy.utils import escape_markup
 from kivy.uix.textinput import TextInput
 from kivy.properties import BooleanProperty
 
@@ -1950,8 +1951,8 @@ def _dialogue_natif_fichier(filtres, multiple=False):
 
 
 def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", ".kml")):
-    """Explorateur de fichiers personnalisé style Windows (dossiers + fichiers)
-    adapté pour Android et PC."""
+    """Explorateur de fichiers (dossiers + fichiers) : dialogue natif sur
+    PC, explorateur maison sur Android (voir _construire_explorateur_android)."""
     if platform != "android":
         # Conserve l'explorateur natif sur PC
         callback(_dialogue_natif_fichier(
@@ -1959,141 +1960,83 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
         ))
         return None
 
-    # Vérification et création sécurisée du dossier de base sur Android
-    dossier_initial = DOSSIER_CHARGEMENT
-    if not os.path.exists(dossier_initial):
-        try:
-            os.makedirs(dossier_initial, exist_ok=True)
-        except Exception:
-            dossier_initial = "/storage/emulated/0/"
+    return _construire_explorateur_android(
+        callback,
+        filtre_extensions=filtre_extensions,
+        multiple=False,
+    )
 
-    # État interne pour l'explorateur
-    dossier_actuel = [dossier_initial]
 
-    layout_principal = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
+# ----------------------------------------------------------------------
+# Explorateur de fichiers Android : icônes et style
+# ----------------------------------------------------------------------
+# La police par défaut de Kivy (Roboto) ne contient pas les emojis dossier
+# et fichier : ils s'affichent en carrés. On utilise donc une petite police
+# monochrome qui ne contient que ces deux pictogrammes (sous-ensemble de
+# GNU Unifont Upper), livrée avec l'appli : dossier "fonts" à côté de
+# main.py, et extension "otf" dans source.include_exts de buildozer.spec.
+# Si le fichier est absent, l'explorateur s'affiche simplement sans icônes
+# (plus de carrés).
+POLICE_ICONES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts", "icones_explorateur.otf")
+if not os.path.isfile(POLICE_ICONES):
+    POLICE_ICONES = None
 
-    # Barre de chemin (fil d'Ariane)
-    lbl_chemin = Label(
-        text=dossier_actuel[0],
+ICONE_DOSSIER = "\U0001F4C1"
+ICONE_FICHIER = "\U0001F4C4"
+
+COULEUR_BLANC = (1, 1, 1, 1)
+COULEUR_TEXTE = (0.1, 0.1, 0.1, 1)
+COULEUR_SEPARATEUR = (0.86, 0.86, 0.86, 1)
+COULEUR_APPUI = (0.80, 0.88, 0.97, 1)
+COULEUR_SELECTION = (0.2, 0.6, 0.86, 1)
+COULEUR_SELECTION_APPUI = (0.15, 0.5, 0.75, 1)
+
+
+def _texte_avec_icone(icone, texte):
+    """Texte de bouton (markup) : icône dans la police dédiée, puis le
+    nom (échappé pour que [ ] ou & dans un nom de fichier ne cassent pas
+    le balisage). Sans police d'icônes : le nom seul."""
+    if POLICE_ICONES:
+        return f"[font={POLICE_ICONES}]{icone}[/font]  {escape_markup(texte)}"
+    return escape_markup(texte)
+
+
+def _fond_uni(widget, couleur):
+    """Peint un fond uni derrière un widget (suit sa position et sa taille)."""
+    with widget.canvas.before:
+        Color(*couleur)
+        rect = Rectangle(pos=widget.pos, size=widget.size)
+    widget.bind(
+        pos=lambda w, v: setattr(rect, "pos", v),
+        size=lambda w, v: setattr(rect, "size", v),
+    )
+
+
+def _bouton_plat(texte, hauteur, fond=COULEUR_BLANC, couleur_texte=COULEUR_TEXTE):
+    """Bouton à fond uni (sans la texture grise par défaut de Kivy), texte
+    aligné à gauche, avec un léger changement de couleur à l'appui."""
+    b = Button(
+        text=texte,
+        markup=True,
         size_hint_y=None,
-        height=dp(36),
-        bold=True,
-        color=(0.1, 0.1, 0.1, 1),
+        height=hauteur,
+        background_normal="",
+        background_down="",
+        background_color=fond,
+        color=couleur_texte,
         halign="left",
-        valign="middle"
+        valign="middle",
     )
-    lbl_chemin.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0]), val[1])))
-    layout_principal.add_widget(lbl_chemin)
+    b._fond = fond
+    b._fond_appui = COULEUR_APPUI
+    b.bind(state=lambda inst, etat: setattr(
+        inst, "background_color", inst._fond_appui if etat == "down" else inst._fond))
+    b.bind(size=lambda inst, val: setattr(inst, "text_size", (max(1, val[0] - dp(20)), val[1])))
+    return b
 
-    # Bouton "Dossier parent"
-    btn_haut = Button(
-        text="📁 .. (Dossier parent)",
-        size_hint_y=None,
-        height=dp(44),
-        background_color=(0.85, 0.85, 0.85, 1),
-        color=(0, 0, 0, 1),
-        halign="left"
-    )
-    btn_haut.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(15)), val[1])))
 
-    # Conteneur scrollable pour la liste des fichiers/dossiers
-    scroll = ScrollView(size_hint=(1, 1))
-    box_contenu = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(2))
-    box_contenu.bind(minimum_height=box_contenu.setter('height'))
-    scroll.add_widget(box_contenu)
-
-    def rafraichir_liste():
-        box_contenu.clear_widgets()
-        chemin_courant = dossier_actuel[0]
-        lbl_chemin.text = chemin_courant
-
-        if chemin_courant != "/" and os.path.dirname(chemin_courant) != chemin_courant:
-            box_contenu.add_widget(btn_haut)
-
-        try:
-            elements = sorted(os.listdir(chemin_courant))
-        except Exception as e:
-            box_contenu.add_widget(Label(
-                text=f"Erreur d'accès ou permissions requises : {e}", 
-                color=(0.8, 0.2, 0.2, 1), 
-                size_hint_y=None, 
-                height=dp(60),
-                text_size=(Window.width - dp(40), None)
-            ))
-            return
-
-        dossiers = []
-        fichiers = []
-
-        for nom in elements:
-            if nom.startswith('.'):
-                continue
-            chemin_complet = os.path.join(chemin_courant, nom)
-            try:
-                if os.path.isdir(chemin_complet):
-                    dossiers.append((nom, chemin_complet))
-                elif os.path.isfile(chemin_complet):
-                    if not filtre_extensions or nom.lower().endswith(filtre_extensions):
-                        fichiers.append((nom, chemin_complet))
-            except Exception:
-                continue
-
-        for nom, chemin_complet in dossiers:
-            b = Button(
-                text=f"📁  {nom}",
-                size_hint_y=None,
-                height=dp(48),
-                background_color=(0.95, 0.95, 0.95, 1),
-                color=(0.1, 0.1, 0.1, 1),
-                halign="left"
-            )
-            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(20)), val[1])))
-            b.bind(on_release=lambda inst, c=chemin_complet: changer_dossier(c))
-            box_contenu.add_widget(b)
-
-        for nom, chemin_complet in fichiers:
-            b = Button(
-                text=f"📄  {nom}",
-                size_hint_y=None,
-                height=dp(48),
-                background_color=(1, 1, 1, 1),
-                color=(0, 0, 0, 1),
-                halign="left"
-            )
-            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(20)), val[1])))
-            b.bind(on_release=lambda inst, c=chemin_complet: callback(c))
-            box_contenu.add_widget(b)
-
-    def changer_dossier(nouveau_chemin):
-        if os.path.exists(nouveau_chemin) and os.access(nouveau_chemin, os.R_OK):
-            dossier_actuel[0] = nouveau_chemin
-            rafraichir_liste()
-
-    def remonter_parent(instance):
-        parent = os.path.dirname(dossier_actuel[0])
-        if parent and os.path.exists(parent):
-            changer_dossier(parent)
-
-    btn_haut.bind(on_release=remonter_parent)
-    rafraichir_liste()
-
-    layout_principal.add_widget(scroll)
-
-    btn_annuler = Button(
-        text="Annuler",
-        size_hint_y=None,
-        height=dp(48),
-        background_color=(0.8, 0.2, 0.2, 1),
-        color=(1, 1, 1, 1)
-    )
-    btn_annuler.bind(on_release=lambda inst: callback(None))
-    layout_principal.add_widget(btn_annuler)
-
-    return layout_principal
-    
 def _construire_explorateur_android(callback, filtre_extensions, multiple=False, dossier_depart=None):
-    """Explorateur de fichiers Android (dossiers + fichiers), même style
-    que _construire_selecteur_fichier, avec en plus :
+    """Explorateur de fichiers Android (dossiers + fichiers) :
       - multiple=False : un clic sur un fichier le renvoie aussitôt
         (callback(chemin)) ;
       - multiple=True  : un clic coche/décoche le fichier (surligné en
@@ -2128,28 +2071,27 @@ def _construire_explorateur_android(callback, filtre_extensions, multiple=False,
     lbl_chemin.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0]), val[1])))
     layout_principal.add_widget(lbl_chemin)
 
-    btn_haut = Button(
-        text="📁 .. (Dossier parent)",
-        size_hint_y=None,
-        height=dp(44),
-        background_color=(0.85, 0.85, 0.85, 1),
-        color=(0, 0, 0, 1),
-        halign="left"
-    )
-    btn_haut.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(15)), val[1])))
+    btn_haut = _bouton_plat(_texte_avec_icone(ICONE_DOSSIER, ".. (Dossier parent)"), dp(44))
 
+    # Zone de liste : fond blanc, avec un filet gris clair entre les lignes
+    # (visible grâce au spacing du conteneur, peint en gris sous les boutons).
     scroll = ScrollView(size_hint=(1, 1))
-    box_contenu = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(2))
+    _fond_uni(scroll, COULEUR_BLANC)
+    box_contenu = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(1))
+    _fond_uni(box_contenu, COULEUR_SEPARATEUR)
     box_contenu.bind(minimum_height=box_contenu.setter('height'))
     scroll.add_widget(box_contenu)
 
     def styler_fichier(btn, coche):
         if coche:
-            btn.background_color = (0.2, 0.6, 0.86, 1)
+            btn._fond = COULEUR_SELECTION
+            btn._fond_appui = COULEUR_SELECTION_APPUI
             btn.color = (1, 1, 1, 1)
         else:
-            btn.background_color = (1, 1, 1, 1)
+            btn._fond = COULEUR_BLANC
+            btn._fond_appui = COULEUR_APPUI
             btn.color = (0, 0, 0, 1)
+        btn.background_color = btn._fond
 
     def maj_bouton_valider():
         if btn_valider is not None:
@@ -2184,13 +2126,15 @@ def _construire_explorateur_android(callback, filtre_extensions, multiple=False,
         try:
             elements = sorted(os.listdir(chemin_courant))
         except Exception as e:
-            box_contenu.add_widget(Label(
+            lbl_erreur = Label(
                 text=f"Erreur d'accès ou permissions requises : {e}",
                 color=(0.8, 0.2, 0.2, 1),
                 size_hint_y=None,
                 height=dp(60),
                 text_size=(Window.width - dp(40), None)
-            ))
+            )
+            _fond_uni(lbl_erreur, COULEUR_BLANC)
+            box_contenu.add_widget(lbl_erreur)
             return
 
         dossiers = []
@@ -2210,27 +2154,13 @@ def _construire_explorateur_android(callback, filtre_extensions, multiple=False,
                 continue
 
         for nom, chemin_complet in dossiers:
-            b = Button(
-                text=f"📁  {nom}",
-                size_hint_y=None,
-                height=dp(48),
-                background_color=(0.95, 0.95, 0.95, 1),
-                color=(0.1, 0.1, 0.1, 1),
-                halign="left"
-            )
-            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(20)), val[1])))
+            b = _bouton_plat(_texte_avec_icone(ICONE_DOSSIER, nom), dp(48))
             b.bind(on_release=lambda inst, c=chemin_complet: changer_dossier(c))
             box_contenu.add_widget(b)
 
         for nom, chemin_complet in fichiers:
-            b = Button(
-                text=f"📄  {nom}",
-                size_hint_y=None,
-                height=dp(48),
-                halign="left"
-            )
+            b = _bouton_plat(_texte_avec_icone(ICONE_FICHIER, nom), dp(48))
             styler_fichier(b, chemin_complet in selection)
-            b.bind(size=lambda inst, val: setattr(inst, 'text_size', (max(1, val[0] - dp(20)), val[1])))
             b.bind(on_release=lambda inst, c=chemin_complet: clic_fichier(c))
             boutons_fichiers[chemin_complet] = b
             box_contenu.add_widget(b)
@@ -2703,7 +2633,8 @@ class LiveScreen(Screen):
         stockage / "Log file directory") et l'ajouter à la liste si
         besoin."""
         dossiers_candidats = [
-            "/storage/emulated/0/GPSLoggerTraces",
+            "/storage/emulated/0/GPX_Files/GPSLoggerTraces",
+"""            "/storage/emulated/0/GPSLoggerTraces","""
         ]
 
         meilleur_chemin = None
