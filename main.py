@@ -2480,6 +2480,10 @@ class LiveScreen(Screen):
         # _fermer_waypoint_photo au retour sur l'appli (voir
         # OutilsTracesApp.on_resume). None = aucune balise en attente.
         self._wpt_en_attente = None
+        # Anti-chevauchement pour _resynchroniser_avec_gpslogger : évite
+        # de lancer une seconde vérification (20 s) tant que la
+        # précédente n'est pas terminée (rallumages d'écran rapprochés).
+        self._resync_gpslogger_en_cours = False
         # Fichier temporaire des annotations photo du live (waypoints,
         # noms des photos, nom de la trace) : créé à la première photo,
         # supprimé à la fin de l'enregistrement (voir
@@ -2718,7 +2722,13 @@ class LiveScreen(Screen):
         # reçus en direct à partir d'ici seront comptés.
         self.compteur_sources_live = {}
         self.annotations_live = []
-        self._reinitialiser_temp_live()
+        # NE PAS réinitialiser le fichier temporaire ici : une simple
+        # resynchronisation (réveil d'écran, ou redémarrage après un
+        # plantage) doit au contraire le CONSERVER s'il est déjà suivi
+        # en mémoire, ou le RETROUVER sur le disque si l'appli vient de
+        # redémarrer à froid (voir _recuperer_fichier_temp_live_orphelin),
+        # pour ne perdre aucune photo déjà associée à cette trace.
+        self._recuperer_fichier_temp_live_orphelin()
 
         if points:
             self._afficher_trace_live_sur_carte()
@@ -2741,6 +2751,60 @@ class LiveScreen(Screen):
             f"Trace GPSLogger déjà en cours reprise : {os.path.basename(chemin)} ({len(points)} points).",
             (0.180, 0.490, 0.196, 1)  # #2E7D32
         )
+
+    def _resynchroniser_avec_gpslogger(self):
+        """Appelée automatiquement au retour au premier plan de l'appli
+        (redémarrage après un plantage ou un clic involontaire sur
+        "Quitter", ou simple réveil de l'écran) : si GPSLogger est en
+        train d'enregistrer une trace dans son dossier de sortie
+        (fichier qui continue de grossir), réinitialise la trace live
+        affichée et la recharge intégralement depuis ce fichier, pour
+        que le nombre de points affiché corresponde exactement à celui
+        de GPSLogger ("Vue détaillée" -> "Parcouru").
+
+        Contrairement à on_click_live_pydroid, cette méthode ne démarre
+        JAMAIS un nouveau suivi ni GPSLogger : si aucun fichier n'est
+        activement écrit, elle ne fait rien et laisse l'écran tel quel
+        (pas de faux positif au réveil de l'écran sans live en cours)."""
+        if self._resync_gpslogger_en_cours:
+            return
+        if self.pause_traitement_live:
+            # Une décision "Terminer" (Oui/Non/Annuler) est en cours :
+            # ne pas interférer avec la trace pendant ce temps-là.
+            return
+
+        chemin_candidat = self._trouver_dernier_gpx_gpslogger()
+        if chemin_candidat is None:
+            return
+
+        try:
+            nb_lignes_reference = self._compter_lignes(chemin_candidat)
+        except OSError:
+            return
+
+        self._resync_gpslogger_en_cours = True
+        Clock.schedule_once(
+            lambda dt: self._resynchroniser_avec_gpslogger_suite(chemin_candidat, nb_lignes_reference),
+            20,
+        )
+
+    def _resynchroniser_avec_gpslogger_suite(self, chemin, nb_lignes_reference):
+        """Suite (20 secondes plus tard) de _resynchroniser_avec_gpslogger :
+        si le fichier a grossi entre-temps, GPSLogger est bien en train
+        d'enregistrer -> réinitialisation et rechargement intégral de la
+        trace live. Sinon (fichier immobile), ne touche à rien."""
+        self._resync_gpslogger_en_cours = False
+
+        if self.pause_traitement_live:
+            return
+
+        try:
+            nb_lignes_actuel = self._compter_lignes(chemin)
+        except OSError:
+            nb_lignes_actuel = nb_lignes_reference
+
+        if nb_lignes_actuel != nb_lignes_reference:
+            self._reprendre_trace_gpslogger_active(chemin)
 
     def on_click_live_pydroid(self):
         """Bouton "Live" (onglet 7) :
@@ -3236,6 +3300,8 @@ class LiveScreen(Screen):
             self._maj_statut_live("Aucun live en cours.", (0.33, 0.33, 0.33, 1))
             return
 
+        self.en_cours_live = True
+
         self._maj_statut_live("Reprise du suivi en direct.", (0.180, 0.490, 0.196, 1))  # #2E7D32
         Clock.schedule_once(
             lambda dt: self._maj_statut_live(
@@ -3286,7 +3352,7 @@ class LiveScreen(Screen):
 
                     gps_logic.exporter_vers_gpx(
                         self.points_trace_live, chemin_sortie, garder_temps=True,
-                        waypoints=self.annotations_live,
+                        waypoints=self._construire_waypoints_pour_export(),
                     )
                     self._maj_statut_live(f"Trace enregistrée : {os.path.basename(chemin_sortie)}", (0.180, 0.490, 0.196, 1))
                     # Enregistrement du GPX validé : le fichier temporaire
@@ -3487,6 +3553,85 @@ class LiveScreen(Screen):
     # ------------------------------------------------------------------
     # Fichier temporaire des annotations photo du live
     # ------------------------------------------------------------------
+    def _recuperer_fichier_temp_live_orphelin(self):
+        """Si aucun fichier temporaire n'est suivi en mémoire (ex. juste
+        après un redémarrage à froid de l'appli suite à un plantage,
+        qui a perdu tout l'état Python), tente de retrouver un fichier
+        live_temp_*.json laissé par la session précédente dans le
+        dossier de sortie, pour ne pas perdre les waypoints/photos déjà
+        enregistrés avant le plantage. Prend le plus récent s'il y en a
+        plusieurs (cas normalement rare, un seul fichier temporaire
+        existant à la fois en usage normal). Ne lève jamais d'exception."""
+        if self.fichier_temp_live is not None:
+            return  # déjà suivi (resynchronisation "à chaud", rien à faire)
+
+        dossier = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
+        try:
+            candidats = [
+                os.path.join(dossier, nom)
+                for nom in os.listdir(dossier)
+                if nom.startswith("live_temp_") and nom.endswith(".json")
+            ]
+        except OSError:
+            return
+        if not candidats:
+            return
+
+        chemin = max(candidats, key=lambda c: os.path.getmtime(c))
+        try:
+            with open(chemin, "r", encoding="utf-8") as f:
+                donnees = json.load(f)
+            self.fichier_temp_live = chemin
+            self.journal_temp_live = donnees.get("waypoints", [])
+            debut = donnees.get("debut_live")
+            if debut:
+                try:
+                    self.debut_live_temp = datetime.fromisoformat(debut)
+                except ValueError:
+                    pass
+            self.temp_live_text = (
+                "Fichier temporaire retrouvé après redémarrage :\n"
+                f"{os.path.basename(chemin)}\nEmplacement : {dossier}"
+            )
+        except Exception as e:
+            print(f"[Live] Récupération du fichier temporaire impossible : {e}")
+
+    def _construire_waypoints_pour_export(self):
+        """Construit la liste de waypoints à intégrer dans le GPX final à
+        partir du JOURNAL DU FICHIER TEMPORAIRE (self.journal_temp_live,
+        tenu à jour en mémoire en même temps que le fichier sur le
+        disque — voir _ecrire_fichier_temp_live), plutôt que de
+        self.annotations_live directement : c'est ce journal, relu ou
+        retrouvé sur le disque si besoin, qui reste fiable même après
+        une resynchronisation. Convertit au passage l'heure (texte ISO
+        dans le fichier temporaire) en objet datetime, comme l'attend
+        gps_logic.exporter_vers_gpx."""
+        waypoints = []
+        for w in self.journal_temp_live:
+            temps = w.get('time')
+            if isinstance(temps, str):
+                try:
+                    temps = datetime.fromisoformat(temps)
+                except ValueError:
+                    temps = None
+            waypoints.append({
+                'lat': w.get('lat'),
+                'lon': w.get('lon'),
+                'ele': w.get('ele'),
+                'time': temps,
+                'name': w.get('name'),
+                'description': w.get('description'),
+            })
+
+        if not waypoints and self.annotations_live:
+            # Filet de sécurité : le journal est vide (ex. écriture du
+            # fichier temporaire ayant échoué) mais des annotations
+            # existent tout de même en mémoire pour cette session : on
+            # les utilise plutôt que de perdre les photos.
+            return list(self.annotations_live)
+
+        return waypoints
+
     def _reinitialiser_temp_live(self):
         """Repart à zéro au démarrage d'un live. Ne supprime AUCUN fichier
         sur le disque : un fichier temporaire resté d'un live précédent
@@ -3593,13 +3738,11 @@ class LiveScreen(Screen):
             self._maj_statut_live("Impossible de prendre une photo : aucun live en cours.", (0.776, 0.157, 0.157, 1))
             return
         if not self.points_trace_live:
-            ...
-            self._maj_statut_live("Aucun live en cours.", (0.33, 0.33, 0.33, 1))
+            self._maj_statut_live(
+                "Impossible de prendre une photo : aucun point GPS enregistré pour l'instant.",
+                (0.776, 0.157, 0.157, 1)
+            )
             return
-
-        self.en_cours_live = True   # <-- ligne à ajouter
-
-        self._maj_statut_live("Reprise du suivi en direct.", (0.180, 0.490, 0.196, 1))  
 
         dernier_point = self.points_trace_live[-1]
         self._wpt_en_attente = {
@@ -4442,6 +4585,9 @@ class OutilsTracesApp(App):
             return True
         if getattr(ecran_live, '_wpt_en_attente', None) is not None:
             Clock.schedule_once(lambda dt: ecran_live._fermer_waypoint_photo(), 0.5)
+        # Réveil de l'écran / retour au premier plan : resynchronise la
+        # trace live avec GPSLogger si un enregistrement est actif.
+        ecran_live._resynchroniser_avec_gpslogger()
         return True
 
     def build(self):
@@ -4682,6 +4828,14 @@ class OutilsTracesApp(App):
                 self._traiter_intent_fichier(intent)
         except Exception as e:
             print(f"[Intent] Erreur au démarrage : {e}")
+
+        # Démarrage à froid (après un plantage ou un clic sur
+        # "Quitter") : resynchronise la trace live avec GPSLogger si
+        # un enregistrement est actif dans son dossier de sortie.
+        try:
+            self.sm.get_screen("Live")._resynchroniser_avec_gpslogger()
+        except Exception as e:
+            print(f"[Live] Resynchronisation au démarrage impossible : {e}")
 
     def _sur_nouvel_intent(self, intent):
         """Appelée quand l'appli est déjà ouverte et que l'utilisateur
