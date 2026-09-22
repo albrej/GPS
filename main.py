@@ -1767,7 +1767,7 @@ class ConversionScreen(Screen):
                 self.garder_temps,
                 dossier_sortie=DOSSIER_SORTIE,
             )
-            message = f"Conversion réussie !\nFichier généré : {os.path.basename(chemin_sortie)}"
+            message = f"Action réussie !\nFichier généré : {os.path.basename(chemin_sortie)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
             message = f"Échec de la conversion : {e}"
@@ -1950,7 +1950,7 @@ class NumerotationScreen(Screen):
             # Le détail (ex. "134 points numérotés") reste visible dans le
             # résumé des changements ci-dessous ; le message de statut suit
             # le même gabarit que les autres onglets.
-            message = f"{titre} réussi(e) !\nFichier généré : {os.path.basename(chemin_sortie)}"
+            message = f"Action réussie !\nFichier généré : {os.path.basename(chemin_sortie)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
             message = f"Échec du traitement : {e}"
@@ -2439,7 +2439,7 @@ class FusionScreen(Screen):
     def _fusion_thread(self):
         try:
             chemin_sortie = gps_logic.traiter_fusion(list(self.fichiers_fusion), DOSSIER_SORTIE)
-            message = f"Fusion réussie !\nFichier généré : {os.path.basename(chemin_sortie)}"
+            message = f"Action réussie !\nFichier généré : {os.path.basename(chemin_sortie)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
             message = f"Échec de la fusion : {e}"
@@ -4320,7 +4320,7 @@ class CarteScreen(Screen):
             c1, c2 = gps_logic.decouper_trace(
                 self.fichier_source, self.points_courants, point_coupure, dossier_sortie=DOSSIER_SORTIE
             )
-            message = f"Découpe réussie !\nFichiers générés : {os.path.basename(c1)}, {os.path.basename(c2)}"
+            message = f"Action réussie !\nFichiers générés : {os.path.basename(c1)}, {os.path.basename(c2)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
             message = f"Échec de la découpe : {e}"
