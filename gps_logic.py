@@ -605,13 +605,18 @@ LEGENDE_NUMEROTATION = [
 ]
 
 
-def traiter_numerotation(fichier_entree, segments_lus, mode_choisi, est_inverse, entree_suppr=""):
+def traiter_numerotation(fichier_entree, segments_lus, mode_choisi, est_inverse, entree_suppr="", dossier_sortie=None):
     """Applique inversion/numérotation/dénumérotation/suppression et écrit
-    un nouveau fichier GPX. Retourne (chemin_sortie, message_resume)."""
+    un nouveau fichier GPX. Par défaut (dossier_sortie=None), écrit à côté
+    du fichier source, comme convertir_fichier et decouper_trace.
+    Retourne (chemin_sortie, message_resume)."""
     if not est_inverse and mode_choisi == "aucun":
         raise ValueError("Sélectionnez au moins une action (Inverser ou Traitement).")
 
-    base_path = os.path.splitext(fichier_entree)[0]
+    if dossier_sortie is None:
+        dossier_sortie = os.path.dirname(fichier_entree)
+    os.makedirs(dossier_sortie, exist_ok=True)
+    base_path = os.path.join(dossier_sortie, os.path.splitext(os.path.basename(fichier_entree))[0])
     segments_a_traiter = segments_lus
     if est_inverse:
         segments_a_traiter = [list(reversed(seg)) for seg in reversed(segments_lus)]

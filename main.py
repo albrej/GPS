@@ -679,8 +679,11 @@ KV = """
             id: lbl_status
             text: root.status_text
             size_hint_y: None
-            height: dp(40)
-            color: 0.15, 0.5, 0.15, 1
+            height: max(dp(30), self.texture_size[1] + dp(10))
+            text_size: self.width, None
+            halign: "left"
+            valign: "top"
+            color: root.status_color
 
         Widget:
 
@@ -1731,6 +1734,7 @@ class ConversionScreen(Screen):
     format_sortie = StringProperty("gpx")
     garder_temps = BooleanProperty(True)
     status_text = StringProperty("")
+    status_color = ListProperty([0.15, 0.5, 0.15, 1])
     en_cours = BooleanProperty(False)
 
     def ouvrir_selecteur_fichier(self):
@@ -1763,15 +1767,16 @@ class ConversionScreen(Screen):
                 self.garder_temps,
                 dossier_sortie=DOSSIER_SORTIE,
             )
-            message = f"Conversion réussie !\nEnregistré dans :\n{chemin_sortie}"
-            erreur = False
+            message = f"Conversion réussie !\nFichier généré : {os.path.basename(chemin_sortie)}"
+            couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
-            message = f"Échec de la conversion :\n{e}"
-            erreur = True
+            message = f"Échec de la conversion : {e}"
+            couleur = [0.8, 0.1, 0.8, 1]
 
         def _maj_ui(dt):
             self.en_cours = False
-            self.status_text = ("[ERREUR] " + message) if erreur else message
+            self.status_text = message
+            self.status_color = couleur
 
         Clock.schedule_once(_maj_ui, 0)
 
@@ -1783,6 +1788,11 @@ class NumerotationScreen(Screen):
     deja_numerote = BooleanProperty(False)
     total_points = 0  # attribut simple (pas besoin d'être une Property Kivy)
     segments_lus = []
+    # True juste après un traitement (réussi ou en échec) : empêche
+    # _maj_etat() d'écraser le message de résultat par l'aperçu
+    # "Prêt à effectuer...", en particulier au retour sur cet onglet
+    # (on_enter), où le message disparaissait auparavant.
+    _resultat_affiche = False
 
     mode = StringProperty("aucun")
     inverser = BooleanProperty(False)
@@ -1801,12 +1811,15 @@ class NumerotationScreen(Screen):
         self._maj_etat()
 
     def on_mode(self, *args):
+        self._resultat_affiche = False
         self._maj_etat()
 
     def on_inverser(self, *args):
+        self._resultat_affiche = False
         self._maj_etat()
 
     def on_texte_suppr(self, *args):
+        self._resultat_affiche = False
         self._maj_etat()
 
     def ouvrir_selecteur_fichier(self):
@@ -1820,6 +1833,7 @@ class NumerotationScreen(Screen):
             self._popup.dismiss()
         if not chemin:
             return
+        self._resultat_affiche = False
         try:
             self.segments_lus, deja_num = gps_logic.extraire_donnees_gpx_kmz(chemin)
             self.fichier_source = chemin
@@ -1854,6 +1868,13 @@ class NumerotationScreen(Screen):
 
         # On calcule toujours la légende dès qu'une trace est chargée
         self._maj_legende()
+
+        if self._resultat_affiche:
+            # Un message de résultat (réussite/échec) est affiché : on ne
+            # le remplace pas par l'aperçu "Prêt à effectuer...", mais le
+            # bouton reste correctement activé/désactivé.
+            self.btn_executer_actif = self.inverser or self.mode != "aucun"
+            return
 
         if not self.inverser and self.mode == "aucun":
             self.btn_executer_actif = False
@@ -1920,11 +1941,16 @@ class NumerotationScreen(Screen):
         threading.Thread(target=self._traitement_thread, daemon=True).start()
 
     def _traitement_thread(self):
+        titre = self.btn_executer_text  # ex. "Inverser et Numéroter"
         try:
             chemin_sortie, resume = gps_logic.traiter_numerotation(
-                self.fichier_source, self.segments_lus, self.mode, self.inverser, self.texte_suppr
+                self.fichier_source, self.segments_lus, self.mode, self.inverser, self.texte_suppr,
+                dossier_sortie=DOSSIER_SORTIE,
             )
-            message = f"{resume}.\nFichier généré : {os.path.basename(chemin_sortie)}"
+            # Le détail (ex. "134 points numérotés") reste visible dans le
+            # résumé des changements ci-dessous ; le message de statut suit
+            # le même gabarit que les autres onglets.
+            message = f"{titre} réussi(e) !\nFichier généré : {os.path.basename(chemin_sortie)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
             message = f"Échec du traitement : {e}"
@@ -1934,6 +1960,7 @@ class NumerotationScreen(Screen):
             self.en_cours = False
             self.status_text = message
             self.status_color = couleur
+            self._resultat_affiche = True
 
         Clock.schedule_once(_maj_ui, 0)
         
@@ -4293,7 +4320,7 @@ class CarteScreen(Screen):
             c1, c2 = gps_logic.decouper_trace(
                 self.fichier_source, self.points_courants, point_coupure, dossier_sortie=DOSSIER_SORTIE
             )
-            message = f"Découpe réussie en 2 fichiers :\n{os.path.basename(c1)}\n{os.path.basename(c2)}"
+            message = f"Découpe réussie !\nFichiers générés : {os.path.basename(c1)}, {os.path.basename(c2)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
             message = f"Échec de la découpe : {e}"
