@@ -48,6 +48,12 @@ def _children_localname(el, name):
     return [c for c in el if _localname(c.tag) == name]
 
 
+# Deux points GPS plus proches que ce seuil (en degrés, ~1 cm) sont
+# considérés comme le même point : du bruit GPS sur une trace à
+# l'arrêt, qui ne représente aucun déplacement réel.
+SEUIL_DOUBLON_DEGRES = 1e-7
+
+
 def calculer_distance_haversine(lat1, lon1, lat2, lon2):
     R = 6371000
     phi1 = math.radians(lat1)
@@ -60,19 +66,17 @@ def calculer_distance_haversine(lat1, lon1, lat2, lon2):
 
 
 def nettoyer_points_parasites(points):
+    """Retire les points GPS quasi superposés au point précédent conservé
+    (voir SEUIL_DOUBLON_DEGRES). Ne retire PLUS le dernier point d'une
+    trace qui se referme près de son point de départ (une trace en
+    boucle est légitime : le dernier point ne doit pas disparaître)."""
     if len(points) < 2:
         return points
     pts_uniques = [points[0]]
     for p in points[1:]:
         p_prec = pts_uniques[-1]
-        if abs(p['lat'] - p_prec['lat']) > 1e-7 or abs(p['lon'] - p_prec['lon']) > 1e-7:
+        if abs(p['lat'] - p_prec['lat']) > SEUIL_DOUBLON_DEGRES or abs(p['lon'] - p_prec['lon']) > SEUIL_DOUBLON_DEGRES:
             pts_uniques.append(p)
-    if len(pts_uniques) > 2:
-        p_prem = pts_uniques[0]
-        p_dern = pts_uniques[-1]
-        dist_fermeture = calculer_distance_haversine(p_prem['lat'], p_prem['lon'], p_dern['lat'], p_dern['lon'])
-        if dist_fermeture < 2.0:
-            pts_uniques.pop()
     return pts_uniques
 
 
@@ -479,6 +483,22 @@ def analyser_liste_suppression(texte_saisie, max_points):
     return indices, None
 
 
+def _filtrer_doublons_proches_segment(segment):
+    """Équivalent de nettoyer_points_parasites (filtre des points quasi
+    superposés au précédent, voir SEUIL_DOUBLON_DEGRES) pour un segment
+    de extraire_donnees_gpx_kmz : une liste de tuples
+    (lat, lon, ele, time, nom) avec lat/lon en texte."""
+    if len(segment) < 2:
+        return segment
+    resultat = [segment[0]]
+    for item in segment[1:]:
+        lat_prec, lon_prec = float(resultat[-1][0]), float(resultat[-1][1])
+        lat, lon = float(item[0]), float(item[1])
+        if abs(lat - lat_prec) > SEUIL_DOUBLON_DEGRES or abs(lon - lon_prec) > SEUIL_DOUBLON_DEGRES:
+            resultat.append(item)
+    return resultat
+
+
 def extraire_donnees_gpx_kmz(fichier_entree):
     """Retourne (segments_lus, deja_numerote).
     segments_lus est une liste de segments, chaque segment une liste de
@@ -508,7 +528,7 @@ def extraire_donnees_gpx_kmz(fichier_entree):
 
                         coords_segment.append((lat, lon, ele, time_str, point.name))
                     if coords_segment:
-                        segments_lus.append(coords_segment)
+                        segments_lus.append(_filtrer_doublons_proches_segment(coords_segment))
         except Exception as e:
             raise RuntimeError(f"Impossible de lire le fichier GPX :\n{e}")
 

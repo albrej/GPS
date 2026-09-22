@@ -3255,6 +3255,50 @@ class LiveScreen(Screen):
         dernier = points[-1]
         self.map_view.center_on(dernier['lat'], dernier['lon'])
         
+    def _fusionner_avec_gpslogger_avant_finalisation(self):
+        """Appelée juste avant de proposer d'enregistrer (bouton
+        "Terminer") : relit une dernière fois le fichier de GPSLogger et
+        ne l'adopte que s'il est PLUS complet que ce qui est déjà
+        affiché (plus de points). Contrairement à
+        _resynchroniser_avec_gpslogger (qui ne fait que rattraper un
+        réveil d'écran ou un redémarrage), l'objectif ici est d'éviter
+        que le fichier final reflète un instant figé pendant
+        l'enregistrement : GPSLogger reste la référence, mais les points
+        déjà reçus en direct par le serveur d'écoute local (potentiellement
+        plus récents que ce que GPSLogger a déjà écrit sur le disque,
+        qui n'écrit que par intervalles) ne sont jamais perdus non plus,
+        puisqu'on ne bascule sur le fichier que s'il apporte strictement
+        plus de points que ce qui est déjà en mémoire.
+
+        Limite connue : la comparaison se fait sur le NOMBRE de points,
+        pas sur leur contenu point par point ; un cas très improbable où
+        le fichier et la mémoire auraient chacun des points que l'autre
+        n'a pas, en nombre équivalent, ne serait pas fusionné parfaitement."""
+        chemin = self.fichier_gpx_actif_live or self._trouver_dernier_gpx_gpslogger()
+        if not chemin:
+            return
+
+        try:
+            points_fichier = gps_logic.lire_gpx_tolerant(chemin)
+        except Exception as e:
+            print(f"[Live] Relecture finale de GPSLogger avant enregistrement impossible : {e}")
+            return
+
+        if len(points_fichier) <= len(self.points_trace_live):
+            return  # ce qui est déjà affiché est au moins aussi complet
+
+        self.points_trace_live = points_fichier
+        self.fichier_gpx_actif_live = chemin
+
+        self._afficher_trace_live_sur_carte()
+        self.profil_live = gps_logic.calculer_profil(points_fichier)
+        distances_km, distances_ele, altitudes, vitesses_kmh = self.profil_live
+        self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
+
+        dernier = points_fichier[-1]
+        idx = len(points_fichier) - 1
+        self._maj_info_point_live(dernier, idx, distances_km, vitesses_kmh)
+
     def on_click_terminer_live(self, *args):
         """Bouton "Terminer" (onglet 7) :
         1. Met en pause le traitement des points live (ceux reçus
@@ -3273,6 +3317,12 @@ class LiveScreen(Screen):
            effort), puis soit invite à fermer GPSLogger manuellement
            (trace enregistrée), soit réinitialise entièrement l'onglet
            (trace abandonnée)."""
+        # Dernière chance de rattraper des points que GPSLogger aurait
+        # écrits mais que le serveur d'écoute local n'aurait pas reçus
+        # (écran éteint, mise en arrière-plan...), AVANT de figer la
+        # trace qui sera proposée à l'enregistrement.
+        self._fusionner_avec_gpslogger_avant_finalisation()
+
         self.pause_traitement_live = True
         self._maj_statut_live("Suivi en direct mis en pause...", (0.937, 0.424, 0.0, 1))  # #EF6C00
 
