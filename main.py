@@ -19,9 +19,12 @@ import threading
 import queue
 import subprocess
 import urllib.parse
+import gpxpy
+import xml.etree.ElementTree as ET
+import zipfile
+
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
-
 from kivy.app import App
 from kivy.lang import Builder
 from kivy.uix.screenmanager import ScreenManager, Screen
@@ -1761,6 +1764,8 @@ class ConversionScreen(Screen):
 
     def _conversion_thread(self):
         try:
+            # Appel de la fonction de conversion dans gps_logic 
+            # (qui gère désormais la copie silencieuse des waypoints)
             chemin_sortie = gps_logic.convertir_fichier(
                 self.fichier_source,
                 self.format_sortie,
@@ -4320,7 +4325,7 @@ class CarteScreen(Screen):
             c1, c2 = gps_logic.decouper_trace(
                 self.fichier_source, self.points_courants, point_coupure, dossier_sortie=DOSSIER_SORTIE
             )
-            message = f"Action réussie !\nFichiers générés : {os.path.basename(c1)}, {os.path.basename(c2)}"
+            message = f"Action réussie !\nFichiers générés :\n{os.path.basename(c1)}\n{os.path.basename(c2)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
             message = f"Échec de la découpe : {e}"
@@ -4332,6 +4337,15 @@ class CarteScreen(Screen):
             self.status_color = couleur
 
         Clock.schedule_once(_maj_ui, 0)
+
+def _nom_est_numero_point(nom):
+    """True si le nom (<name> GPX ou <ns0:name> KML) ne contient que des
+    chiffres : c'est un n° de point, pas un vrai waypoint."""
+    if nom is None:
+        return False
+    txt = str(nom).strip()
+    return txt.isascii() and txt.isdigit()
+
 
 class LigneStatistique(BoxLayout):
     libelle = StringProperty("")
@@ -4352,6 +4366,7 @@ class StatistiquesScreen(Screen):
         ("temps_marche", "Temps sans pauses :"),
         ("vit_moy", "Vitesse moyenne :"),
         ("allure", "Allure moyenne :"),
+        ("waypoints", "Waypoints :"),
     ]
 
     def __init__(self, **kwargs):
@@ -4370,7 +4385,41 @@ class StatistiquesScreen(Screen):
         if not chemin:
             return
         try:
-            points = gps_logic.lire_fichier_pour_conversion(chemin)
+            # 1. Lecture de la trace (et éventuels waypoints si la fonction les renvoie)
+            resultat = gps_logic.lire_fichier_pour_conversion(chemin)
+            if isinstance(resultat, tuple):
+                points, waypoints = resultat
+            else:
+                points = resultat
+                waypoints = []
+
+            # 2. Si aucun waypoint n'a été renvoyé par la lecture globale, 
+            # on les extrait proprement selon le format sans faire de doublon.
+            if not waypoints:
+                extension = os.path.splitext(chemin)[1].lower()
+                if extension == ".gpx":
+                    with open(chemin, "r", encoding="utf-8") as f:
+                        gpx_parsed = gpxpy.parse(f)
+                        waypoints = [
+                            {'lat': w.latitude, 'lon': w.longitude, 'ele': w.elevation, 'name': w.name} 
+                            for w in gpx_parsed.waypoints
+                        ]
+                elif extension in [".kml", ".kmz"]:
+                    if extension == ".kmz":
+                        with zipfile.ZipFile(chemin, 'r') as z:
+                            kml_name = next((nom for nom in z.namelist() if nom.lower().endswith('.kml')), None)
+                            if kml_name:
+                                root = ET.fromstring(z.read(kml_name))
+                                waypoints = gps_logic.extraire_waypoints_kml_kmz_bruts(root)
+                    else:
+                        root = ET.parse(chemin).getroot()
+                        waypoints = gps_logic.extraire_waypoints_kml_kmz_bruts(root)
+
+            # 3. Les n° de points (<name> composé uniquement de chiffres) ne
+            # sont pas des waypoints : on ne compte que les vrais waypoints
+            # (nom contenant au moins une lettre, ou sans nom).
+            waypoints = [w for w in waypoints if not _nom_est_numero_point(w.get('name'))]
+
         except Exception as e:
             self.info_fichier = f"Erreur de lecture : {e}"
             return
@@ -4380,9 +4429,11 @@ class StatistiquesScreen(Screen):
             return
 
         self.info_fichier = f"Trace : {os.path.basename(chemin)}"
-        stats = gps_logic.calculer_statistiques(points)
+      
+        # Transmission des waypoints uniques vers la logique de calcul
+        stats = gps_logic.calculer_statistiques(points, waypoints)
         self._afficher_tableau(stats)
-
+        
     def _afficher_tableau(self, valeurs):
         conteneur = self.ids.tableau_stats
         conteneur.clear_widgets()

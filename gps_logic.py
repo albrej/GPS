@@ -17,6 +17,8 @@ import gpxpy
 import gpxpy.gpx
 import xml.etree.ElementTree as ET
 import piexif
+import zipfile
+import xml.etree.ElementTree as ET
 
 KML_NS = "http://www.opengis.net/kml/2.2"
 GX_NS = "http://www.google.com/kml/ext/2.2"
@@ -31,6 +33,96 @@ ET.register_namespace("gpxx", GPXX_NS)
 ET.register_namespace("xsi", XSI_NS)
 
 
+def extraire_waypoints_kml_kmz_bruts(root):
+    """Détecte les waypoints de type Placemark/Point dans un KML, 
+       indépendamment des espaces de noms (<ns0:name>, <name>, etc.)."""
+    waypoints = []
+    # Recherche universelle de tous les Placemark peu importe le namespace (ns0, kml, etc.)
+    for placemark in root.iter():
+        if _localname(placemark.tag) == 'Placemark':
+            # Vérifier s'il contient un Point (Waypoint) et non une ligne/piste
+            point_elem = next((c for c in placemark if _localname(c.tag) == 'Point'), None)
+            if point_elem is not None:
+                # Récupérer le nom (gère <ns0:name>, <name>, etc.)
+                nom_elem = next((c for c in placemark if _localname(c.tag) == 'name'), None)
+                nom = nom_elem.text.strip() if nom_elem is not None and nom_elem.text else None
+                
+                # Récupérer la description éventuelle
+                desc_elem = next((c for c in placemark if _localname(c.tag) == 'description'), None)
+                desc = desc_elem.text.strip() if desc_elem is not None and desc_elem.text else None
+
+                # Récupérer les coordonnées du point
+                coord_elem = next((c for c in point_elem if _localname(c.tag) == 'coordinates'), None)
+                if coord_elem is not None and coord_elem.text:
+                    parts = coord_elem.text.strip().split(',')
+                    if len(parts) >= 2:
+                        try:
+                            lon = float(parts[0])
+                            lat = float(parts[1])
+                            ele = round(float(parts[2]), 1) if len(parts) > 2 else None
+                            waypoints.append({
+                                'lat': lat,
+                                'lon': lon,
+                                'ele': ele,
+                                'name': nom,
+                                'description': desc
+                            })
+                        except ValueError:
+                            pass
+    return waypoints
+    
+def extraire_waypoints_kml_kmz(chemin_fichier):
+    """
+    Extrait les waypoints d'un fichier KML ou KMZ en contournant 
+    le problème des espaces de noms (ex: <ns0:name>, <kml:name>).
+    """
+    content = None
+    
+    # 1. Gestion KMZ (archive ZIP) vs KML (XML brut)
+    if chemin_fichier.lower().endswith('.kmz'):
+        with zipfile.ZipFile(chemin_fichier, 'r') as z:
+            # Recherche du fichier kml à l'intérieur de l'archive
+            kml_nom = next((f for f in z.namelist() if f.lower().endswith('.kml')), None)
+            if kml_nom:
+                content = z.read(kml_nom)
+    else:
+        with open(chemin_fichier, 'rb') as f:
+            content = f.read()
+
+    if not content:
+        return []
+
+    # 2. Parsing XML sécurisé
+    root = ET.fromstring(content)
+    waypoints = []
+
+    # 3. Utilisation de {*} pour ignorer les préfixes de namespace (ns0, kml, etc.)
+    for placemark in root.findall('.//{*}Placemark'):
+        # Vérifier si c'est un point (Waypoint) et non une trace (LineString)
+        point_elem = placemark.find('.//{*}Point')
+        if point_elem is not None:
+            # Récupérer le nom (gère <ns0:name>, <name>, etc.)
+            nom_elem = placemark.find('.//{*}name')
+            nom = nom_elem.text.strip() if nom_elem is not None and nom_elem.text else "Waypoint sans nom"
+            
+            # Récupérer les coordonnées
+            coord_elem = point_elem.find('.//{*}coordinates')
+            if coord_elem is not None and coord_elem.text:
+                parts = coord_elem.text.strip().split(',')
+                if len(parts) >= 2:
+                    lon = float(parts[0])
+                    lat = float(parts[1])
+                    ele = float(parts[2]) if len(parts) > 2 else 0.0
+                    
+                    waypoints.append({
+                        'nom': nom,
+                        'lat': lat,
+                        'lon': lon,
+                        'ele': ele
+                    })
+
+    return waypoints
+    
 def _localname(tag):
     """Nom d'une balise XML sans son préfixe de namespace (équivalent à
     local-name() en XPath, mais sans dépendre de lxml)."""
@@ -46,6 +138,22 @@ def _findall_localname(root, name):
 def _children_localname(el, name):
     """Enfants directs d'un élément correspondant à un nom donné."""
     return [c for c in el if _localname(c.tag) == name]
+
+
+def nom_est_numero_point(nom):
+    """True si le nom (<name> GPX ou <ns0:name> KML) ne contient que des
+    chiffres : c'est alors un n° de point, pas un waypoint."""
+    return nom is not None and re.fullmatch(r"\d+", str(nom).strip()) is not None
+
+
+def filtrer_vrais_waypoints(waypoints):
+    """Retire d'une liste de waypoints (dict avec 'name', ou 'nom' pour
+    extraire_waypoints_kml_kmz) ceux dont le nom ne contient que des
+    chiffres : ce sont des n° de points. Un waypoint sans nom est conservé."""
+    if not waypoints:
+        return []
+    return [w for w in waypoints
+            if not nom_est_numero_point(w.get('name') if w.get('name') is not None else w.get('nom'))]
 
 
 # Deux points GPS plus proches que ce seuil (en degrés, ~1 cm) sont
@@ -318,7 +426,7 @@ def exporter_vers_gpx(points, chemin_sortie, garder_temps=True, waypoints=None):
             wpt = gpxpy.gpx.GPXWaypoint(
                 w['lat'], w['lon'],
                 elevation=w.get('ele'),
-                time=w['time'] if garder_temps else None,
+                time=w.get('time') if garder_temps else None,
                 name=w.get('name'),
                 description=w.get('description'),
             )
@@ -328,7 +436,7 @@ def exporter_vers_gpx(points, chemin_sortie, garder_temps=True, waypoints=None):
         f.write(gpx.to_xml())
 
 
-def exporter_vers_kml(points, chemin_sortie, garder_temps=True):
+def exporter_vers_kml(points, chemin_sortie, garder_temps=True, waypoints=None):
     kml = ET.Element("{%s}kml" % KML_NS)
     doc = ET.SubElement(kml, "{%s}Document" % KML_NS)
 
@@ -365,18 +473,173 @@ def exporter_vers_kml(points, chemin_sortie, garder_temps=True):
             coords_str.append(f"{p['lon']},{p['lat']},{ele_str}")
         ET.SubElement(ls, "{%s}coordinates" % KML_NS).text = "\n".join(coords_str)
 
+    # --- N° de points : un nom composé uniquement de chiffres est un n° de
+    # point. Un gx:Track / LineString ne peut pas porter de nom par point,
+    # donc chaque point numéroté est exporté en plus comme Placemark de type
+    # Point (nom = le n°), rangé dans un dossier pour pouvoir l'afficher ou
+    # le masquer d'un bloc. À la relecture, extraire_reperes_kml les
+    # reconnaît comme n° de points.
+    points_numerotes = [p for p in points
+                        if p.get('name') and re.fullmatch(r"\d+", str(p['name']).strip())]
+    if points_numerotes:
+        dossier = ET.SubElement(doc, "{%s}Folder" % KML_NS)
+        ET.SubElement(dossier, "{%s}name" % KML_NS).text = "Points numérotés"
+        for p in points_numerotes:
+            num_pm = ET.SubElement(dossier, "{%s}Placemark" % KML_NS)
+            ET.SubElement(num_pm, "{%s}name" % KML_NS).text = str(p['name']).strip()
+            point_node = ET.SubElement(num_pm, "{%s}Point" % KML_NS)
+            ele_str = str(round(p['ele'], 1)) if p['ele'] is not None else "0"
+            ET.SubElement(point_node, "{%s}coordinates" % KML_NS).text = f"{p['lon']},{p['lat']},{ele_str}"
+    # ------------------------------------
+
+    # --- AJOUT : Export des waypoints ---
+    if waypoints:
+        for w in waypoints:
+            wpt_pm = ET.SubElement(doc, "{%s}Placemark" % KML_NS)
+            if w.get('name'):
+                ET.SubElement(wpt_pm, "{%s}name" % KML_NS).text = str(w['name'])
+            if w.get('description'):
+                ET.SubElement(wpt_pm, "{%s}description" % KML_NS).text = str(w['description'])
+            
+            point_node = ET.SubElement(wpt_pm, "{%s}Point" % KML_NS)
+            ele_str = str(round(w['ele'], 1)) if w.get('ele') is not None else "0"
+            ET.SubElement(point_node, "{%s}coordinates" % KML_NS).text = f"{w['lon']},{w['lat']},{ele_str}"
+    # ------------------------------------
+
     tree = ET.ElementTree(kml)
     ET.indent(tree, space="  ")
     tree.write(chemin_sortie, xml_declaration=True, encoding="UTF-8")
 
 
-def exporter_vers_kmz(points, chemin_sortie, garder_temps=True):
+def exporter_vers_kmz(points, chemin_sortie, garder_temps=True, waypoints=None):
     kml_temp = chemin_sortie + ".kml"
-    exporter_vers_kml(points, kml_temp, garder_temps=garder_temps)
+    exporter_vers_kml(points, kml_temp, garder_temps=garder_temps, waypoints=waypoints)
     with zipfile.ZipFile(chemin_sortie, 'w', zipfile.ZIP_DEFLATED) as z:
         z.write(kml_temp, arcname="doc.kml")
     if os.path.exists(kml_temp):
         os.remove(kml_temp)
+
+
+# Distance maximale (en mètres) entre un « n° de point » d'un KML (Placemark
+# dont le nom ne contient que des chiffres) et le point de la trace auquel
+# on le rattache lors de la conversion vers GPX.
+TOLERANCE_NUM_POINT_M = 20.0
+
+
+def _lire_racine_kml(chemin_fichier):
+    """Racine XML d'un fichier KML ou KMZ (None si le KMZ ne contient
+    aucun .kml)."""
+    if chemin_fichier.lower().endswith(".kmz"):
+        with zipfile.ZipFile(chemin_fichier, "r") as z:
+            kml_nom = next((n for n in z.namelist() if n.lower().endswith(".kml")), None)
+            if not kml_nom:
+                return None
+            return ET.fromstring(z.read(kml_nom))
+    return ET.parse(chemin_fichier).getroot()
+
+
+def extraire_reperes_kml(chemin_fichier):
+    """Sépare les Placemark de type Point d'un KML/KMZ selon leur nom :
+      - nom composé uniquement de chiffres  -> n° de point ;
+      - tout autre nom (lettres, vide...)   -> waypoint.
+
+    Retourne (waypoints, points_numerotes, a_trace) :
+      - waypoints        : liste de dict lat/lon/ele/time/name/description ;
+      - points_numerotes : liste de dict lat/lon/ele/time/name (name = le n°),
+                           dans l'ordre du fichier ;
+      - a_trace          : True si le fichier contient une trace linéaire
+                           (gx:Track ou LineString)."""
+    root = _lire_racine_kml(chemin_fichier)
+    if root is None:
+        return [], [], False
+
+    a_trace = any(_localname(el.tag) in ("Track", "LineString") for el in root.iter())
+
+    waypoints = []
+    points_numerotes = []
+    for w in extraire_waypoints_kml_kmz_bruts(root):
+        nom = w.get('name')
+        if nom and re.fullmatch(r"\d+", nom):
+            points_numerotes.append({
+                'lat': w['lat'], 'lon': w['lon'], 'ele': w.get('ele'),
+                'time': None, 'name': nom,
+            })
+        else:
+            waypoints.append({
+                'lat': w['lat'], 'lon': w['lon'], 'ele': w.get('ele'),
+                'time': None, 'name': nom, 'description': w.get('description'),
+            })
+    return waypoints, points_numerotes, a_trace
+
+
+def appliquer_numeros_points(points, points_numerotes, tolerance_m=TOLERANCE_NUM_POINT_M):
+    """Rattache chaque n° de point (issu d'un Placemark KML) au point de la
+    trace le plus proche encore sans nom, à condition qu'il soit à moins de
+    tolerance_m mètres. Le n° est écrit dans p['name'], ce qui donne un
+    <trkpt><name>N</name> dans le GPX exporté.
+    Retourne le nombre de n° effectivement appliqués."""
+    if not points or not points_numerotes:
+        return 0
+
+    # Grille spatiale (~50 m) pour éviter un calcul O(N*M) sur de longues traces.
+    taille = 0.0005
+    grille = {}
+    for i, p in enumerate(points):
+        cle = (math.floor(p['lat'] / taille), math.floor(p['lon'] / taille))
+        grille.setdefault(cle, []).append(i)
+
+    appliques = 0
+    for num in points_numerotes:
+        ci = math.floor(num['lat'] / taille)
+        cj = math.floor(num['lon'] / taille)
+        meilleur_idx, meilleure_dist = None, tolerance_m
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                for idx in grille.get((ci + di, cj + dj), ()):
+                    if points[idx].get('name'):
+                        continue
+                    d = calculer_distance_haversine(
+                        num['lat'], num['lon'], points[idx]['lat'], points[idx]['lon'])
+                    if d <= meilleure_dist:
+                        meilleur_idx, meilleure_dist = idx, d
+        if meilleur_idx is not None:
+            points[meilleur_idx]['name'] = num['name']
+            appliques += 1
+    return appliques
+
+
+def lire_waypoints_source(chemin_fichier, heure_locale=True):
+    """Lit les waypoints d'un fichier GPX (<wpt>) ou KML/KMZ (Placemark de
+    type Point dont le nom n'est pas uniquement numérique). Retourne une
+    liste de dict lat/lon/ele/time/name/description (liste vide si le
+    fichier n'en contient pas ou ne peut pas être lu).
+
+    heure_locale=True  : heure des waypoints GPX convertie en heure locale
+                         naïve (comportement de convertir_fichier).
+    heure_locale=False : heure conservée telle qu'elle est dans le fichier."""
+    extension = os.path.splitext(chemin_fichier)[1].lower()
+    waypoints = []
+    try:
+        if extension == ".gpx":
+            with open(chemin_fichier, "r", encoding="utf-8") as f:
+                gpx = gpxpy.parse(f)
+            for wpt in gpx.waypoints:
+                t_val = wpt.time
+                if heure_locale and t_val is not None and t_val.tzinfo is not None:
+                    t_val = t_val.astimezone().replace(tzinfo=None)
+                waypoints.append({
+                    'lat': wpt.latitude,
+                    'lon': wpt.longitude,
+                    'ele': round(wpt.elevation, 1) if wpt.elevation is not None else None,
+                    'time': t_val,
+                    'name': wpt.name,
+                    'description': wpt.description,
+                })
+        elif extension in (".kml", ".kmz"):
+            waypoints = extraire_reperes_kml(chemin_fichier)[0]
+    except Exception:
+        return []
+    return waypoints
 
 
 EXT_PAR_FORMAT = {"gpx": ".gpx", "kmz": ".kmz", "kml": ".kml"}
@@ -386,12 +649,40 @@ def convertir_fichier(fichier_entree, format_sortie, garder_temps, dossier_sorti
     """Fonction de haut niveau utilisée par l'interface Kivy : lit, traite
     (interpolation/lissage) et exporte un fichier de trace. Retourne le
     chemin du fichier créé."""
+    extension = os.path.splitext(fichier_entree)[1].lower()
+
+    # --- KML/KMZ source : waypoints (noms avec lettres) et n° de points
+    #     (noms composés uniquement de chiffres) ---
+    waypoints = []
+    points_numerotes = []
+    kml_a_trace = True
+    if extension in (".kml", ".kmz"):
+        try:
+            waypoints, points_numerotes, kml_a_trace = extraire_reperes_kml(fichier_entree)
+        except Exception:
+            waypoints, points_numerotes, kml_a_trace = [], [], True
+
     points = lire_fichier_pour_conversion(fichier_entree)
+
+    # KML sans trace linéaire (ni gx:Track ni LineString) : la trace est
+    # formée par les points numérotés eux-mêmes, dans l'ordre du fichier.
+    trace_depuis_numeros = False
+    if extension in (".kml", ".kmz") and not kml_a_trace and points_numerotes:
+        points = [dict(p) for p in points_numerotes]
+        trace_depuis_numeros = True
+
     if not points:
         raise ValueError("Aucun point GPS n'a pu être extrait de ce fichier.")
 
     points_traites = interpoler_altitudes_et_temps(points)
+    if points_numerotes and not trace_depuis_numeros:
+        appliquer_numeros_points(points_traites, points_numerotes)
     ext = EXT_PAR_FORMAT[format_sortie]
+
+    # --- WAYPOINTS d'un GPX source (ceux d'un KML/KMZ source sont déjà lus plus haut) ---
+    if extension == ".gpx":
+        waypoints = lire_waypoints_source(fichier_entree, heure_locale=True)
+    # -------------------------------------------------------
 
     if dossier_sortie is None:
         dossier_sortie = os.path.dirname(fichier_entree)
@@ -401,14 +692,13 @@ def convertir_fichier(fichier_entree, format_sortie, garder_temps, dossier_sorti
     chemin_sortie = os.path.join(dossier_sortie, nom_defaut)
 
     if format_sortie == "gpx":
-        exporter_vers_gpx(points_traites, chemin_sortie, garder_temps=garder_temps)
+        exporter_vers_gpx(points_traites, chemin_sortie, garder_temps=garder_temps, waypoints=waypoints)
     elif format_sortie == "kml":
-        exporter_vers_kml(points_traites, chemin_sortie, garder_temps=garder_temps)
+        exporter_vers_kml(points_traites, chemin_sortie, garder_temps=garder_temps, waypoints=waypoints)
     elif format_sortie == "kmz":
-        exporter_vers_kmz(points_traites, chemin_sortie, garder_temps=garder_temps)
+        exporter_vers_kmz(points_traites, chemin_sortie, garder_temps=garder_temps, waypoints=waypoints)
 
     return chemin_sortie
-
 
 # ============================================================================
 # ONGLET 2 : NUMÉROTATION ET NETTOYAGE
@@ -535,7 +825,25 @@ def extraire_donnees_gpx_kmz(fichier_entree):
     elif extension in [".kmz", ".kml"]:
         try:
             pts = lire_fichier_pour_conversion(fichier_entree)
+
+            # N° de points d'un KML/KMZ : Placemark de type Point dont le nom
+            # ne contient que des chiffres (les noms avec des lettres sont des
+            # waypoints et ne sont pas concernés). Ils sont rattachés au point
+            # de la trace le plus proche ; sans trace linéaire (ni gx:Track ni
+            # LineString), la trace est formée par ces points eux-mêmes.
+            try:
+                _wpts, points_numerotes, kml_a_trace = extraire_reperes_kml(fichier_entree)
+            except Exception:
+                points_numerotes, kml_a_trace = [], True
+            if points_numerotes:
+                if not kml_a_trace:
+                    pts = nettoyer_points_parasites([dict(p) for p in points_numerotes])
+                elif pts:
+                    appliquer_numeros_points(pts, points_numerotes)
+
             if pts:
+                if any(nom_est_numero_point(p.get('name')) for p in pts):
+                    deja_numerote = True
                 segment = []
                 for p in pts:
                     t_str = p['time'].strftime("%Y-%m-%dT%H:%M:%SZ") if p['time'] else None
@@ -650,6 +958,49 @@ def traiter_numerotation(fichier_entree, segments_lus, mode_choisi, est_inverse,
     })
     meta = ET.SubElement(gpx_root, "{%s}metadata" % GPX_NS)
     ET.SubElement(meta, "{%s}name" % GPX_NS).text = nom_base_fichier
+    # Waypoints du fichier source (GPX ou KML/KMZ) : conservés tels quels,
+    # indépendamment de l'inversion, de la numérotation et de la suppression
+    # de points, qui ne concernent que les points de la trace.
+    waypoints_source = lire_waypoints_source(fichier_entree, heure_locale=False)
+
+    # Suppression de points : un waypoint dont les coordonnées sont celles
+    # d'un point GPS supprimé est lui aussi supprimé (totalement).
+    nb_waypoints_supprimes = 0
+    if mode_choisi == "supprimer_points" and indices_a_supprimer and waypoints_source:
+        coords_supprimes = []
+        compteur_prepass = 0
+        for segment in segments_a_traiter:
+            for item in segment:
+                compteur_prepass += 1
+                if compteur_prepass in indices_a_supprimer:
+                    coords_supprimes.append((float(item[0]), float(item[1])))
+        waypoints_gardes = []
+        for w in waypoints_source:
+            sur_point_supprime = any(
+                abs(w['lat'] - lat_s) <= SEUIL_DOUBLON_DEGRES and abs(w['lon'] - lon_s) <= SEUIL_DOUBLON_DEGRES
+                for lat_s, lon_s in coords_supprimes
+            )
+            if sur_point_supprime:
+                nb_waypoints_supprimes += 1
+            else:
+                waypoints_gardes.append(w)
+        waypoints_source = waypoints_gardes
+
+    for w in waypoints_source:
+        wpt_node = ET.SubElement(gpx_root, "{%s}wpt" % GPX_NS,
+                                 attrib={"lat": str(w['lat']), "lon": str(w['lon'])})
+        if w.get('ele') is not None:
+            ET.SubElement(wpt_node, "{%s}ele" % GPX_NS).text = str(w['ele'])
+        if w.get('time') is not None:
+            t_txt = w['time'].isoformat()
+            if t_txt.endswith("+00:00"):
+                t_txt = t_txt[:-6] + "Z"
+            ET.SubElement(wpt_node, "{%s}time" % GPX_NS).text = t_txt
+        if w.get('name'):
+            ET.SubElement(wpt_node, "{%s}name" % GPX_NS).text = str(w['name'])
+        if w.get('description'):
+            ET.SubElement(wpt_node, "{%s}desc" % GPX_NS).text = str(w['description'])
+
     ext_node = ET.SubElement(gpx_root, "{%s}extensions" % GPX_NS)
     route_ext = ET.SubElement(ext_node, "{%s}Extension" % GPXX_NS)
     ET.SubElement(route_ext, "{%s}Name" % GPXX_NS).text = nom_base_fichier
@@ -700,6 +1051,11 @@ def traiter_numerotation(fichier_entree, segments_lus, mode_choisi, est_inverse,
         detail_msg.append("Numéros retirés")
     elif mode_choisi == "supprimer_points":
         detail_msg.append(f"{len(indices_a_supprimer)} point(s) supprimé(s), {compteur_ecriture_global} points restants renumérotés")
+
+    if waypoints_source:
+        detail_msg.append(f"{len(waypoints_source)} waypoint(s) conservé(s)")
+    if nb_waypoints_supprimes:
+        detail_msg.append(f"{nb_waypoints_supprimes} waypoint(s) supprimé(s) avec leur point")
 
     msg = " - ".join(detail_msg) if detail_msg else "Traitement effectué"
     return fichier_sortie, msg
@@ -897,12 +1253,8 @@ def calculer_profil(points):
     return distances_km, distances_avec_ele, altitudes, vitesses_kmh
 
 
-def calculer_statistiques(points):
-    """Calcule les statistiques globales d'une trace (repris de
-    mettre_a_jour_statistiques_globales dans la version desktop).
-    Retourne un dict avec les mêmes clés que valeurs_dict sur desktop :
-    alt_depart, alt_max, distance, den_pos, km_effort, temps_total,
-    temps_marche, vit_moy, allure."""
+def calculer_statistiques(points, waypoints=None):
+    """Calcule les statistiques globales d'une trace et compte les waypoints."""
     if not points:
         return {}
 
@@ -979,6 +1331,29 @@ def calculer_statistiques(points):
     else:
         str_allure = "N/A"
 
+    # --- Comptage des waypoints : les n° de points (nom composé uniquement de
+    # chiffres) ne sont pas des waypoints ; on exclut aussi ceux superposés au
+    # départ/arrivée ---
+    waypoints = filtrer_vrais_waypoints(waypoints)
+    nb_waypoints = len(waypoints)
+    if waypoints and points:
+        pts_a_exclure = 0
+        p0, p_end = points[0], points[-1]
+        lat0, lon0 = p0.get('lat'), p0.get('lon')
+        lat_e, lon_e = p_end.get('lat'), p_end.get('lon')
+        seuil = 1e-7
+
+        for w in waypoints:
+            w_lat = w.get('lat')
+            w_lon = w.get('lon')
+            if w_lat is not None and w_lon is not None:
+                if (abs(w_lat - lat0) <= seuil and abs(w_lon - lon0) <= seuil) or \
+                   (abs(w_lat - lat_e) <= seuil and abs(w_lon - lon_e) <= seuil):
+                    pts_a_exclure += 1
+        nb_waypoints = max(0, nb_waypoints - pts_a_exclure)
+
+    str_waypoints = str(nb_waypoints)
+
     return {
         "alt_depart": str_alt_dep,
         "alt_max": str_alt_max,
@@ -989,6 +1364,7 @@ def calculer_statistiques(points):
         "temps_marche": str_t_marche,
         "vit_moy": str_vit,
         "allure": str_allure,
+        "waypoints": str_waypoints,
     }
 
 
