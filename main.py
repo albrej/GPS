@@ -748,6 +748,26 @@ KV = """
                     valign: "middle"
                     color: 0.18, 0.49, 0.2, 1
                     bold: True
+                CheckBox:
+                    size_hint: None, None
+                    size: dp(24), dp(24)
+                    pos_hint: {"center_y": 0.5}
+                    disabled: not root.trace_chargee
+                    active: root.supprimer_waypoints
+                    on_active: root.supprimer_waypoints = self.active
+                    canvas.before:
+                        Color:
+                            rgba: 0, 0, 0, 1
+                        Line:
+                            width: 1.2
+                            rectangle: (self.x, self.y, self.width, self.height)
+                Label:
+                    text: "Supprimer les waypoints"
+                    text_size: self.width, self.height
+                    halign: "left"
+                    valign: "middle"
+                    color: 0.1843, 0.6549, 0.8313, 1
+                    bold: True
 
             Label:
                 text: "Action sur les numéros :"
@@ -1801,6 +1821,8 @@ class NumerotationScreen(Screen):
 
     mode = StringProperty("aucun")
     inverser = BooleanProperty(False)
+    supprimer_waypoints = BooleanProperty(False)
+    waypoints_lus = []  # waypoints du fichier chargé (pour le résumé des changements)
     texte_suppr = StringProperty("")
 
     status_text = StringProperty("Chargez une trace pour commencer.")
@@ -1823,6 +1845,10 @@ class NumerotationScreen(Screen):
         self._resultat_affiche = False
         self._maj_etat()
 
+    def on_supprimer_waypoints(self, *args):
+        self._resultat_affiche = False
+        self._maj_etat()
+
     def on_texte_suppr(self, *args):
         self._resultat_affiche = False
         self._maj_etat()
@@ -1841,12 +1867,26 @@ class NumerotationScreen(Screen):
         self._resultat_affiche = False
         try:
             self.segments_lus, deja_num = gps_logic.extraire_donnees_gpx_kmz(chemin)
+            self.waypoints_lus = gps_logic.lire_waypoints_source(chemin, heure_locale=False)
             self.fichier_source = chemin
             self.deja_numerote = deja_num
             self.total_points = sum(len(seg) for seg in self.segments_lus)
             nom_f = os.path.basename(chemin)
-            statut_str = "déjà numéroté" if deja_num else "non numéroté"
-            self.info_fichier = f"Trace : {nom_f}\n({statut_str})"
+            
+            # Calcul du nombre de points déjà numérotés
+            nb_points_numerotes = 0
+            for segment in self.segments_lus:
+                for item in segment:
+                    # item[4] correspond au nom/numéro du point dans le tuple de segment
+                    nom_pt = item[4] if len(item) > 4 else None
+                    if gps_logic.valider_numero_point(nom_pt) != "-":
+                        nb_points_numerotes += 1
+
+            # Calcul du nombre de waypoints présents
+            nb_waypoints = len(self.waypoints_lus) if self.waypoints_lus else 0
+            
+            # Affichage demandé
+            self.info_fichier = f"Trace : {nom_f}\n{nb_points_numerotes} points déjà numérotés; {nb_waypoints} waypoints."
 
             if self.total_points == 0:
                 self.trace_chargee = False
@@ -1859,6 +1899,7 @@ class NumerotationScreen(Screen):
             self.trace_chargee = True
             self.mode = "denumero" if deja_num else "numeroter"
             self.inverser = False
+            self.supprimer_waypoints = False
             self.texte_suppr = ""
             self._maj_etat()
         except Exception as e:
@@ -1878,13 +1919,13 @@ class NumerotationScreen(Screen):
             # Un message de résultat (réussite/échec) est affiché : on ne
             # le remplace pas par l'aperçu "Prêt à effectuer...", mais le
             # bouton reste correctement activé/désactivé.
-            self.btn_executer_actif = self.inverser or self.mode != "aucun"
+            self.btn_executer_actif = self.inverser or self.supprimer_waypoints or self.mode != "aucun"
             return
 
-        if not self.inverser and self.mode == "aucun":
+        if not self.inverser and not self.supprimer_waypoints and self.mode == "aucun":
             self.btn_executer_actif = False
             self.btn_executer_text = "Exécuter"
-            self.status_text = "Sélectionnez au moins une action (Inverser ou Traitement)."
+            self.status_text = "Sélectionnez au moins une action (Inverser, Traitement ou Supprimer les waypoints)."
             self.status_color = [0.33, 0.33, 0.33, 1]
             return
 
@@ -1899,6 +1940,9 @@ class NumerotationScreen(Screen):
         elif self.mode == "supprimer_points":
             actions.append("Supprimer et renuméroter")
 
+        if self.supprimer_waypoints:
+            actions.append("Supprimer les waypoints")
+
         titre = " et ".join(actions)
         self.btn_executer_text = titre
         self.status_text = f"Prêt à effectuer : {titre}."
@@ -1907,7 +1951,8 @@ class NumerotationScreen(Screen):
     def _maj_legende(self):
         try:
             compteurs = gps_logic.calculer_legende_numerotation(
-                self.segments_lus, self.mode, self.inverser, self.texte_suppr
+                self.segments_lus, self.mode, self.inverser, self.texte_suppr,
+                waypoints=self.waypoints_lus, supprimer_waypoints=self.supprimer_waypoints
             )
             lignes = []
             
@@ -1923,7 +1968,7 @@ class NumerotationScreen(Screen):
                 est_actif = False
                 if cle == "inverse" and self.inverser:
                     est_actif = True
-                elif cle in ["ajoute", "modifie", "retire", "inchange", "supprime"] and nb > 0:
+                elif cle in ["ajoute", "modifie", "retire", "inchange", "supprime", "waypoint"] and nb > 0:
                     est_actif = True
 
                 couleur_texte = COULEUR_ACTIF if est_actif else COULEUR_INACTIF
@@ -1938,7 +1983,7 @@ class NumerotationScreen(Screen):
     def executer(self):
         if not self.fichier_source or not self.segments_lus or self.en_cours:
             return
-        if not self.inverser and self.mode == "aucun":
+        if not self.inverser and not self.supprimer_waypoints and self.mode == "aucun":
             return
         self.en_cours = True
         self.status_text = "Traitement en cours..."
@@ -1950,7 +1995,7 @@ class NumerotationScreen(Screen):
         try:
             chemin_sortie, resume = gps_logic.traiter_numerotation(
                 self.fichier_source, self.segments_lus, self.mode, self.inverser, self.texte_suppr,
-                dossier_sortie=DOSSIER_SORTIE,
+                dossier_sortie=DOSSIER_SORTIE, supprimer_waypoints=self.supprimer_waypoints,
             )
             # Le détail (ex. "134 points numérotés") reste visible dans le
             # résumé des changements ci-dessous ; le message de statut suit
@@ -4146,6 +4191,9 @@ class CarteScreen(Screen):
             return
         try:
             points = gps_logic.lire_fichier_pour_conversion(chemin)
+            
+            # ---> AJOUT : Lecture des waypoints de la source (nécessaire pour l'affichage)
+            waypoints = gps_logic.lire_waypoints_source(chemin, heure_locale=False)
         except Exception as e:
             self.trace_chargee = False
             self.info_fichier = f"Erreur de lecture : {e}"
@@ -4161,7 +4209,12 @@ class CarteScreen(Screen):
         self.trace_chargee = True
         self.point_coupure_text = ""
         self.status_text = ""
-        self.info_fichier = f"Trace : {os.path.basename(chemin)}\n{len(points)} points."
+        
+        # ---> MODIFICATION ICI : Calcul des points et des waypoints
+        nb_points = len(points)
+        nb_waypoints = len(waypoints) if waypoints else 0
+        self.info_fichier = f"Trace : {os.path.basename(chemin)}\n{nb_points} points; {nb_waypoints} waypoints."
+
         self.info_point_text = "Tape sur la carte ou le graphique pour voir le détail d'un point."
         self.info_point_num = ""
         self.info_point_gps = ""

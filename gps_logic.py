@@ -156,6 +156,38 @@ def filtrer_vrais_waypoints(waypoints):
             if not nom_est_numero_point(w.get('name') if w.get('name') is not None else w.get('nom'))]
 
 
+SEUIL_EXTREMITE_DEG = 1e-7  # ~1 cm : waypoint « superposé » au départ/à l'arrivée
+
+
+def vrais_waypoints(waypoints, extremites):
+    """Vrais waypoints d'un fichier, selon la règle de l'onglet Statistiques :
+    on écarte les n° de points (nom composé uniquement de chiffres) et les
+    waypoints superposés au point de départ ou d'arrivée de la trace.
+    extremites : liste de tuples (lat, lon) du départ et de l'arrivée.
+    Les dict d'origine sont renvoyés tels quels (même objets)."""
+    reels = filtrer_vrais_waypoints(waypoints)
+    if not reels or not extremites:
+        return reels
+    resultat = []
+    for w in reels:
+        lat, lon = w.get('lat'), w.get('lon')
+        superpose = lat is not None and lon is not None and any(
+            abs(lat - la) <= SEUIL_EXTREMITE_DEG and abs(lon - lo) <= SEUIL_EXTREMITE_DEG
+            for la, lo in extremites)
+        if not superpose:
+            resultat.append(w)
+    return resultat
+
+
+def extremites_segments(segments):
+    """[(lat, lon) du premier point, (lat, lon) du dernier point] d'une liste
+    de segments (tuples lat, lon, ...). Identique avant/après inversion."""
+    pts = [item for seg in segments for item in seg]
+    if not pts:
+        return []
+    return [(float(pts[0][0]), float(pts[0][1])), (float(pts[-1][0]), float(pts[-1][1]))]
+
+
 # Deux points GPS plus proches que ce seuil (en degrés, ~1 cm) sont
 # considérés comme le même point : du bruit GPS sur une trace à
 # l'arrêt, qui ne représente aucun déplacement réel.
@@ -856,7 +888,30 @@ def extraire_donnees_gpx_kmz(fichier_entree):
     return segments_lus, deja_numerote
 
 
-def calculer_legende_numerotation(segments_lus, mode_choisi, est_inverse, entree_suppr=""):
+def repartir_waypoints_supprimes(waypoints, segments_a_traiter, indices_a_supprimer):
+    """Sépare les waypoints en (gardés, supprimés) : est supprimé tout waypoint
+    dont les coordonnées sont celles d'un point GPS supprimé (indices
+    1-based, dans l'ordre des segments traités)."""
+    if not waypoints or not indices_a_supprimer:
+        return list(waypoints or []), []
+    coords_supprimes = []
+    compteur = 0
+    for segment in segments_a_traiter:
+        for item in segment:
+            compteur += 1
+            if compteur in indices_a_supprimer:
+                coords_supprimes.append((float(item[0]), float(item[1])))
+    gardes, supprimes = [], []
+    for w in waypoints:
+        sur_point_supprime = any(
+            abs(w['lat'] - lat_s) <= SEUIL_DOUBLON_DEGRES and abs(w['lon'] - lon_s) <= SEUIL_DOUBLON_DEGRES
+            for lat_s, lon_s in coords_supprimes
+        )
+        (supprimes if sur_point_supprime else gardes).append(w)
+    return gardes, supprimes
+
+
+def calculer_legende_numerotation(segments_lus, mode_choisi, est_inverse, entree_suppr="", waypoints=None, supprimer_waypoints=False):
     """Calcule un aperçu des changements (compteurs) avant exécution."""
     segments_a_traiter = segments_lus
     if est_inverse:
@@ -869,7 +924,19 @@ def calculer_legende_numerotation(segments_lus, mode_choisi, est_inverse, entree
         if not indices_suppr_apercu:
             indices_suppr_apercu = set()
 
-    compteurs = {"inverse": 1 if est_inverse else 0, "ajoute": 0, "modifie": 0, "retire": 0, "inchange": 0, "supprime": 0}
+    compteurs = {"inverse": 1 if est_inverse else 0, "ajoute": 0, "modifie": 0, "retire": 0, "inchange": 0, "supprime": 0, "waypoint": 0}
+
+    # Waypoints supprimés : tous si l'option « Supprimer les waypoints » est
+    # cochée, sinon ceux situés sur un point GPS supprimé.
+    # Seuls les « vrais » waypoints sont comptés, comme dans l'onglet
+    # Statistiques (voir vrais_waypoints).
+    if waypoints:
+        vrais = vrais_waypoints(waypoints, extremites_segments(segments_lus))
+        if supprimer_waypoints:
+            compteurs["waypoint"] = len(vrais)
+        else:
+            compteurs["waypoint"] = len(repartir_waypoints_supprimes(
+                vrais, segments_a_traiter, indices_suppr_apercu)[1])
     compteur_lecture_global = 0
     compteur_ecriture_global = 0
 
@@ -905,21 +972,22 @@ def calculer_legende_numerotation(segments_lus, mode_choisi, est_inverse, entree
 
 LEGENDE_NUMEROTATION = [
     ("inverse", "Trace inversée"),
-    ("ajoute", "Numéro ajouté"),
-    ("modifie", "Numéro renuméroté"),
-    ("retire", "Numéro retiré"),
-    ("inchange", "Numéro inchangé"),
-    ("supprime", "Point supprimé"),
+    ("ajoute", "Numéros ajoutés"),
+    ("modifie", "Numéros renumérotés"),
+    ("retire", "Numéros retirés"),
+    ("inchange", "Numéros inchangés"),
+    ("supprime", "Points supprimés"),
+    ("waypoint", "Waypoints supprimés"),
 ]
 
 
-def traiter_numerotation(fichier_entree, segments_lus, mode_choisi, est_inverse, entree_suppr="", dossier_sortie=None):
+def traiter_numerotation(fichier_entree, segments_lus, mode_choisi, est_inverse, entree_suppr="", dossier_sortie=None, supprimer_waypoints=False):
     """Applique inversion/numérotation/dénumérotation/suppression et écrit
     un nouveau fichier GPX. Par défaut (dossier_sortie=None), écrit à côté
     du fichier source, comme convertir_fichier et decouper_trace.
     Retourne (chemin_sortie, message_resume)."""
-    if not est_inverse and mode_choisi == "aucun":
-        raise ValueError("Sélectionnez au moins une action (Inverser ou Traitement).")
+    if not est_inverse and mode_choisi == "aucun" and not supprimer_waypoints:
+        raise ValueError("Sélectionnez au moins une action (Inverser, Traitement ou Supprimer les waypoints).")
 
     if dossier_sortie is None:
         dossier_sortie = os.path.dirname(fichier_entree)
@@ -945,6 +1013,8 @@ def traiter_numerotation(fichier_entree, segments_lus, mode_choisi, est_inverse,
         sufixes.append("denumerote")
     elif mode_choisi == "supprimer_points":
         sufixes.append("nettoye")
+    if supprimer_waypoints:
+        sufixes.append("sans_waypoints")
     sufixe = "_" + "_".join(sufixes) if sufixes else "_traite"
 
     nom_base_fichier = os.path.basename(base_path) + sufixe
@@ -959,32 +1029,28 @@ def traiter_numerotation(fichier_entree, segments_lus, mode_choisi, est_inverse,
     meta = ET.SubElement(gpx_root, "{%s}metadata" % GPX_NS)
     ET.SubElement(meta, "{%s}name" % GPX_NS).text = nom_base_fichier
     # Waypoints du fichier source (GPX ou KML/KMZ) : conservés tels quels,
-    # indépendamment de l'inversion, de la numérotation et de la suppression
-    # de points, qui ne concernent que les points de la trace.
+    # indépendamment de l'inversion et de la numérotation, sauf suppression
+    # (voir ci-dessous).
     waypoints_source = lire_waypoints_source(fichier_entree, heure_locale=False)
 
-    # Suppression de points : un waypoint dont les coordonnées sont celles
-    # d'un point GPS supprimé est lui aussi supprimé (totalement).
+    # Waypoints supprimés : tous si l'option « Supprimer les waypoints » est
+    # cochée ; sinon, en mode suppression de points, ceux dont les coordonnées
+    # sont celles d'un point GPS supprimé (supprimés totalement avec lui).
+    # Seuls les « vrais » waypoints (même règle que l'onglet Statistiques :
+    # ni n° de points, ni waypoints superposés au départ/à l'arrivée) sont
+    # supprimés et comptés ; les autres sont conservés dans le fichier.
     nb_waypoints_supprimes = 0
-    if mode_choisi == "supprimer_points" and indices_a_supprimer and waypoints_source:
-        coords_supprimes = []
-        compteur_prepass = 0
-        for segment in segments_a_traiter:
-            for item in segment:
-                compteur_prepass += 1
-                if compteur_prepass in indices_a_supprimer:
-                    coords_supprimes.append((float(item[0]), float(item[1])))
-        waypoints_gardes = []
-        for w in waypoints_source:
-            sur_point_supprime = any(
-                abs(w['lat'] - lat_s) <= SEUIL_DOUBLON_DEGRES and abs(w['lon'] - lon_s) <= SEUIL_DOUBLON_DEGRES
-                for lat_s, lon_s in coords_supprimes
-            )
-            if sur_point_supprime:
-                nb_waypoints_supprimes += 1
-            else:
-                waypoints_gardes.append(w)
-        waypoints_source = waypoints_gardes
+    vrais = vrais_waypoints(waypoints_source, extremites_segments(segments_lus))
+    if supprimer_waypoints:
+        supprimes = vrais
+    elif mode_choisi == "supprimer_points":
+        supprimes = repartir_waypoints_supprimes(vrais, segments_a_traiter, indices_a_supprimer)[1]
+    else:
+        supprimes = []
+    if supprimes:
+        ids_supprimes = {id(w) for w in supprimes}
+        waypoints_source = [w for w in waypoints_source if id(w) not in ids_supprimes]
+        nb_waypoints_supprimes = len(supprimes)
 
     for w in waypoints_source:
         wpt_node = ET.SubElement(gpx_root, "{%s}wpt" % GPX_NS,
@@ -1055,7 +1121,7 @@ def traiter_numerotation(fichier_entree, segments_lus, mode_choisi, est_inverse,
     if waypoints_source:
         detail_msg.append(f"{len(waypoints_source)} waypoint(s) conservé(s)")
     if nb_waypoints_supprimes:
-        detail_msg.append(f"{nb_waypoints_supprimes} waypoint(s) supprimé(s) avec leur point")
+        detail_msg.append(f"{nb_waypoints_supprimes} waypoint(s) supprimé(s)")
 
     msg = " - ".join(detail_msg) if detail_msg else "Traitement effectué"
     return fichier_sortie, msg
@@ -1334,23 +1400,12 @@ def calculer_statistiques(points, waypoints=None):
     # --- Comptage des waypoints : les n° de points (nom composé uniquement de
     # chiffres) ne sont pas des waypoints ; on exclut aussi ceux superposés au
     # départ/arrivée ---
-    waypoints = filtrer_vrais_waypoints(waypoints)
-    nb_waypoints = len(waypoints)
-    if waypoints and points:
-        pts_a_exclure = 0
-        p0, p_end = points[0], points[-1]
-        lat0, lon0 = p0.get('lat'), p0.get('lon')
-        lat_e, lon_e = p_end.get('lat'), p_end.get('lon')
-        seuil = 1e-7
-
-        for w in waypoints:
-            w_lat = w.get('lat')
-            w_lon = w.get('lon')
-            if w_lat is not None and w_lon is not None:
-                if (abs(w_lat - lat0) <= seuil and abs(w_lon - lon0) <= seuil) or \
-                   (abs(w_lat - lat_e) <= seuil and abs(w_lon - lon_e) <= seuil):
-                    pts_a_exclure += 1
-        nb_waypoints = max(0, nb_waypoints - pts_a_exclure)
+    extremites = []
+    if points:
+        for pt in (points[0], points[-1]):
+            if pt.get('lat') is not None and pt.get('lon') is not None:
+                extremites.append((pt['lat'], pt['lon']))
+    nb_waypoints = len(vrais_waypoints(waypoints, extremites))
 
     str_waypoints = str(nb_waypoints)
 
