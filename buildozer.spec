@@ -22,7 +22,7 @@ version = 0.1
 # Date/Heure. Pure Python, aucune compilation nécessaire.
 requirements = python3==3.11.8,hostpython3==3.11.8,kivy==2.3.1,gpxpy,kivy_garden.mapview,piexif
 
-orientation = portrait
+orientation = all
 icon.filename = %(source.dir)s/Icone.png
 fullscreen = 0
 
