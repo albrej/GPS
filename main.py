@@ -60,16 +60,64 @@ def est_nom_image(nom):
     return bool(nom) and str(nom).strip().lower().endswith(EXTENSIONS_IMAGE)
 
 
+_ECOUTEURS_SCAN_PHOTO = []  # empêche Python de libérer le listener Android avant le callback
+
+
+def _chemins_photo_candidats(nom_fichier):
+    """Chemins où chercher nom_fichier sur le stockage partagé si la
+    médiathèque Android ne le connaît pas encore (photo très récente,
+    pas encore indexée). DCIM/Camera est cherché en premier."""
+    chemins = []
+    try:
+        from jnius import autoclass
+        Environment = autoclass('android.os.Environment')
+        dcim = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM).getAbsolutePath()
+        pictures = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES).getAbsolutePath()
+        chemins.append(os.path.join(dcim, "Camera", nom_fichier))
+        chemins.append(os.path.join(dcim, nom_fichier))
+        chemins.append(os.path.join(pictures, nom_fichier))
+    except Exception:
+        pass
+    # Repli si Environment n'est pas accessible : chemin standard connu.
+    chemins.append(f"/storage/emulated/0/DCIM/Camera/{nom_fichier}")
+    return chemins
+
+
+def _ouvrir_uri_image(uri):
+    """Lance un Intent ACTION_VIEW sur une URI d'image déjà connue
+    (content:// issue de MediaStore ou d'un scan)."""
+    try:
+        from jnius import autoclass
+        Intent = autoclass('android.content.Intent')
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        activite = PythonActivity.mActivity
+        intent = Intent(Intent.ACTION_VIEW)
+        intent.setDataAndType(uri, "image/*")
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        activite.startActivity(intent)
+    except Exception as e:
+        print(f"[Waypoint] Impossible d'ouvrir la photo : {e}")
+
+
 def ouvrir_photo_dans_galerie(nom_fichier):
     """Ouvre la photo nom_fichier (ex. 'IMG_20260922_012604.jpg') dans
-    l'application Galerie d'Android, à partir de son seul nom de fichier
-    (sans connaître son dossier). Sans effet hors Android, ou si le
-    fichier n'est pas trouvé dans la médiathèque du téléphone."""
+    l'application Galerie d'Android, à partir de son seul nom de fichier.
+
+    1) Cherche d'abord la photo dans la médiathèque (MediaStore) par son
+       nom de fichier : c'est le cas normal pour une photo déjà connue
+       d'Android.
+    2) Si elle n'y figure pas encore (photo très récente, pas encore
+       indexée par le scanner multimédia), la cherche directement sur le
+       stockage partagé — DCIM/Camera en priorité — puis demande à
+       Android de l'indexer (MediaScannerConnection) pour obtenir une
+       URI valide.
+
+    Sans effet hors Android, ou si la photo reste introuvable."""
     if platform != "android" or not nom_fichier:
         return
     try:
         from jnius import autoclass
-        Intent = autoclass('android.content.Intent')
         Uri = autoclass('android.net.Uri')
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
         Images = autoclass('android.provider.MediaStore$Images$Media')
@@ -80,23 +128,46 @@ def ouvrir_photo_dans_galerie(nom_fichier):
             Images.EXTERNAL_CONTENT_URI, [Images._ID],
             Images.DISPLAY_NAME + " = ?", [nom_fichier], None,
         )
-        if curseur is None:
-            print(f"[Waypoint] Photo introuvable dans la galerie : {nom_fichier}")
-            return
-        try:
-            if not curseur.moveToFirst():
-                print(f"[Waypoint] Photo introuvable dans la galerie : {nom_fichier}")
-                return
-            media_id = curseur.getLong(curseur.getColumnIndex(Images._ID))
-        finally:
-            curseur.close()
+        media_id = None
+        if curseur is not None:
+            try:
+                if curseur.moveToFirst():
+                    media_id = curseur.getLong(curseur.getColumnIndex(Images._ID))
+            finally:
+                curseur.close()
 
-        uri_photo = Uri.withAppendedPath(Images.EXTERNAL_CONTENT_URI, str(media_id))
-        intent = Intent(Intent.ACTION_VIEW)
-        intent.setDataAndType(uri_photo, "image/*")
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        activite.startActivity(intent)
+        if media_id is not None:
+            _ouvrir_uri_image(Uri.withAppendedPath(Images.EXTERNAL_CONTENT_URI, str(media_id)))
+            return
+
+        # Pas (encore) dans la médiathèque : recherche directe sur le disque.
+        chemin_trouve = next(
+            (c for c in _chemins_photo_candidats(nom_fichier) if os.path.exists(c)), None)
+        if chemin_trouve is None:
+            print(f"[Waypoint] Photo introuvable (ni médiathèque, ni disque) : {nom_fichier}")
+            return
+
+        from jnius import PythonJavaClass, java_method
+        MediaScannerConnection = autoclass('android.media.MediaScannerConnection')
+
+        class _EcouteurScanPhoto(PythonJavaClass):
+            __javainterfaces__ = ['android/media/MediaScannerConnection$OnScanCompletedListener']
+            __javacontext__ = 'app'
+
+            @java_method('(Ljava/lang/String;Landroid/net/Uri;)V')
+            def onScanCompleted(self, path, uri):
+                try:
+                    _ECOUTEURS_SCAN_PHOTO.remove(self)
+                except ValueError:
+                    pass
+                if uri is not None:
+                    _ouvrir_uri_image(uri)
+                else:
+                    print(f"[Waypoint] Indexation échouée pour : {path}")
+
+        ecouteur = _EcouteurScanPhoto()
+        _ECOUTEURS_SCAN_PHOTO.append(ecouteur)
+        MediaScannerConnection.scanFile(activite, [chemin_trouve], None, ecouteur)
     except Exception as e:
         print(f"[Waypoint] Impossible d'ouvrir la photo dans la galerie : {e}")
 
