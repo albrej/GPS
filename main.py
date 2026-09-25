@@ -476,7 +476,10 @@ if CARTE_DISPONIBLE:
             )
             label_nom.bind(width=lambda w, val: setattr(w, "text_size", (val, None)))
             if nom_est_image:
-                label_nom.bind(on_ref_press=lambda instance, ref: ouvrir_photo_dans_galerie(self.nom))
+                def _clic_photo(instance, ref):
+                    popup.dismiss()
+                    ouvrir_photo_dans_galerie(self.nom)
+                label_nom.bind(on_ref_press=_clic_photo)
             contenu.add_widget(label_nom)
             btn_fermer = Button(text="Fermer", size_hint_y=None, height=dp(44))
             contenu.add_widget(btn_fermer)
