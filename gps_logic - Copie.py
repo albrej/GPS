@@ -972,12 +972,12 @@ def calculer_legende_numerotation(segments_lus, mode_choisi, est_inverse, entree
 
 LEGENDE_NUMEROTATION = [
     ("inverse", "Trace inversée"),
-    ("ajoute", "Numéro ajouté"),
-    ("modifie", "Numéro renuméroté"),
-    ("retire", "Numéro retiré"),
-    ("inchange", "Numéro inchangé"),
-    ("supprime", "Point supprimé"),
-    ("waypoint", "Waypoint"),
+    ("ajoute", "Numéros ajoutés"),
+    ("modifie", "Numéros renumérotés"),
+    ("retire", "Numéros retirés"),
+    ("inchange", "Numéros inchangés"),
+    ("supprime", "Points supprimés"),
+    ("waypoint", "Waypoints supprimés"),
 ]
 
 

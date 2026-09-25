@@ -46,6 +46,7 @@ from kivy.utils import platform
 from kivy.utils import escape_markup
 from kivy.uix.textinput import TextInput
 from kivy.properties import BooleanProperty
+from kivy_garden.mapview import MapMarker
 
 import gps_logic
 
@@ -248,114 +249,6 @@ if CARTE_DISPONIBLE:
         def _maj_label(self, *args):
             self._label.center_x = self.center_x
             self._label.center_y = self.center_y + dp(6)
-
-    # Curseur rond et bleu des waypoints (onglet Photos). L'image est cherchée
-    # à côté de main.py : images/blue_dot.png.
-    CHEMIN_BLUE_DOT = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "images", "blue_dot.png")
-
-    def taille_marqueur_waypoint(zoom):
-        """Côté (en pixels) du curseur des waypoints selon le zoom de la
-        carte : petit quand on est loin (16 dp), plus gros quand on zoome
-        (jusqu'à 44 dp). Diamètre doublé par rapport à la première version
-        (onglets Photos et Live)."""
-        return dp(max(16, min(44, 16 + 3.5 * (zoom - 10))))
-
-    class MarqueurWaypoint(MapMarker):
-        """Petit curseur rond et bleu (images/blue_dot.png) posé sur un
-        waypoint. Centré sur le point ; sa taille est redimensionnée par
-        maj_taille(zoom) chaque fois que le zoom de la carte change.
-        Un tap dessus ouvre un popup avec son nom (<name>) et sa
-        description (<desc>)."""
-
-        def __init__(self, zoom=10, nom=None, description=None, **kwargs):
-            kwargs.setdefault("source", CHEMIN_BLUE_DOT)
-            super().__init__(**kwargs)
-            self.nom = nom
-            self.description = description
-            self._cote = None
-            self.anchor_x = 0.5
-            self.anchor_y = 0.5
-            self.size_hint = (None, None)
-            try:
-                self.allow_stretch = True   # permet d'agrandir l'image
-            except Exception:
-                pass
-            # Image absente : on dessine un disque bleu à la place.
-            if not os.path.exists(str(self.source)):
-                from kivy.graphics import Ellipse
-                with self.canvas:
-                    Color(0.12, 0.53, 0.90, 1)
-                    self._disque = Ellipse(pos=self.pos, size=self.size)
-                self.bind(pos=self._maj_disque, size=self._maj_disque)
-            # La taille suit le zoom, pas la taille native de l'image.
-            self.bind(texture_size=self._reappliquer_taille)
-            self.maj_taille(zoom)
-
-        def _maj_disque(self, *args):
-            self._disque.pos = self.pos
-            self._disque.size = self.size
-
-        def maj_taille(self, zoom):
-            self._cote = taille_marqueur_waypoint(zoom)
-            self._reappliquer_taille()
-
-        def _reappliquer_taille(self, *args):
-            if self._cote is None:
-                return
-            if tuple(self.size) != (self._cote, self._cote):
-                cx, cy = self.center      # on garde le centre sur le point
-                self.size = (self._cote, self._cote)
-                self.center = (cx, cy)
-
-        def on_touch_down(self, touch):
-            if self.collide_point(*touch.pos):
-                touch.grab(self)
-                return True
-            return super().on_touch_down(touch)
-
-        def on_touch_up(self, touch):
-            if touch.grab_current is self:
-                touch.ungrab(self)
-                if self.collide_point(*touch.pos):
-                    self._afficher_popup()
-                return True
-            return super().on_touch_up(touch)
-
-        def _afficher_popup(self):
-            contenu = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(10),
-                                 size_hint_y=None)
-            contenu.bind(minimum_height=contenu.setter("height"))
-            if self.description:
-                label_desc = Label(
-                    text=escape_markup(self.description),
-                    markup=True,
-                    halign="center",
-                    valign="middle",
-                    size_hint_y=None,
-                )
-                label_desc.bind(width=lambda w, val: setattr(w, "text_size", (val, None)))
-                label_desc.bind(texture_size=lambda w, val: setattr(w, "height", val[1]))
-                contenu.add_widget(label_desc)
-            label_nom = Label(
-                text=escape_markup(self.nom) if self.nom else "Waypoint",
-                markup=True,
-                halign="center",
-                valign="middle",
-                size_hint_y=None,
-                height=dp(30),
-            )
-            label_nom.bind(width=lambda w, val: setattr(w, "text_size", (val, None)))
-            contenu.add_widget(label_nom)
-            btn_fermer = Button(text="Fermer", size_hint_y=None, height=dp(44))
-            contenu.add_widget(btn_fermer)
-            exterieur = BoxLayout(orientation="vertical")
-            exterieur.add_widget(Widget())
-            exterieur.add_widget(contenu)
-            exterieur.add_widget(Widget())
-            popup = Popup(title="", separator_height=0, content=exterieur, size_hint=(0.85, 0.4))
-            btn_fermer.bind(on_release=popup.dismiss)
-            popup.open()
 
 
 class GrapheProfil(Widget):
@@ -1991,11 +1884,7 @@ class NumerotationScreen(Screen):
                         nb_points_numerotes += 1
 
             # Calcul du nombre de waypoints présents
-            # Même règle que l'onglet Statistiques : ni n° de points (nom
-            # uniquement en chiffres), ni waypoints superposés au départ
-            # ou à l'arrivée de la trace.
-            nb_waypoints = len(gps_logic.vrais_waypoints(
-                self.waypoints_lus, gps_logic.extremites_segments(self.segments_lus)))
+            nb_waypoints = len(self.waypoints_lus) if self.waypoints_lus else 0
             
             # Affichage demandé
             self.info_fichier = f"Trace : {nom_f}\n{nb_points_numerotes} points déjà numérotés; {nb_waypoints} waypoints."
@@ -2614,6 +2503,14 @@ class FusionScreen(Screen):
 
         Clock.schedule_once(_maj_ui, 0)
 
+class MarqueurWaypoint(MapMarker):
+    """Marqueur rond et bleu pour les waypoints."""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.source = "" # Optionnel : désactive l'icône par défaut si besoin
+        # Vous pouvez définir ici l'apparence visuelle si elle utilise une image spécifique, 
+        # ou laisser Kivy dessiner un point via un Canvas si le composant le supporte.
+        
 class LiveScreen(Screen):
     freeze_actif = BooleanProperty(False)
     info_fichier = StringProperty("Aucune trace à suivre chargée.")
@@ -2652,8 +2549,10 @@ class LiveScreen(Screen):
         self.map_view = None
         self.trace_layer = None
         self.marqueurs_actifs = []
-        self.marqueurs_waypoints = []   # curseurs bleus des waypoints (comme l'onglet Photos)
         self.points_courants = []
+        
+        # ---> AJOUT ICI : Liste dédiée pour les waypoints
+        self.marqueurs_waypoints_actifs = []
 
         # --- Trace EN DIRECT (rouge) : totalement indépendante de la
         # trace "chargée" manuellement ci-dessus (bleue). Réinitialisée
@@ -2719,8 +2618,6 @@ class LiveScreen(Screen):
             # AJOUT : Lier le suivi tactile global de la fenêtre comme sur l'onglet 4
             Window.bind(on_touch_down=self._debut_touch_carte, on_touch_up=self._sur_touch_carte)
             self.ids.map_container.add_widget(self.map_view)
-            # La taille des curseurs de waypoints suit le zoom de la carte.
-            self.map_view.bind(zoom=self._maj_taille_waypoints)
         else:
             self.ids.map_container.add_widget(Label(
                 text=(
@@ -2731,10 +2628,6 @@ class LiveScreen(Screen):
                 color=(0.6, 0.1, 0.1, 1),
                 halign="center",
             ))
-
-    def _maj_taille_waypoints(self, instance, zoom):
-        for mw in self.marqueurs_waypoints:
-            mw.maj_taille(zoom)
 
     def dezoomer_carte(self):
         if not CARTE_DISPONIBLE or self.map_view is None:
@@ -2776,10 +2669,8 @@ class LiveScreen(Screen):
             return
         try:
             points = gps_logic.lire_fichier_pour_conversion(chemin)
-            # Waypoints de la trace : mêmes « vrais » waypoints que dans
-            # l'onglet Statistiques (ni n° de points, ni waypoints
-            # superposés au départ/à l'arrivée).
-            waypoints_bruts = gps_logic.lire_waypoints_source(chemin, heure_locale=False)
+            # ---> AJOUT ICI : Lecture des waypoints de la trace
+            waypoints = gps_logic.lire_waypoints_source(chemin, heure_locale=False)
         except Exception as e:
             self.info_fichier = f"Erreur de lecture : {e}"
             return
@@ -2788,20 +2679,13 @@ class LiveScreen(Screen):
             self.info_fichier = "Aucun point GPS trouvé dans ce fichier."
             return
 
-        try:
-            waypoints = gps_logic.vrais_waypoints(
-                waypoints_bruts,
-                [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])],
-            )
-        except Exception:
-            waypoints = []
-
         self.points_courants = points
         self.info_fichier = f"Trace à suivre : {os.path.basename(chemin)}."
         
         self.profil = gps_logic.calculer_profil(points)
         self.graphe.set_donnees(*self.profil)
         
+        # ---> MODIFICATION ICI : On transmet les waypoints à l'affichage
         self._afficher_trace_sur_carte(points, waypoints=waypoints)
 
     def _afficher_trace_sur_carte(self, points, waypoints=None):
@@ -2817,9 +2701,10 @@ class LiveScreen(Screen):
             self.map_view.remove_marker(m)
         self.marqueurs_actifs = []
 
-        for mw in self.marqueurs_waypoints:
+        # ---> AJOUT ICI : Nettoyage des anciens curseurs de waypoints
+        for mw in self.marqueurs_waypoints_actifs:
             self.map_view.remove_marker(mw)
-        self.marqueurs_waypoints = []
+        self.marqueurs_waypoints_actifs = []
 
         if not points:
             return
@@ -2844,18 +2729,19 @@ class LiveScreen(Screen):
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
-        # Waypoints : petit curseur rond et bleu (images/blue_dot.png),
-        # comme dans l'onglet Photos ; sa taille suit le zoom de la carte.
-        for wpt in (waypoints or []):
-            lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
-            if lat_w is None or lon_w is None:
-                continue
-            mw = MarqueurWaypoint(
-                zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
-                nom=wpt.get('name'), description=wpt.get('description'),
-            )
-            self.map_view.add_marker(mw)
-            self.marqueurs_waypoints.append(mw)
+        # ---> AJOUT ICI : Affichage des waypoints avec un petit curseur rond et bleu
+        # Affichage des waypoints avec un curseur rond et bleu distinct
+        if waypoints:
+            for wpt in waypoints:
+                lat_w = wpt.get('lat')
+                lon_w = wpt.get('lon')
+                if lat_w is not None and lon_w is not None:
+                    # Utilisation d'un marqueur distinct (assurez-vous d'avoir une icône 'marker_blue.png' 
+                    # ou un widget personnalisé, sinon ajustez la source de l'image)
+                    m_wpt = MapMarker(lat=lat_w, lon=lon_w, source='images/marker_blue.png')
+                    
+                    self.map_view.add_marker(m_wpt)
+                    self.marqueurs_waypoints_actifs.append(m_wpt)
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
@@ -4359,12 +4245,9 @@ class CarteScreen(Screen):
         self.point_coupure_text = ""
         self.status_text = ""
         
-        # Même règle que les onglets Statistiques/Photos/Live : ni n° de
-        # points (nom uniquement en chiffres), ni waypoints superposés au
-        # départ ou à l'arrivée de la trace.
+        # ---> MODIFICATION ICI : Calcul des points et des waypoints
         nb_points = len(points)
-        nb_waypoints = len(gps_logic.vrais_waypoints(
-            waypoints, [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])]))
+        nb_waypoints = len(waypoints) if waypoints else 0
         self.info_fichier = f"Trace : {os.path.basename(chemin)}\n{nb_points} points; {nb_waypoints} waypoints."
 
         self.info_point_text = "Tape sur la carte ou le graphique pour voir le détail d'un point."
@@ -4678,15 +4561,12 @@ class PhotosScreen(Screen):
         self.fichier_photo = ""
         self.trace_layer = None
         self.marqueurs_actifs = []
-        self.marqueurs_waypoints = []   # curseurs bleus des waypoints
         self.marqueur_photo = None
         self.map_view = None
 
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
             self.ids.map_container.add_widget(self.map_view)
-            # La taille des curseurs de waypoints suit le zoom de la carte.
-            self.map_view.bind(zoom=self._maj_taille_waypoints)
         else:
             self.ids.map_container.add_widget(Label(
                 text=(
@@ -4697,10 +4577,6 @@ class PhotosScreen(Screen):
                 color=(0.6, 0.1, 0.1, 1),
                 halign="center",
             ))
-
-    def _maj_taille_waypoints(self, instance, zoom):
-        for mw in self.marqueurs_waypoints:
-            mw.maj_taille(zoom)
 
     def dezoomer_carte(self):
         """Réduit le niveau de zoom de la carte (bouton "-", même
@@ -4753,18 +4629,7 @@ class PhotosScreen(Screen):
         self.fichier_trace = chemin
         self.points_trace = points
         self.info_trace = f"Trace : {os.path.basename(chemin)}."
-
-        # Waypoints de la trace : mêmes « vrais » waypoints que dans l'onglet
-        # Statistiques (ni n° de points, ni waypoints superposés au
-        # départ/à l'arrivée).
-        try:
-            waypoints = gps_logic.vrais_waypoints(
-                gps_logic.lire_waypoints_source(chemin, heure_locale=False),
-                [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])],
-            )
-        except Exception:
-            waypoints = []
-        self._afficher_trace_sur_carte(points, waypoints=waypoints)
+        self._afficher_trace_sur_carte(points)
 
     def ouvrir_selecteur_photo(self):
         contenu = _construire_selecteur_fichier_photo(self._photo_choisie)
@@ -4855,11 +4720,9 @@ class PhotosScreen(Screen):
             self.status_text = f"Échec de l'enregistrement : {e}"
             self.status_color = [0.8, 0.1, 0.1, 1]
 
-    def _afficher_trace_sur_carte(self, points, waypoints=None):
+    def _afficher_trace_sur_carte(self, points):
         """Trace la polyligne sur la carte et recadre dessus, équivalent
-        de afficher_trace_sur_carte_photo() dans la version desktop.
-        Les waypoints éventuels sont indiqués par un petit curseur rond
-        et bleu (MarqueurWaypoint) dont la taille suit le zoom."""
+        de afficher_trace_sur_carte_photo() dans la version desktop."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
 
@@ -4869,9 +4732,6 @@ class PhotosScreen(Screen):
         for m in self.marqueurs_actifs:
             self.map_view.remove_marker(m)
         self.marqueurs_actifs = []
-        for mw in self.marqueurs_waypoints:
-            self.map_view.remove_marker(mw)
-        self.marqueurs_waypoints = []
         if self.marqueur_photo is not None:
             self.map_view.remove_marker(self.marqueur_photo)
             self.marqueur_photo = None
@@ -4883,17 +4743,6 @@ class PhotosScreen(Screen):
         self.trace_layer = TraceLayer()
         self.map_view.add_layer(self.trace_layer)
         self.trace_layer.set_points(liste_coords)
-
-        for wpt in (waypoints or []):
-            lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
-            if lat_w is None or lon_w is None:
-                continue
-            mw = MarqueurWaypoint(
-                zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
-                nom=wpt.get('name'), description=wpt.get('description'),
-            )
-            self.map_view.add_marker(mw)
-            self.marqueurs_waypoints.append(mw)
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
