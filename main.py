@@ -49,6 +49,58 @@ from kivy.properties import BooleanProperty
 
 import gps_logic
 
+# Extensions considérées comme des photos pour le nom d'un waypoint
+# (<name> d'un <wpt> ou d'un Placemark KML) : dans ce cas, le nom affiché
+# dans le popup du waypoint est cliquable et ouvre la photo dans la Galerie.
+EXTENSIONS_IMAGE = (".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".bmp", ".gif")
+
+
+def est_nom_image(nom):
+    """True si nom (ex. 'IMG_20260922_012604.jpg') a une extension d'image."""
+    return bool(nom) and str(nom).strip().lower().endswith(EXTENSIONS_IMAGE)
+
+
+def ouvrir_photo_dans_galerie(nom_fichier):
+    """Ouvre la photo nom_fichier (ex. 'IMG_20260922_012604.jpg') dans
+    l'application Galerie d'Android, à partir de son seul nom de fichier
+    (sans connaître son dossier). Sans effet hors Android, ou si le
+    fichier n'est pas trouvé dans la médiathèque du téléphone."""
+    if platform != "android" or not nom_fichier:
+        return
+    try:
+        from jnius import autoclass
+        Intent = autoclass('android.content.Intent')
+        Uri = autoclass('android.net.Uri')
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        Images = autoclass('android.provider.MediaStore$Images$Media')
+        activite = PythonActivity.mActivity
+        resolveur = activite.getContentResolver()
+
+        curseur = resolveur.query(
+            Images.EXTERNAL_CONTENT_URI, [Images._ID],
+            Images.DISPLAY_NAME + " = ?", [nom_fichier], None,
+        )
+        if curseur is None:
+            print(f"[Waypoint] Photo introuvable dans la galerie : {nom_fichier}")
+            return
+        try:
+            if not curseur.moveToFirst():
+                print(f"[Waypoint] Photo introuvable dans la galerie : {nom_fichier}")
+                return
+            media_id = curseur.getLong(curseur.getColumnIndex(Images._ID))
+        finally:
+            curseur.close()
+
+        uri_photo = Uri.withAppendedPath(Images.EXTERNAL_CONTENT_URI, str(media_id))
+        intent = Intent(Intent.ACTION_VIEW)
+        intent.setDataAndType(uri_photo, "image/*")
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        activite.startActivity(intent)
+    except Exception as e:
+        print(f"[Waypoint] Impossible d'ouvrir la photo dans la galerie : {e}")
+
+
 # ----------------------------------------------------------------------
 # Carte interactive (onglet Carte/Découpe) : kivy_garden.mapview est
 # l'équivalent Kivy le plus proche de tkintermapview (tuiles OSM/
@@ -337,8 +389,14 @@ if CARTE_DISPONIBLE:
                 label_desc.bind(width=lambda w, val: setattr(w, "text_size", (val, None)))
                 label_desc.bind(texture_size=lambda w, val: setattr(w, "height", val[1]))
                 contenu.add_widget(label_desc)
+            texte_nom = escape_markup(self.nom) if self.nom else "Waypoint"
+            nom_est_image = bool(self.nom) and est_nom_image(self.nom)
+            if nom_est_image:
+                # Couleur "bleu Kivy", comme le libellé "Supprimer les
+                # waypoints" : signale que le nom est cliquable.
+                texte_nom = f"[ref=photo][u][color=2fa7d4ff]{texte_nom}[/color][/u][/ref]"
             label_nom = Label(
-                text=escape_markup(self.nom) if self.nom else "Waypoint",
+                text=texte_nom,
                 markup=True,
                 halign="center",
                 valign="middle",
@@ -346,6 +404,8 @@ if CARTE_DISPONIBLE:
                 height=dp(30),
             )
             label_nom.bind(width=lambda w, val: setattr(w, "text_size", (val, None)))
+            if nom_est_image:
+                label_nom.bind(on_ref_press=lambda instance, ref: ouvrir_photo_dans_galerie(self.nom))
             contenu.add_widget(label_nom)
             btn_fermer = Button(text="Fermer", size_hint_y=None, height=dp(44))
             contenu.add_widget(btn_fermer)
@@ -4277,6 +4337,7 @@ class CarteScreen(Screen):
         super().__init__(**kwargs)
         self.points_courants = []
         self.marqueurs_actifs = []
+        self.marqueurs_waypoints = []   # curseurs bleus des waypoints (comme Photos/Live)
         self.marqueur_curseur = None
         self.trace_layer = None
         self.map_view = None
@@ -4295,6 +4356,8 @@ class CarteScreen(Screen):
             # et bloquerait le glisser — ce qu'on a observé en pratique.
             Window.bind(on_touch_down=self._debut_touch_carte, on_touch_up=self._sur_touch_carte)
             self.ids.map_container.add_widget(self.map_view)
+            # La taille des curseurs de waypoints suit le zoom de la carte.
+            self.map_view.bind(zoom=self._maj_taille_waypoints)
         else:
             self.ids.map_container.add_widget(Label(
                 text=(
@@ -4363,8 +4426,9 @@ class CarteScreen(Screen):
         # points (nom uniquement en chiffres), ni waypoints superposés au
         # départ ou à l'arrivée de la trace.
         nb_points = len(points)
-        nb_waypoints = len(gps_logic.vrais_waypoints(
-            waypoints, [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])]))
+        vrais_wpts = gps_logic.vrais_waypoints(
+            waypoints, [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])])
+        nb_waypoints = len(vrais_wpts)
         self.info_fichier = f"Trace : {os.path.basename(chemin)}\n{nb_points} points; {nb_waypoints} waypoints."
 
         self.info_point_text = "Tape sur la carte ou le graphique pour voir le détail d'un point."
@@ -4376,12 +4440,14 @@ class CarteScreen(Screen):
         self.info_point_vit = ""
         self.profil = gps_logic.calculer_profil(points)
         self.graphe.set_donnees(*self.profil)
-        self._afficher_trace_sur_carte(points)
+        self._afficher_trace_sur_carte(points, waypoints=vrais_wpts)
 
-    def _afficher_trace_sur_carte(self, points):
+    def _afficher_trace_sur_carte(self, points, waypoints=None):
         """Equivalent de afficher_trace_sur_carte() dans la version
         desktop : trace la polyligne, place les marqueurs D/A, centre
-        et zoome la carte sur l'emprise de la trace."""
+        et zoome la carte sur l'emprise de la trace. Les waypoints
+        éventuels sont indiqués par un petit curseur rond et bleu
+        (MarqueurWaypoint), comme dans les onglets Photos et Live."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
 
@@ -4391,6 +4457,9 @@ class CarteScreen(Screen):
         for m in self.marqueurs_actifs:
             self.map_view.remove_marker(m)
         self.marqueurs_actifs = []
+        for mw in self.marqueurs_waypoints:
+            self.map_view.remove_marker(mw)
+        self.marqueurs_waypoints = []
         if self.marqueur_curseur is not None:
             self.map_view.remove_marker(self.marqueur_curseur)
             self.marqueur_curseur = None
@@ -4402,6 +4471,17 @@ class CarteScreen(Screen):
         self.trace_layer = TraceLayer()
         self.map_view.add_layer(self.trace_layer)
         self.trace_layer.set_points(liste_coords)
+
+        for wpt in (waypoints or []):
+            lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
+            if lat_w is None or lon_w is None:
+                continue
+            mw = MarqueurWaypoint(
+                zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
+                nom=wpt.get('name'), description=wpt.get('description'),
+            )
+            self.map_view.add_marker(mw)
+            self.marqueurs_waypoints.append(mw)
 
         dist_dep_arr = gps_logic.calculer_distance_haversine(
             points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
@@ -4427,6 +4507,10 @@ class CarteScreen(Screen):
         if max_delta > 0:
             zoom = int(12 - math.log2(max_delta * 10))
             self.map_view.zoom = max(2, min(zoom, 18))
+
+    def _maj_taille_waypoints(self, instance, zoom):
+        for mw in self.marqueurs_waypoints:
+            mw.maj_taille(zoom)
 
     def _debut_touch_carte(self, window, touch):
         """Mémorise la position de l'appui si le toucher démarre sur la
