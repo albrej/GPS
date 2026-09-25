@@ -427,7 +427,7 @@ if CARTE_DISPONIBLE:
             if self._cote is None:
                 return
             if tuple(self.size) != (self._cote, self._cote):
-                cx, cy = self.center      # on garde le centre sur le point
+                cx, cy = self.center       # on garde le centre sur le point
                 self.size = (self._cote, self._cote)
                 self.center = (cx, cy)
 
@@ -449,6 +449,7 @@ if CARTE_DISPONIBLE:
             contenu = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(10),
                                  size_hint_y=None)
             contenu.bind(minimum_height=contenu.setter("height"))
+            
             if self.description:
                 label_desc = Label(
                     text=escape_markup(self.description),
@@ -460,12 +461,14 @@ if CARTE_DISPONIBLE:
                 label_desc.bind(width=lambda w, val: setattr(w, "text_size", (val, None)))
                 label_desc.bind(texture_size=lambda w, val: setattr(w, "height", val[1]))
                 contenu.add_widget(label_desc)
+            
             texte_nom = escape_markup(self.nom) if self.nom else "Waypoint"
             nom_est_image = bool(self.nom) and est_nom_image(self.nom)
             if nom_est_image:
                 # Couleur "bleu Kivy", comme le libellé "Supprimer les
                 # waypoints" : signale que le nom est cliquable.
                 texte_nom = f"[ref=photo][u][color=2fa7d4ff]{texte_nom}[/color][/u][/ref]"
+            
             label_nom = Label(
                 text=texte_nom,
                 markup=True,
@@ -475,20 +478,31 @@ if CARTE_DISPONIBLE:
                 height=dp(30),
             )
             label_nom.bind(width=lambda w, val: setattr(w, "text_size", (val, None)))
-            if nom_est_image:
-                def _clic_photo(instance, ref):
-                    popup.dismiss()
-                    ouvrir_photo_dans_galerie(self.nom)
-                label_nom.bind(on_ref_press=_clic_photo)
             contenu.add_widget(label_nom)
+            
             btn_fermer = Button(text="Fermer", size_hint_y=None, height=dp(44))
             contenu.add_widget(btn_fermer)
+            
             exterieur = BoxLayout(orientation="vertical")
             exterieur.add_widget(Widget())
             exterieur.add_widget(contenu)
             exterieur.add_widget(Widget())
+            
+            # --- LE POPUP EST CRÉÉ ICI EN PREMIER ---
             popup = Popup(title="", separator_height=0, content=exterieur, size_hint=(0.85, 0.4))
             btn_fermer.bind(on_release=popup.dismiss)
+
+            # --- ENSUITE ON BIND LE CLIC DE LA PHOTO EN CONNAISSANCE DE CAUSE ---
+            if nom_est_image:
+                def _clic_photo(instance, ref):
+                    print(f"DEBUG: Tentative d'ouverture de la photo -> {self.nom}")
+                    popup.dismiss()
+                    try:
+                        ouvrir_photo_dans_galerie(self.nom)
+                    except Exception as e:
+                        print(f"ERREUR lors de l'ouverture de la galerie: {e}")
+                label_nom.bind(on_ref_press=_clic_photo)
+
             popup.open()
 
 
