@@ -100,72 +100,38 @@ def _ouvrir_uri_image(uri):
         print(f"[Waypoint] Impossible d'ouvrir la photo : {e}")
 
 
-def ouvrir_photo_dans_galerie(nom_fichier):
-    """Ouvre la photo nom_fichier dans l'application Galerie d'Android."""
-    print(f"DEBUG_GALERIE: Début pour le fichier -> {nom_fichier} (plateforme: {platform})")
-    if platform != "android" or not nom_fichier:
-        print("DEBUG_GALERIE: Arrêt (pas Android ou nom vide)")
+def ouvrir_photo_dans_galerie(chemin_ou_nom):
+    """Ouvre la photo dans la Galerie d'Android à partir de son chemin complet 
+    ou de son nom de fichier."""
+    if platform != "android" or not chemin_ou_nom:
         return
     try:
         from jnius import autoclass
         Uri = autoclass('android.net.Uri')
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
-        Images = autoclass('android.provider.MediaStore$Images$Media')
-        activite = PythonActivity.mActivity
-        resolveur = activite.getContentResolver()
-
-        print("DEBUG_GALERIE: Interrogation du MediaStore...")
-        curseur = resolveur.query(
-            Images.EXTERNAL_CONTENT_URI, [Images._ID],
-            Images.DISPLAY_NAME + " = ?", [nom_fichier], None,
-        )
-        media_id = None
-        if curseur is not None:
-            try:
-                if curseur.moveToFirst():
-                    media_id = curseur.getLong(curseur.getColumnIndex(Images._ID))
-                    print(f"DEBUG_GALERIE: Trouvé dans MediaStore avec ID = {media_id}")
-            finally:
-                curseur.close()
-
-        if media_id is not None:
-            uri_img = Uri.withAppendedPath(Images.EXTERNAL_CONTENT_URI, str(media_id))
-            print(f"DEBUG_GALERIE: Ouverture de l'URI MediaStore -> {uri_img}")
-            _ouvrir_uri_image(uri_img)
-            return
-
-        print("DEBUG_GALERIE: Absent du MediaStore, recherche sur le disque...")
-        candidats = list(_chemins_photo_candidats(nom_fichier))
-        print(f"DEBUG_GALERIE: Chemins candidats testés : {candidats}")
+        File = autoclass('java.io.File')
         
-        chemin_trouve = next((c for c in candidats if os.path.exists(c)), None)
-        if chemin_trouve is None:
-            print(f"[Waypoint] Photo introuvable (ni médiathèque, ni disque) : {nom_fichier}")
+        # Si on a un chemin absolu complet (ex: /storage/emulated/0/DCIM/...)
+        if chemin_ou_nom.startswith("/"):
+            chemin_cible = chemin_ou_nom
+        else:
+            # Sinon, on cherche via vos candidats habituels
+            chemin_cible = next(
+                (c for c in _chemins_photo_candidats(chemin_ou_nom) if os.path.exists(c)), None
+            )
+        
+        if not chemin_cible or not os.path.exists(chemin_cible):
+            print(f"[Waypoint] Fichier image introuvable sur le disque : {chemin_ou_nom}")
             return
 
-        print(f"DEBUG_GALERIE: Fichier trouvé sur le disque à : {chemin_trouve}")
-        from jnius import PythonJavaClass, java_method
-        MediaScannerConnection = autoclass('android.media.MediaScannerConnection')
-
-        class _EcouteurScanPhoto(PythonJavaClass):
-            __javainterfaces__ = ['android/media/MediaScannerConnection$OnScanCompletedListener']
-            __javacontext__ = 'app'
-
-            @java_method('(Ljava/lang/String;Landroid/net/Uri;)V')
-            def onScanCompleted(self, path, uri):
-                print(f"DEBUG_GALERIE: Scan terminé pour {path}, URI renvoyée : {uri}")
-                try:
-                    _ECOUTEURS_SCAN_PHOTO.remove(self)
-                except ValueError:
-                    pass
-                if uri is not None:
-                    _ouvrir_uri_image(uri)
-                else:
-                    print(f"[Waypoint] Indexation échouée pour : {path}")
-
-        ecouteur = _EcouteurScanPhoto()
-        _ECOUTEURS_SCAN_PHOTO.append(ecouteur)
-        MediaScannerConnection.scanFile(activite, [chemin_trouve], None, ecouteur)
+        print(f"[Waypoint] Ouverture directe du fichier : {chemin_cible}")
+        
+        # Utilisation de FileProvider ou de l'URI du fichier pour Android
+        f = File(chemin_cible)
+        uri = Uri.fromFile(f)
+        
+        _ouvrir_uri_image(uri)
+        
     except Exception as e:
         print(f"[Waypoint] Impossible d'ouvrir la photo dans la galerie : {e}")
 
