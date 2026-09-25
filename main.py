@@ -82,20 +82,66 @@ def _chemins_photo_candidats(nom_fichier):
     chemins.append(f"/storage/emulated/0/DCIM/Camera/{nom_fichier}")
     return chemins
 
+# Paquets des applications Galerie connues, dans l'ordre de preference.
+# Le premier paquet reellement installe sur l'appareil sera utilise pour
+# ouvrir la photo DIRECTEMENT dans la Galerie, sans afficher le selecteur
+# ("Visualiseur d'images (Natif)" / "Afficher les photos"). Sur Xiaomi/
+# Redmi (MIUI/HyperOS) c'est com.miui.gallery ; les autres entrees
+# couvrent Samsung, Google et la galerie AOSP, pour que le comportement
+# reste correct sur un autre appareil. Si aucune n'est trouvee, on
+# retombe sur le ACTION_VIEW classique (selecteur).
+PAQUETS_GALERIE = [
+    "com.miui.gallery",            # Xiaomi / Redmi / POCO (MIUI, HyperOS)
+    "com.sec.android.gallery3d",   # Samsung Gallery
+    "com.google.android.gallery3d",  # Galerie Google (anciens Nexus/Pixel)
+    "com.android.gallery3d",       # Galerie AOSP (Androids nus)
+    "com.coloros.gallery",         # Oppo
+    "com.vivo.gallery",            # Vivo
+]
+
 
 def _ouvrir_uri_image(uri):
-    """Lance un Intent ACTION_VIEW sur une URI d'image déjà connue
-    (content:// issue de MediaStore ou d'un scan)."""
+    """Lance un Intent ACTION_VIEW sur une URI d'image deja connue
+    (content:// issue de MediaStore ou d'un scan).
+
+    La photo est ouverte DIRECTEMENT dans la Galerie de l'appareil
+    (sans selecteur d'application) des que le paquet de la galerie
+    installee est identifie dans PAQUETS_GALERIE. Sinon, comportement
+    classique : Android propose les applications capables d'afficher
+    l'image."""
     try:
         from jnius import autoclass
         Intent = autoclass('android.content.Intent')
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
         activite = PythonActivity.mActivity
-        intent = Intent(Intent.ACTION_VIEW)
-        intent.setDataAndType(uri, "image/*")
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        activite.startActivity(intent)
+        package_manager = activite.getPackageManager()
+
+        def _lancer(intent):
+            intent.setDataAndType(uri, "image/*")
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            activite.startActivity(intent)
+
+        # 1) Ouverture directe dans la Galerie : on cible le paquet de
+        #    la galerie installee. resolveActivity() renvoie l'activite
+        #    qui traiterait l'Intent pour ce paquet precis ; s'il
+        #    renvoie null, ce paquet n'est pas installe (ou ne sait pas
+        #    afficher une image) et on passe au suivant.
+        for paquet in PAQUETS_GALERIE:
+            try:
+                intent = Intent(Intent.ACTION_VIEW)
+                intent.setPackage(paquet)
+                if intent.resolveActivity(package_manager) is not None:
+                    print("[Waypoint] Ouverture directe dans la galerie : " + paquet)
+                    _lancer(intent)
+                    return
+            except Exception as e:
+                print("[Waypoint] Paquet galerie " + paquet + " refuse : " + str(e))
+
+        # 2) Repli : aucune galerie connue installee -> ACTION_VIEW
+        #    classique (Android affichera le selecteur si besoin).
+        print("[Waypoint] Galerie specifique introuvable : ouverture classique.")
+        _lancer(Intent(Intent.ACTION_VIEW))
     except Exception as e:
         print(f"[Waypoint] Impossible d'ouvrir la photo : {e}")
 
