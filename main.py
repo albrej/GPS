@@ -123,6 +123,24 @@ def _signaler_erreur(message):
         pass
 
 
+def _tableau_chaines(liste):
+    """Convertit une liste Python de chaines en tableau Java String[].
+
+    Compatible avec TOUTES les versions de pyjnius :
+      - versions recentes : via jnius.JArray si present ;
+      - versions anciennes (empaquetees dans les APK Kivy, qui n'ont
+        pas JArray - source du bug "cannot import name 'JArray'") :
+        pyjnius convertit tout seul une liste Python passee en
+        argument de methode Java ; on la passe telle quelle."""
+    try:
+        from jnius import JArray
+        return JArray('java.lang.String')(liste)
+    except ImportError:
+        return liste
+    except Exception:
+        return liste
+
+
 def _uri_content_pour(chemin_complet, nom_fichier):
     """Interroge la mediatheque Android (MediaStore) et renvoie une URI
     content:// pour la photo, ou None si la mediatheque ne la connait pas.
@@ -137,11 +155,10 @@ def _uri_content_pour(chemin_complet, nom_fichier):
       2. par nom de fichier seul (colonne _display_name) - retrouve la
          photo meme si elle a ete deplacee/renommee."""
     try:
-        from jnius import autoclass, JArray
+        from jnius import autoclass
         ImagesMedia = autoclass('android.provider.MediaStore$Images$Media')
         ContentUris = autoclass('android.content.ContentUris')
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
-        JString = autoclass('java.lang.String')
 
         resolver = PythonActivity.mActivity.getContentResolver()
         table = ImagesMedia.EXTERNAL_CONTENT_URI
@@ -151,9 +168,9 @@ def _uri_content_pour(chemin_complet, nom_fichier):
             try:
                 curseur = resolver.query(
                     table,
-                    JArray(JString)(["_id"]),
+                    _tableau_chaines(["_id"]),
                     colonne + "=?",
-                    JArray(JString)([valeur]),
+                    _tableau_chaines([valeur]),
                     None,
                 )
                 if curseur is not None and curseur.moveToFirst():
@@ -224,7 +241,7 @@ def ouvrir_photo_dans_galerie(chemin_ou_nom):
     if platform != "android" or not chemin_ou_nom:
         return
     try:
-        from jnius import autoclass, JArray
+        from jnius import autoclass
 
         nom_fichier = os.path.basename(chemin_ou_nom)
 
@@ -261,15 +278,14 @@ def ouvrir_photo_dans_galerie(chemin_ou_nom):
         # 2) Photo pas encore indexee : scan, puis ouverture via callback
         MediaScannerConnection = autoclass('android.media.MediaScannerConnection')
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
-        JString = autoclass('java.lang.String')
         try:
             listener = _fabriquer_listener_scan()
             _ECOUTEURS_SCAN_PHOTO.clear()
             _ECOUTEURS_SCAN_PHOTO.append(listener)
             MediaScannerConnection.scanFile(
                 PythonActivity.mActivity,
-                JArray(JString)([chemin_cible]),
-                JArray(JString)(["image/*"]),
+                _tableau_chaines([chemin_cible]),
+                _tableau_chaines(["image/*"]),
                 listener,
             )
             print("[Waypoint] Photo non indexee : scan MediaScanner lance.")
