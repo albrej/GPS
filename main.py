@@ -83,13 +83,13 @@ def _chemins_photo_candidats(nom_fichier):
     return chemins
 
 # Paquets des applications Galerie connues, dans l'ordre de preference.
-# Le premier paquet reellement installe sur l'appareil sera utilise pour
-# ouvrir la photo DIRECTEMENT dans la Galerie, sans afficher le selecteur
-# ("Visualiseur d'images (Natif)" / "Afficher les photos"). Sur Xiaomi/
-# Redmi (MIUI/HyperOS) c'est com.miui.gallery ; les autres entrees
-# couvrent Samsung, Google et la galerie AOSP, pour que le comportement
-# reste correct sur un autre appareil. Si aucune n'est trouvee, on
-# retombe sur le ACTION_VIEW classique (selecteur).
+# Le premier paquet installe sur l'appareil ouvrira la photo DIRECTEMENT
+# dans la Galerie, sans le selecteur ("Visualiseur d'images (Natif)" /
+# "Afficher les photos"). Sur Xiaomi/Redmi (MIUI/HyperOS) c'est
+# com.miui.gallery ; les autres entrees couvrent Samsung, Google et la
+# galerie AOSP, pour que le comportement reste correct sur un autre
+# appareil. Si aucun ne fonctionne, on retombe sur le ACTION_VIEW
+# classique (selecteur Android).
 PAQUETS_GALERIE = [
     "com.miui.gallery",            # Xiaomi / Redmi / POCO (MIUI, HyperOS)
     "com.sec.android.gallery3d",   # Samsung Gallery
@@ -105,16 +105,25 @@ def _ouvrir_uri_image(uri):
     (content:// issue de MediaStore ou d'un scan).
 
     La photo est ouverte DIRECTEMENT dans la Galerie de l'appareil
-    (sans selecteur d'application) des que le paquet de la galerie
-    installee est identifie dans PAQUETS_GALERIE. Sinon, comportement
-    classique : Android propose les applications capables d'afficher
-    l'image."""
+    (sans selecteur d'application). On passe en revue les paquets de
+    PAQUETS_GALERIE et on lance l'Intent cible sur chacun :
+      - si le paquet est installe et sait afficher l'image -> ouverture
+        immediate, c'est fini ;
+      - sinon Android leve une exception (ActivityNotFoundException)
+        que l'on intercepte pour essayer le paquet suivant.
+
+    On N'utilise PAS resolveActivity() : depuis Android 11 (API 30),
+    la "visibilite des paquets" fait que resolveActivity renvoie null
+    pour des applis pourtant installees mais non declarees dans le
+    manifeste de l'app (balise <queries>) - c'est exactement pourquoi
+    le selecteur apparaissait encore sur le Redmi malgre setPackage.
+    Si aucun paquet connu ne marche, on retombe sur le ACTION_VIEW
+    classique (Android affichera alors son selecteur)."""
     try:
         from jnius import autoclass
         Intent = autoclass('android.content.Intent')
         PythonActivity = autoclass('org.kivy.android.PythonActivity')
         activite = PythonActivity.mActivity
-        package_manager = activite.getPackageManager()
 
         def _lancer(intent):
             intent.setDataAndType(uri, "image/*")
@@ -122,23 +131,20 @@ def _ouvrir_uri_image(uri):
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             activite.startActivity(intent)
 
-        # 1) Ouverture directe dans la Galerie : on cible le paquet de
-        #    la galerie installee. resolveActivity() renvoie l'activite
-        #    qui traiterait l'Intent pour ce paquet precis ; s'il
-        #    renvoie null, ce paquet n'est pas installe (ou ne sait pas
-        #    afficher une image) et on passe au suivant.
+        # 1) Ouverture directe dans la Galerie : Intent cible sur chaque
+        #    paquet connu ; l'echec (paquet absent) se traduit par une
+        #    exception interceptee pour essayer le suivant.
         for paquet in PAQUETS_GALERIE:
             try:
                 intent = Intent(Intent.ACTION_VIEW)
                 intent.setPackage(paquet)
-                if intent.resolveActivity(package_manager) is not None:
-                    print("[Waypoint] Ouverture directe dans la galerie : " + paquet)
-                    _lancer(intent)
-                    return
+                _lancer(intent)
+                print("[Waypoint] Photo ouverte via la galerie : " + paquet)
+                return
             except Exception as e:
-                print("[Waypoint] Paquet galerie " + paquet + " refuse : " + str(e))
+                print("[Waypoint] Galerie " + paquet + " indisponible : " + str(e))
 
-        # 2) Repli : aucune galerie connue installee -> ACTION_VIEW
+        # 2) Repli : aucune galerie connue n'a fonctionne -> ACTION_VIEW
         #    classique (Android affichera le selecteur si besoin).
         print("[Waypoint] Galerie specifique introuvable : ouverture classique.")
         _lancer(Intent(Intent.ACTION_VIEW))
@@ -193,8 +199,8 @@ def _uri_content_pour(chemin_complet, nom_fichier):
 
     Obligatoire depuis Android 7 (API 24) : un Intent ACTION_VIEW sur une
     URI file:// (Uri.fromFile) leve FileUriExposedException et la photo
-    ne s'ouvre pas - exactement le symptome observe (popup ferme, rien
-    d'affiche). Seule une URI content:// fournie par MediaStore fonctionne.
+    ne s'ouvre pas. Seule une URI content:// fournie par MediaStore
+    fonctionne.
 
     Deux recherches, dans l'ordre :
       1. par chemin complet (colonne _data) ;
