@@ -101,20 +101,10 @@ def _ouvrir_uri_image(uri):
 
 
 def ouvrir_photo_dans_galerie(nom_fichier):
-    """Ouvre la photo nom_fichier (ex. 'IMG_20260922_012604.jpg') dans
-    l'application Galerie d'Android, à partir de son seul nom de fichier.
-
-    1) Cherche d'abord la photo dans la médiathèque (MediaStore) par son
-       nom de fichier : c'est le cas normal pour une photo déjà connue
-       d'Android.
-    2) Si elle n'y figure pas encore (photo très récente, pas encore
-       indexée par le scanner multimédia), la cherche directement sur le
-       stockage partagé — DCIM/Camera en priorité — puis demande à
-       Android de l'indexer (MediaScannerConnection) pour obtenir une
-       URI valide.
-
-    Sans effet hors Android, ou si la photo reste introuvable."""
+    """Ouvre la photo nom_fichier dans l'application Galerie d'Android."""
+    print(f"DEBUG_GALERIE: Début pour le fichier -> {nom_fichier} (plateforme: {platform})")
     if platform != "android" or not nom_fichier:
+        print("DEBUG_GALERIE: Arrêt (pas Android ou nom vide)")
         return
     try:
         from jnius import autoclass
@@ -124,6 +114,7 @@ def ouvrir_photo_dans_galerie(nom_fichier):
         activite = PythonActivity.mActivity
         resolveur = activite.getContentResolver()
 
+        print("DEBUG_GALERIE: Interrogation du MediaStore...")
         curseur = resolveur.query(
             Images.EXTERNAL_CONTENT_URI, [Images._ID],
             Images.DISPLAY_NAME + " = ?", [nom_fichier], None,
@@ -133,20 +124,26 @@ def ouvrir_photo_dans_galerie(nom_fichier):
             try:
                 if curseur.moveToFirst():
                     media_id = curseur.getLong(curseur.getColumnIndex(Images._ID))
+                    print(f"DEBUG_GALERIE: Trouvé dans MediaStore avec ID = {media_id}")
             finally:
                 curseur.close()
 
         if media_id is not None:
-            _ouvrir_uri_image(Uri.withAppendedPath(Images.EXTERNAL_CONTENT_URI, str(media_id)))
+            uri_img = Uri.withAppendedPath(Images.EXTERNAL_CONTENT_URI, str(media_id))
+            print(f"DEBUG_GALERIE: Ouverture de l'URI MediaStore -> {uri_img}")
+            _ouvrir_uri_image(uri_img)
             return
 
-        # Pas (encore) dans la médiathèque : recherche directe sur le disque.
-        chemin_trouve = next(
-            (c for c in _chemins_photo_candidats(nom_fichier) if os.path.exists(c)), None)
+        print("DEBUG_GALERIE: Absent du MediaStore, recherche sur le disque...")
+        candidats = list(_chemins_photo_candidats(nom_fichier))
+        print(f"DEBUG_GALERIE: Chemins candidats testés : {candidats}")
+        
+        chemin_trouve = next((c for c in candidats if os.path.exists(c)), None)
         if chemin_trouve is None:
             print(f"[Waypoint] Photo introuvable (ni médiathèque, ni disque) : {nom_fichier}")
             return
 
+        print(f"DEBUG_GALERIE: Fichier trouvé sur le disque à : {chemin_trouve}")
         from jnius import PythonJavaClass, java_method
         MediaScannerConnection = autoclass('android.media.MediaScannerConnection')
 
@@ -156,6 +153,7 @@ def ouvrir_photo_dans_galerie(nom_fichier):
 
             @java_method('(Ljava/lang/String;Landroid/net/Uri;)V')
             def onScanCompleted(self, path, uri):
+                print(f"DEBUG_GALERIE: Scan terminé pour {path}, URI renvoyée : {uri}")
                 try:
                     _ECOUTEURS_SCAN_PHOTO.remove(self)
                 except ValueError:
