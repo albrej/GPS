@@ -399,17 +399,90 @@ if CARTE_DISPONIBLE:
                 # Force le rechargement immédiat et complet des tuiles manquantes
                 self.trigger_update(True)
 
+        # CLIC LONG (0.6 s) DE GEL/DEGEL : detection au niveau de la
+        # carte ELLE-MEME (pas au niveau Window) : sur PC comme sur
+        # Android, un toucher sur la carte est TOUJOURS consomme (par
+        # le Scatter de la carte quand elle est active, par le
+        # ScrollView ancetre quand elle est gelee si on renvoyait
+        # False) - or Kivy ne declenche PAS les callbacks Window.bind
+        # quand un widget consomme le toucher. Les handlers Window ne
+        # voyaient donc jamais les clics sur la carte. Meme duree que
+        # le clic long du graphique (appareil photo).
+        DUREE_CLIC_LONG_FREEZE = 0.6
+        SEUIL_DEPLACEMENT_FREEZE_DP = 10
+
+        def _bascule_freeze_clic_long(self, touch):
+            """Bascule le gel UNE SEULE fois par geste : declenchee par
+            le timer de 0.6 s (doigt pose sans bouger) OU au
+            relachement d'un appui d'au moins 0.6 s (chemin de repli
+            independant du timer)."""
+            print("[FREEZE][carte] Tentative de bascule (timer ou relachement).")
+            if touch.ud.get("bascule_freeze_effectuee"):
+                print("[FREEZE][carte] Refus : bascule deja effectuee pour ce geste.")
+                return
+            if touch.ud.get("appui_long_annule"):
+                print("[FREEZE][carte] Refus : appui long annule (deplacement).")
+                return
+            touch.ud["bascule_freeze_effectuee"] = True
+            timer = touch.ud.get("timer_clic_long_freeze")
+            if timer is not None:
+                timer.cancel()
+                touch.ud["timer_clic_long_freeze"] = None
+            print("[FREEZE][carte] Bascule via clic long sur la carte -> freeze_callback.")
+            if self.freeze_callback:
+                try:
+                    self.freeze_callback()
+                except Exception:
+                    import traceback
+                    print("[FREEZE][carte] EXCEPTION dans freeze_callback :")
+                    traceback.print_exc()
+
+        def _annuler_clic_long(self, touch):
+            timer = touch.ud.get("timer_clic_long_freeze")
+            if timer is not None:
+                timer.cancel()
+                touch.ud["timer_clic_long_freeze"] = None
+            touch.ud["appui_long_annule"] = True
+            print("[FREEZE][carte] Clic long ANNULE (deplacement du doigt ou molette).")
+
         def on_touch_down(self, touch):
+            # Trace AVANT meme le test collide_point : si le clic de
+            # degel n'affiche pas cette ligne, le toucher n'est pas
+            # du tout distribue a la carte (blocage chez un ancetre) ;
+            # s'il l'affiche mais pas la suivante, c'est collide_point
+            # qui echoue (coordonnees dezynchronisees, ex. plein ecran).
+            print(f"[FREEZE][carte] on_touch_down recu : touch=({touch.x:.0f},{touch.y:.0f}) "
+                  f"carte pos=({self.x:.0f},{self.y:.0f}) size=({self.width:.0f}x{self.height:.0f})")
             if not self.collide_point(*touch.pos):
+                print("[FREEZE][carte] HORS de la carte -> transmis aux enfants.")
                 return super().on_touch_down(touch)
 
-            # Si gelé, on ignore la molette et les drags, mais on laisse passer 
-            # l'événement à super() pour que Kivy continue d'analyser le double-tap.
-            if getattr(self, 'freeze_actif', False):
-                return False 
+            # Armement du clic long de gel/degel, AVANT tout test de
+            # gel : doit fonctionner dans les DEUX sens (geler une
+            # carte active ET degeler une carte gelee). IDEMPOTENT :
+            # le handler Window (LiveScreen._debut_touch_carte) arme
+            # AUSSI un timer pour ce toucher, AVANT le dispatch widget ;
+            # si un timer existe deja (cles touch.ud partagees), on ne
+            # rearme rien - un second timer ecraserait la reference du
+            # premier, qui continuerait de vivre et de tirer.
+            touch.ud["clic_long_carte_actif"] = True
+            if touch.ud.get("timer_clic_long_freeze") is None:
+                touch.ud["carte_pos_depart"] = (touch.x, touch.y)
+                touch.ud["temps_depart_freeze"] = Clock.get_time()
+                touch.ud["bascule_freeze_effectuee"] = False
+                touch.ud["appui_long_annule"] = False
+                touch.ud["timer_clic_long_freeze"] = Clock.schedule_once(
+                    lambda dt: self._bascule_freeze_clic_long(touch),
+                    self.DUREE_CLIC_LONG_FREEZE)
+                print(f"[FREEZE][carte] touch_down sur la carte (gelee={getattr(self, 'freeze_actif', False)}) - timer de 0.6 s arme.")
+            else:
+                print("[FREEZE][carte] touch_down sur la carte - timer deja arme (Window), on ne rearme pas.")
 
             bouton = getattr(touch, "button", "")
             if bouton in ("scrollup", "scrolldown", "scrollleft", "scrollright"):
+                # Molette (PC) = deplacement de la carte, pas un clic
+                # long : timer annule.
+                self._annuler_clic_long(touch)
                 dx = dy = 0
                 if bouton == "scrollup":
                     dy = -self.PAS_DEPLACEMENT_PX
@@ -425,62 +498,67 @@ if CARTE_DISPONIBLE:
                 self.center_on(nouvelle_lat, nouvelle_lon)
                 return True
 
+            if getattr(self, 'freeze_actif', False):
+                # Gelee : on CONSOMME le toucher (return True, sans le
+                # "grabber"). Si on renvoyait False, le ScrollView
+                # ancetre le grabberait pour son defilement, et les
+                # evenements move/up deviendraient incoherents pour la
+                # carte. Le timer de clic long (degel) reste actif.
+                print("[FREEZE][carte] Carte gelee : toucher consomme (degel possible par clic long).")
+                return True
+
             return super().on_touch_down(touch)
-    
+
         def on_touch_move(self, touch):
-            # ---> Bloque net le glisser-déposer (pan) de la carte si le gel est actif
+            # Le doigt se deplace : au-dela du seuil, ce n'est plus un
+            # clic long mais un glisser de carte -> timer annule.
+            if touch.ud.get("clic_long_carte_actif"):
+                depart = touch.ud.get("carte_pos_depart")
+                if depart is not None and (
+                        abs(touch.x - depart[0]) > dp(self.SEUIL_DEPLACEMENT_FREEZE_DP)
+                        or abs(touch.y - depart[1]) > dp(self.SEUIL_DEPLACEMENT_FREEZE_DP)):
+                    self._annuler_clic_long(touch)
+
+            # ---> Bloque net le glisser-deplacer (pan) de la carte si le gel est actif
             if getattr(self, 'freeze_actif', False):
                 return True
-                
-            # Empêche le zoom par pincement en neutralisant l'effet multi-touch de la carte
+
+            # Empeche le zoom par pincement en neutralisant l'effet multi-touch de la carte
             if touch.grab_current is not self and len(getattr(self, 'touches', [])) > 1:
                 return True
             return super().on_touch_move(touch)
-    
+
         def on_touch_up(self, touch):
+            if touch.ud.pop("clic_long_carte_actif", False):
+                # Ce toucher avait demarre sur la carte : on annule le
+                # timer s'il pend encore (relachement avant 0.6 s), et
+                # s'il a dure au moins 0.6 s sans bouger et sans bascule
+                # deja effectuee, on bascule AU RELACHEMENT (repli
+                # independant du timer).
+                duree = Clock.get_time() - touch.ud.get("temps_depart_freeze", 0.0)
+                print(f"[FREEZE][carte] touch_up - duree de l'appui : {duree:.2f} s")
+                timer = touch.ud.get("timer_clic_long_freeze")
+                if timer is not None:
+                    timer.cancel()
+                    touch.ud["timer_clic_long_freeze"] = None
+                if (not touch.ud.get("bascule_freeze_effectuee")
+                        and not touch.ud.get("appui_long_annule")
+                        and duree >= self.DUREE_CLIC_LONG_FREEZE):
+                    self._bascule_freeze_clic_long(touch)
+
             if not self.collide_point(*touch.pos):
                 return super().on_touch_up(touch)
 
-            # C'est ici, au relâchement du 2nd clic, que Kivy valide is_double_tap
-            if touch.is_double_tap:
-                # Anti-rebond : le journal de diagnostic a montré qu'un
-                # seul geste de double-tap physique déclenche ici DEUX
-                # appels consécutifs (is_double_tap=True vu deux fois de
-                # suite, quasi instantanément — cause précise non confirmée
-                # côté dispatch tactile Kivy, mais le symptôme, lui, est
-                # parfaitement reproductible). On ignore donc toute
-                # nouvelle détection de double-tap trop rapprochée de la
-                # précédente bascule, pour n'en garder qu'une seule par
-                # geste réel de l'utilisateur.
-                maintenant = Clock.get_time()
-                dernier = getattr(self, '_dernier_bascule_freeze_temps', -999)
-                if maintenant - dernier < 0.75:
-                    super().on_touch_up(touch)
-                    return True
-                self._dernier_bascule_freeze_temps = maintenant
-
-                if self.freeze_callback:
-                    self.freeze_callback()
-                # IMPORTANT : ce toucher a quand même été "grabbé" par
-                # on_touch_down de la classe de base MapView (tant que
-                # freeze_actif n'était pas encore actif à ce moment précis),
-                # qui y a incrémenté self._touch_count et mis self._pause à
-                # True. Il FAUT donc laisser la classe de base le "dégrabber"
-                # ici (elle redescend _touch_count à 0 et repasse _pause à
-                # False) — sinon _pause reste bloqué à True pour toujours,
-                # et load_tile_for_source() (kivy_garden.mapview) ne charge
-                # plus jamais aucune nouvelle tuile ensuite. On ignore sa
-                # valeur de retour et on renvoie toujours True nous-mêmes,
-                # pour ne rien changer d'autre au comportement du double-tap.
-                super().on_touch_up(touch)
-                return True
-
             if getattr(self, 'freeze_actif', False):
-                # Même raison que ci-dessus : si ce toucher avait déjà été
-                # grabbé par la classe de base avant que le gel ne s'active
-                # (ex: gelé via la barre d'outils pendant un glisser en
-                # cours), on la laisse le dégrabber correctement, mais on
-                # renvoie toujours True nous-mêmes.
+                # Si ce toucher avait ete "grabbe" par la classe de base
+                # MapView avant que le gel ne s'active (ex: gel declenche
+                # par le clic long pendant que le doigt est encore pose,
+                # ou gele pendant un glisser en cours), on la laisse le
+                # "degrabber" correctement (elle redescend _touch_count
+                # a 0 et repasse _pause a False) - sinon _pause resterait
+                # bloque a True pour toujours et load_tile_for_source()
+                # (kivy_garden.mapview) ne chargerait plus aucune nouvelle
+                # tuile ensuite. On renvoie toujours True nous-memes.
                 if touch.grab_current is self:
                     super().on_touch_up(touch)
                 return True
@@ -3041,7 +3119,12 @@ class LiveScreen(Screen):
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
             self.map_view.freeze_callback = self.basculer_freeze
             # AJOUT : Lier le suivi tactile global de la fenêtre comme sur l'onglet 4
-            Window.bind(on_touch_down=self._debut_touch_carte, on_touch_up=self._sur_touch_carte)
+            # AJOUT : Lier le suivi tactile global de la fenêtre comme sur l'onglet 4.
+            # Les handlers peuvent cesser de recevoir les touchers après un cycle
+            # pause/reprise d'Android (ex : retour de l'appareil photo) : on les
+            # rebranche donc aussi depuis OutilsTracesApp.on_resume (méthode
+            # _relier_touchers_fenetre).
+            self._relier_touchers_fenetre()
             self.ids.map_container.add_widget(self.map_view)
             # La taille des curseurs de waypoints suit le zoom de la carte.
             self.map_view.bind(zoom=self._maj_taille_waypoints)
@@ -4335,7 +4418,17 @@ class LiveScreen(Screen):
         l'appli après avoir quitté l'appareil photo (voir
         OutilsTracesApp.on_resume, qui détecte ce retour)."""
         if not getattr(self, 'en_cours_live', False):
-            self._maj_statut_live("Impossible de prendre une photo : aucun live en cours.", (0.776, 0.157, 0.157, 1))
+            # Le message d'erreur ne s'affiche QUE si le graphique
+            # contient quelque chose (trace chargee via "Charger une
+            # trace" ou donnees live) : sinon c'est un clic long sur
+            # la zone blanche du graphique vide, sans trace - aucun
+            # affichage (retour silencieux).
+            graphe_pourvu = bool(
+                getattr(self, 'graphe', None) is not None
+                and (self.graphe.distances_km or self.graphe.distances_km_secondaire)
+            )
+            if graphe_pourvu:
+                self._maj_statut_live("Impossible de prendre une photo : aucun live en cours.", (0.776, 0.157, 0.157, 1))
             return
         if not self.points_trace_live:
             self._maj_statut_live(
@@ -4499,6 +4592,7 @@ class LiveScreen(Screen):
         # 2+ appels d'affilée (double bascule = gel qui "ne tient pas").
         self._compteur_bascule_freeze = getattr(self, '_compteur_bascule_freeze', 0) + 1
         print(f"[DIAG FREEZE] appel #{self._compteur_bascule_freeze} -> freeze_actif={self.freeze_actif}")
+        self.info_fichier = f"[FREEZE] Bascule #{self._compteur_bascule_freeze} -> gelee : {self.freeze_actif}"
 
         if getattr(self.map_view, 'freeze_actif', None) is not None:
             self.map_view.freeze_actif = self.freeze_actif
@@ -4525,25 +4619,133 @@ class LiveScreen(Screen):
             else:
                 self._effacer_info_point_live("Aucun point live enregistré.")
 
+    # Constantes du clic long de gel/degel (identiques a celles de la
+    # carte MapViewMolette ; utilisees par les handlers Window de
+    # secours ci-dessous).
+    DUREE_CLIC_LONG_FREEZE = 0.6
+    SEUIL_DEPLACEMENT_FREEZE_DP = 10
+
+    def _relier_touchers_fenetre(self):
+        """(Re)branche les handlers Window de suivi des touchers sur la
+        carte (rafraichissement des tuiles apres un zoom ou un
+        deplacement - meme principe que sur l'onglet 4). Appele a la
+        construction de l'ecran ET depuis OutilsTracesApp.on_resume :
+        apres un cycle pause/reprise d'Android (retour de l'appareil
+        photo, de la galerie...), les bindings Window peuvent cesser de
+        recevoir les touchers. On debbranche puis rebranche, pour
+        eviter tout doublon d'appel.
+
+        NOTE : la bascule gel/degel par CLIC LONG n'est PAS geree ici :
+        elle vit dans la carte elle-meme (MapViewMolette.on_touch_down),
+        car un toucher sur la carte est toujours consomme par un widget
+        (Scatter de la carte, ou ScrollView ancetre si on laissait
+        filer le toucher) et Kivy ne declenche alors PAS les callbacks
+        Window.bind - les handlers Window ne voient donc jamais les
+        clics sur la carte, seulement ceux sur les zones sans widget
+        interactif."""
+        Window.unbind(
+            on_touch_down=self._debut_touch_carte,
+            on_touch_move=self._mouvement_touch_carte,
+            on_touch_up=self._sur_touch_carte,
+        )
+        Window.bind(
+            on_touch_down=self._debut_touch_carte,
+            on_touch_move=self._mouvement_touch_carte,
+            on_touch_up=self._sur_touch_carte,
+        )
+
+    def _rect_carte_ecran(self):
+        """Rectangle REELLEMENT AFFICHE de la carte, en coordonnees
+        fenetre : map_view.pos est (0,0) et ne reflete pas sa position
+        a l'ecran (le ScrollView deplace le rendu sans mettre a jour
+        pos, et le plein ecran change l'echelle) - l'ancien test
+        collide_point(*touch.pos) comparait donc le clic a un rectangle
+        fictif coin bas-gauche de la fenetre, d'ou la "zone d'action
+        deplacee" observee apres defilement. to_window() convertit la
+        position locale du widget en coordonnees fenetre reelles."""
+        mv = self.map_view
+        mx, my = mv.to_window(mv.x, mv.y)
+        return mx, my, mv.width, mv.height
+
+    def _clic_sur_carte_ecran(self, touch):
+        """True si le toucher (coordonnees fenetre) tombe sur le
+        rectangle reellement affiche de la carte (voir
+        _rect_carte_ecran)."""
+        if self.map_view is None:
+            return False
+        mx, my, mw, mh = self._rect_carte_ecran()
+        return (mx <= touch.x <= mx + mw) and (my <= touch.y <= my + mh)
 
     def _debut_touch_carte(self, window, touch):
-        if (
-            self.manager is not None and self.manager.current == self.name
-            and self.map_view is not None and self.map_view.collide_point(*touch.pos)
-        ):
-            touch.ud["carte_pos_depart"] = (touch.x, touch.y)
+        if self.manager is not None and self.manager.current == self.name:
+            if self.map_view is not None:
+                mx, my, mw, mh = self._rect_carte_ecran()
+                print(f"[FREEZE][window] clic brut=({touch.x:.0f},{touch.y:.0f}) "
+                      f"carte ecran pos=({mx:.0f},{my:.0f}) size=({mw:.0f}x{mh:.0f})")
+            if self._clic_sur_carte_ecran(touch):
+                # SECOURS du clic long de gel/degel : si la carte ELLE-MEME
+                # n'a pas ete distribuee pour ce toucher (cas observe :
+                # carte gelee, aucune trace [FREEZE][carte] on_touch_down),
+                # la Window, elle, voit le toucher. Armement IDEMPOTENT :
+                # on n'arme un timer QUE si aucun n'est deja arme pour ce
+                # toucher par la carte (cles touch.ud partagees).
+                if touch.ud.get("timer_clic_long_freeze") is None:
+                    touch.ud["carte_pos_depart"] = (touch.x, touch.y)
+                    touch.ud["temps_depart_freeze"] = Clock.get_time()
+                    touch.ud["bascule_freeze_effectuee"] = False
+                    touch.ud["appui_long_annule"] = False
+                    touch.ud["timer_clic_long_freeze"] = Clock.schedule_once(
+                        lambda dt: self.map_view._bascule_freeze_clic_long(touch),
+                        self.DUREE_CLIC_LONG_FREEZE)
+                    print("[FREEZE][window] Secours : timer arme au niveau Window.")
+                else:
+                    touch.ud["carte_pos_depart"] = (touch.x, touch.y)
+        return False
+        return False
+
+    def _mouvement_touch_carte(self, window, touch):
+        # Doigt qui bouge : annule le clic long (seuil partage avec la
+        # carte, cles touch.ud identiques). Sans effet si le timer a
+        # deja ete consomme par la carte.
+        timer = touch.ud.get("timer_clic_long_freeze")
+        if timer is None:
+            return False
+        depart = touch.ud.get("carte_pos_depart")
+        if depart is not None and (
+                abs(touch.x - depart[0]) > dp(self.SEUIL_DEPLACEMENT_FREEZE_DP)
+                or abs(touch.y - depart[1]) > dp(self.SEUIL_DEPLACEMENT_FREEZE_DP)):
+            timer.cancel()
+            touch.ud["timer_clic_long_freeze"] = None
+            touch.ud["appui_long_annule"] = True
+            print("[FREEZE][window] Clic long ANNULE (deplacement du doigt).")
         return False
 
     def _sur_touch_carte(self, window, touch):
+        # Chemin de repli au relachement : si le doigt est reste pose
+        # au moins 0.6 s sans bouger et sans bascule deja effectuee,
+        # on bascule (meme logique que dans la carte, cles partagees).
+        timer = touch.ud.get("timer_clic_long_freeze")
+        if timer is not None:
+            timer.cancel()
+            touch.ud["timer_clic_long_freeze"] = None
+        if (self.manager is not None and self.manager.current == self.name
+                and touch.ud.get("carte_pos_depart") is not None
+                and not touch.ud.get("appui_long_annule")
+                and not touch.ud.get("bascule_freeze_effectuee")
+                and Clock.get_time() - touch.ud.get("temps_depart_freeze", 0.0)
+                >= self.DUREE_CLIC_LONG_FREEZE):
+            print("[FREEZE][window] Secours : bascule au relachement.")
+            self.map_view._bascule_freeze_clic_long(touch)
         if self.manager is None or self.manager.current != self.name:
             return False
         depart = touch.ud.get("carte_pos_depart")
         if CARTE_DISPONIBLE and self.map_view is not None and depart is not None:
-            # Force la mise à jour des tuiles après un zoom ou un déplacement
+            # Force la mise a jour des tuiles apres un zoom ou un deplacement
             self.map_view.trigger_update(True)
         return False
-        
-        
+        return False
+
+
 class CarteScreen(Screen):
     fichier_source = StringProperty("")
     info_fichier = StringProperty("Aucune trace chargée.")
@@ -5303,6 +5505,15 @@ class OutilsTracesApp(App):
         # Réveil de l'écran / retour au premier plan : resynchronise la
         # trace live avec GPSLogger si un enregistrement est actif.
         ecran_live._resynchroniser_avec_gpslogger()
+        # Rebranche les handlers Window du clic long de gel : ils peuvent
+        # cesser de recevoir les touchers après un cycle pause/reprise
+        # d'Android (ex : retour de l'appareil photo). La détection de
+        # secours au niveau widget (MapViewMolette) couvre le cas où ce
+        # rebranchement ne suffirait pas.
+        try:
+            ecran_live._relier_touchers_fenetre()
+        except Exception:
+            pass
         return True
 
     def build(self):
