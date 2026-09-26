@@ -416,26 +416,17 @@ if CARTE_DISPONIBLE:
             le timer de 0.6 s (doigt pose sans bouger) OU au
             relachement d'un appui d'au moins 0.6 s (chemin de repli
             independant du timer)."""
-            print("[FREEZE][carte] Tentative de bascule (timer ou relachement).")
             if touch.ud.get("bascule_freeze_effectuee"):
-                print("[FREEZE][carte] Refus : bascule deja effectuee pour ce geste.")
                 return
             if touch.ud.get("appui_long_annule"):
-                print("[FREEZE][carte] Refus : appui long annule (deplacement).")
                 return
             touch.ud["bascule_freeze_effectuee"] = True
             timer = touch.ud.get("timer_clic_long_freeze")
             if timer is not None:
                 timer.cancel()
                 touch.ud["timer_clic_long_freeze"] = None
-            print("[FREEZE][carte] Bascule via clic long sur la carte -> freeze_callback.")
             if self.freeze_callback:
-                try:
-                    self.freeze_callback()
-                except Exception:
-                    import traceback
-                    print("[FREEZE][carte] EXCEPTION dans freeze_callback :")
-                    traceback.print_exc()
+                self.freeze_callback()
 
         def _annuler_clic_long(self, touch):
             timer = touch.ud.get("timer_clic_long_freeze")
@@ -443,18 +434,9 @@ if CARTE_DISPONIBLE:
                 timer.cancel()
                 touch.ud["timer_clic_long_freeze"] = None
             touch.ud["appui_long_annule"] = True
-            print("[FREEZE][carte] Clic long ANNULE (deplacement du doigt ou molette).")
 
         def on_touch_down(self, touch):
-            # Trace AVANT meme le test collide_point : si le clic de
-            # degel n'affiche pas cette ligne, le toucher n'est pas
-            # du tout distribue a la carte (blocage chez un ancetre) ;
-            # s'il l'affiche mais pas la suivante, c'est collide_point
-            # qui echoue (coordonnees dezynchronisees, ex. plein ecran).
-            print(f"[FREEZE][carte] on_touch_down recu : touch=({touch.x:.0f},{touch.y:.0f}) "
-                  f"carte pos=({self.x:.0f},{self.y:.0f}) size=({self.width:.0f}x{self.height:.0f})")
             if not self.collide_point(*touch.pos):
-                print("[FREEZE][carte] HORS de la carte -> transmis aux enfants.")
                 return super().on_touch_down(touch)
 
             # Armement du clic long de gel/degel, AVANT tout test de
@@ -474,9 +456,6 @@ if CARTE_DISPONIBLE:
                 touch.ud["timer_clic_long_freeze"] = Clock.schedule_once(
                     lambda dt: self._bascule_freeze_clic_long(touch),
                     self.DUREE_CLIC_LONG_FREEZE)
-                print(f"[FREEZE][carte] touch_down sur la carte (gelee={getattr(self, 'freeze_actif', False)}) - timer de 0.6 s arme.")
-            else:
-                print("[FREEZE][carte] touch_down sur la carte - timer deja arme (Window), on ne rearme pas.")
 
             bouton = getattr(touch, "button", "")
             if bouton in ("scrollup", "scrolldown", "scrollleft", "scrollright"):
@@ -504,7 +483,6 @@ if CARTE_DISPONIBLE:
                 # ancetre le grabberait pour son defilement, et les
                 # evenements move/up deviendraient incoherents pour la
                 # carte. Le timer de clic long (degel) reste actif.
-                print("[FREEZE][carte] Carte gelee : toucher consomme (degel possible par clic long).")
                 return True
 
             return super().on_touch_down(touch)
@@ -536,7 +514,6 @@ if CARTE_DISPONIBLE:
                 # deja effectuee, on bascule AU RELACHEMENT (repli
                 # independant du timer).
                 duree = Clock.get_time() - touch.ud.get("temps_depart_freeze", 0.0)
-                print(f"[FREEZE][carte] touch_up - duree de l'appui : {duree:.2f} s")
                 timer = touch.ud.get("timer_clic_long_freeze")
                 if timer is not None:
                     timer.cancel()
@@ -3570,7 +3547,7 @@ class LiveScreen(Screen):
         ok, message = self._lancer_gpslogger_et_demarrer_enregistrement()
         if ok:
             self._maj_statut_live(
-                f"Live en cours... ({len(self.points_trace_live)} points)",
+                self._texte_statut_live(),
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             )
         else:
@@ -3578,6 +3555,15 @@ class LiveScreen(Screen):
                 f"Enregistrement impossible. Veuillez installer l'application << GPSLogger for Android (Mendhak) >> pour continuer.",
                 (0.776, 0.157, 0.157, 1)  # #C62828
             )
+
+    def _texte_statut_live(self):
+        """Texte du statut live : nombre de points, et nombre de
+        waypoints (photos) des qu'il y en a au moins un."""
+        nb_points = len(self.points_trace_live)
+        nb_waypoints = len(self.annotations_live)
+        if nb_waypoints:
+            return f"Live en cours... ({nb_points} points, {nb_waypoints} waypoint{'s' if nb_waypoints > 1 else ''})"
+        return f"Live en cours... ({nb_points} points)"
 
     def _maj_statut_live(self, texte, couleur=(0.33, 0.33, 0.33, 1)):
         """Affiche un message à la fois dans la console et dans le label
@@ -3843,7 +3829,7 @@ class LiveScreen(Screen):
         self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
 
         self._maj_statut_live(
-            f"Live en cours... ({len(self.points_trace_live)} points)",
+            self._texte_statut_live(),
             (0.180, 0.490, 0.196, 1)  # #2E7D32
         )
 
@@ -3988,7 +3974,7 @@ class LiveScreen(Screen):
         self._maj_statut_live("Reprise du suivi en direct.", (0.180, 0.490, 0.196, 1))  # #2E7D32
         Clock.schedule_once(
             lambda dt: self._maj_statut_live(
-                f"Live en cours... ({len(self.points_trace_live)} points)",
+                self._texte_statut_live(),
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             ),
             1.5,
@@ -4364,11 +4350,7 @@ class LiveScreen(Screen):
                 json.dump(donnees, f, ensure_ascii=False, indent=2, default=str)
             os.replace(chemin_part, self.fichier_temp_live)
 
-            self.temp_live_text = (
-                "Fichier temporaire (supprimé après l'enregistrement de la trace) :\n"
-                f"{os.path.basename(self.fichier_temp_live)}\n"
-                f"Emplacement : {os.path.dirname(self.fichier_temp_live)}"
-            )
+            self.temp_live_text = ""
             return True
         except Exception as e:
             print(f"[Live] Écriture du fichier temporaire impossible : {e}")
@@ -4392,7 +4374,7 @@ class LiveScreen(Screen):
                     os.remove(f)
             self.fichier_temp_live = None
             self.journal_temp_live = []
-            self.temp_live_text = f"Fichier temporaire supprimé : {nom}\nEmplacement : {dossier}"
+            self.temp_live_text = ""
         except Exception as e:
             print(f"[Live] Suppression du fichier temporaire impossible : {e}")
             self.temp_live_text = (
@@ -4486,6 +4468,12 @@ class LiveScreen(Screen):
         ok_temp = self._ecrire_fichier_temp_live()
         suffixe = " — fichier temporaire mis à jour." if ok_temp else ""
         self._maj_statut_live(f"Photo(s) enregistrée(s) : {nom_annotation}{suffixe}", (0.180, 0.490, 0.196, 1))
+        # Retour au statut live standard apres 2,5 s : il affiche des
+        # lors le nombre de waypoints ("(n points, x waypoints)").
+        Clock.schedule_once(
+            lambda dt: self._maj_statut_live(self._texte_statut_live(), (0.180, 0.490, 0.196, 1)),
+            2.5,
+        )
 
     def _lister_photos_depuis(self, temps_ouverture):
         """Interroge le MediaStore Android pour lister le nom de toutes
@@ -4584,16 +4572,6 @@ class LiveScreen(Screen):
         # Bascule l'état du gel
         self.freeze_actif = not self.freeze_actif
 
-        # --- DIAGNOSTIC TEMPORAIRE : compte chaque appel de cette
-        # méthode et l'affiche à l'écran (zone "info_fichier", peu
-        # sollicitée par ailleurs sur cet onglet, pour ne pas être
-        # aussitôt recouvert par les messages de statut live). Objectif :
-        # voir si un seul double-tap déclenche 1 seul appel (normal) ou
-        # 2+ appels d'affilée (double bascule = gel qui "ne tient pas").
-        self._compteur_bascule_freeze = getattr(self, '_compteur_bascule_freeze', 0) + 1
-        print(f"[DIAG FREEZE] appel #{self._compteur_bascule_freeze} -> freeze_actif={self.freeze_actif}")
-        self.info_fichier = f"[FREEZE] Bascule #{self._compteur_bascule_freeze} -> gelee : {self.freeze_actif}"
-
         if getattr(self.map_view, 'freeze_actif', None) is not None:
             self.map_view.freeze_actif = self.freeze_actif
 
@@ -4678,14 +4656,10 @@ class LiveScreen(Screen):
 
     def _debut_touch_carte(self, window, touch):
         if self.manager is not None and self.manager.current == self.name:
-            if self.map_view is not None:
-                mx, my, mw, mh = self._rect_carte_ecran()
-                print(f"[FREEZE][window] clic brut=({touch.x:.0f},{touch.y:.0f}) "
-                      f"carte ecran pos=({mx:.0f},{my:.0f}) size=({mw:.0f}x{mh:.0f})")
             if self._clic_sur_carte_ecran(touch):
                 # SECOURS du clic long de gel/degel : si la carte ELLE-MEME
-                # n'a pas ete distribuee pour ce toucher (cas observe :
-                # carte gelee, aucune trace [FREEZE][carte] on_touch_down),
+                # n.a pas ete distribuee pour ce toucher (cas observe :
+                # carte gelee, aucun evenement on_touch_down),
                 # la Window, elle, voit le toucher. Armement IDEMPOTENT :
                 # on n'arme un timer QUE si aucun n'est deja arme pour ce
                 # toucher par la carte (cles touch.ud partagees).
@@ -4697,7 +4671,6 @@ class LiveScreen(Screen):
                     touch.ud["timer_clic_long_freeze"] = Clock.schedule_once(
                         lambda dt: self.map_view._bascule_freeze_clic_long(touch),
                         self.DUREE_CLIC_LONG_FREEZE)
-                    print("[FREEZE][window] Secours : timer arme au niveau Window.")
                 else:
                     touch.ud["carte_pos_depart"] = (touch.x, touch.y)
         return False
@@ -4717,7 +4690,6 @@ class LiveScreen(Screen):
             timer.cancel()
             touch.ud["timer_clic_long_freeze"] = None
             touch.ud["appui_long_annule"] = True
-            print("[FREEZE][window] Clic long ANNULE (deplacement du doigt).")
         return False
 
     def _sur_touch_carte(self, window, touch):
@@ -4734,7 +4706,6 @@ class LiveScreen(Screen):
                 and not touch.ud.get("bascule_freeze_effectuee")
                 and Clock.get_time() - touch.ud.get("temps_depart_freeze", 0.0)
                 >= self.DUREE_CLIC_LONG_FREEZE):
-            print("[FREEZE][window] Secours : bascule au relachement.")
             self.map_view._bascule_freeze_clic_long(touch)
         if self.manager is None or self.manager.current != self.name:
             return False
