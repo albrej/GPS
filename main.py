@@ -3068,13 +3068,6 @@ class FusionScreen(Screen):
         Clock.schedule_once(_maj_ui, 0)
 
 class LiveScreen(Screen):
-    # Seuil (en mètres) du garde anti-doublons de _ajouter_point_live :
-    # un point reçu en direct déjà présent dans la trace à moins de
-    # cette distance est considéré comme réinjecté (reprise après
-    # écran noir / mise en veille / redémarrage) et ignoré. La précision
-    # GPS étant de quelques mètres, un VRAI nouveau point (l'utilisateur
-    # qui marche) est toujours plus loin que ce seuil du point précédent.
-    SEUIL_DOUBLON_POINT_LIVE = 2.0
     freeze_actif = BooleanProperty(False)
     info_fichier = StringProperty("Aucune trace à suivre chargée.")
     # Icone du bouton "Cam" (ouverture de l'appareil photo). L'image est
@@ -3129,7 +3122,10 @@ class LiveScreen(Screen):
         self.marqueurs_actifs_live = []
         self.fichier_gpx_actif_live = None
         self.compteur_sources_live = {}
-        self.compteur_doublons_live = 0  # points réinjectés ignorés (voir _ajouter_point_live)
+        # Journal de post-mortem des points directs (voir
+        # _ajouter_point_live / _arreter_gpslogger).
+        self._journal_points_live = []
+
         self.annotations_live = []  # photos prises pendant le live (voir _ouvrir_camera_Android)
         # Balise <wpt> "en attente" : ouverte par _verifier_et_ouvrir_camera
         # au lancement de l'appareil photo, refermée par
@@ -3431,7 +3427,8 @@ class LiveScreen(Screen):
         # que via le serveur d'écoute live) — seuls les nouveaux points
         # reçus en direct à partir d'ici seront comptés.
         self.compteur_sources_live = {}
-        self.compteur_doublons_live = 0
+        self._journal_points_live = []
+
         self.annotations_live = []
         # NE PAS réinitialiser le fichier temporaire ici : une simple
         # resynchronisation (réveil d'écran, ou redémarrage après un
@@ -3483,6 +3480,21 @@ class LiveScreen(Screen):
             # Une décision "Terminer" (Oui/Non/Annuler) est en cours :
             # ne pas interférer avec la trace pendant ce temps-là.
             return
+
+        # PURGE IMMÉDIATE de la file des points directs : pendant la
+        # suspension (écran noir / mise en veille), les envois de
+        # GPSLogger vers le serveur local s'accumulent dans le socket ;
+        # au réveil ils seraient déversés d'un coup dans la trace sous
+        # forme de points ANCIENS déjà enregistrés — d'où les allers-
+        # retours en "rayons de roue" observés lors des reprises, avant
+        # que la resynchronisation (20 s plus bas) ne nettoie. On jette
+        # ces points périmés TOUT DE SUIT : ils sont tous déjà dans le
+        # fichier GPX de GPSLogger, que la resync relira de toute façon.
+        while not self.file_points_live.empty():
+            try:
+                self.file_points_live.get_nowait()
+            except queue.Empty:
+                break
 
         chemin_candidat = self._trouver_dernier_gpx_gpslogger()
         if chemin_candidat is None:
@@ -3612,7 +3624,8 @@ class LiveScreen(Screen):
         # log au moment de l'arrêt (_arreter_gpslogger), sans aucun
         # message ni indicateur visible pendant le suivi.
         self.compteur_sources_live = {}
-        self.compteur_doublons_live = 0
+        self._journal_points_live = []
+
         self.annotations_live = []
         self._reinitialiser_temp_live()
         
@@ -3908,27 +3921,24 @@ class LiveScreen(Screen):
         d'altitude sur le graphique (rouge, superposée à celle de la
         trace chargée en bleu — voir set_donnees_secondaires), et met à
         jour le bloc d'informations avec ce dernier point."""
+        # Journal de post-mortem (silencieux) : chaque point recu en
+        # direct, accepte OU rejete, avec son horodatage de RECEPTION.
+        # Ecrit dans debug_points_*.txt a l'arret du live (voir
+        # _arreter_gpslogger) : permet de reconstituer exactement ce
+        # qui s'est passe lors d'une reprise problematique (ordre
+        # d'arrivee des points apres un reveil d'ecran, etc.).
+        try:
+            self._journal_points_live.append(
+                (datetime.now().strftime("%H:%M:%S.%f")[:-3],
+                 point['lat'], point['lon'], point.get('ele'),
+                 point.get('source', 'inconnue')))
+        except Exception:
+            pass
+
         if self.points_trace_live:
             dernier = self.points_trace_live[-1]
             if abs(dernier['lat'] - point['lat']) < 1e-6 and abs(dernier['lon'] - point['lon']) < 1e-6:
                 return  # Point identique au dernier déjà affiché (doublon) : ignoré.
-
-        # Garde anti-"rayons de roue" : après une reprise (écran noir,
-        # mise en veille, redémarrage de l'appli), des points DÉJÀ
-        # présents dans la trace peuvent être réinjectés par la source
-        # (re-délivrés par GPSLogger ou restés en file pendant la
-        # suspension). Le filtre ci-dessus ne compare qu'au DERNIER
-        # point, donc un point ANCIEN réinjecté passait au travers et
-        # la trace dessinait des allers-retours vers ce point de
-        # référence (motif en rayons de roue). Tout point identique
-        # (à SEUIL_DOUBLON_POINT_LIVE mètres) à un point QUELCONQUE
-        # de la trace est donc ignoré, et compté silencieusement pour
-        # le log d'arrêt (voir _arreter_gpslogger).
-        for p in self.points_trace_live:
-            if gps_logic.calculer_distance_haversine(
-                    p['lat'], p['lon'], point['lat'], point['lon']) <= self.SEUIL_DOUBLON_POINT_LIVE:
-                self.compteur_doublons_live += 1
-                return
 
         self.points_trace_live.append(point)
 
@@ -4218,16 +4228,25 @@ class LiveScreen(Screen):
             with open(chemin_log, "w", encoding="utf-8") as f:
                 for source, nb in sorted(self.compteur_sources_live.items()):
                     f.write(f"{source} : {nb}\n")
-                # Points réinjectés ignorés par le garde anti-doublons
-                # de _ajouter_point_live (motif "rayons de roue" après
-                # une reprise). Si ce compteur est > 0, la source a
-                # bien re-délivré des points déjà enregistrés.
-                f.write(f"doublons_ignores : {self.compteur_doublons_live}\n")
+
+            # Journal de post-mortem des points directs (voir
+            # _ajouter_point_live) : horodatage de reception,
+            # coordonnees, altitude, source de chaque point recu.
+            # Indispensable pour diagnostiquer les reprises
+            # problematiques (points anciens re-injectes apres un
+            # reveil d'ecran).
+            if self._journal_points_live:
+                nom_debug = f"debug_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                chemin_debug = os.path.join(dossier_cible, nom_debug)
+                with open(chemin_debug, "w", encoding="utf-8") as f:
+                    f.write("heure_reception;lat;lon;ele;source\n")
+                    for entree in self._journal_points_live:
+                        f.write(";".join(str(v) for v in entree) + "\n")
         except Exception:
             pass
         finally:
             self.compteur_sources_live = {}
-            self.compteur_doublons_live = 0
+
             self.annotations_live = []
 
         ok_stop = False
