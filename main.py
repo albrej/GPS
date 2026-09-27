@@ -772,14 +772,8 @@ class GrapheProfil(Widget):
         self.altitudes_secondaire = []
         self.distance_selection = None
         self.callback_clic = None
-        # Appelé (sans argument) sur un appui long (0.6 s) dans la zone
-        # du graphique — utilisé uniquement par l'onglet Live pour
-        # ouvrir l'appareil photo Android. None par défaut : aucun
-        # comportement ajouté pour les autres écrans.
-        self.callback_long_press = None
-        # Bloque toute interaction tactile (sélection de point, appui
-        # long) quand True — même principe et même nom que sur
-        # MapViewMolette, propagé par LiveScreen.basculer_freeze() pour
+        # Bloque toute interaction tactile (sélection de point) quand
+        # True — même principe et même nom que sur MapViewMolette,
         # que le gel/dégel s'applique de la même façon partout. False
         # par défaut : aucun effet pour les écrans qui ne le touchent
         # jamais (Carte/Découpe, Photos).
@@ -991,19 +985,11 @@ class GrapheProfil(Widget):
             return True
         if not self.collide_point(*touch.pos):
             return super().on_touch_down(touch)
-        if not self.distances_km and not self.callback_long_press:
+        if not self.distances_km:
             return super().on_touch_down(touch)
 
         # Capture le toucher pour suivre le glissement
         touch.grab(self)
-
-        # Appui long (0.6 s) dans la zone du graphique : ouvre l'appareil
-        # photo Android (voir callback_long_press ; None sur les écrans
-        # autres que l'onglet Live, donc sans effet pour eux). Fonctionne
-        # même sans trace chargée sur le graphique (contrairement à la
-        # sélection de point ci-dessous).
-        if self.callback_long_press:
-            touch.ud['long_press_clock'] = Clock.schedule_once(lambda dt: self.callback_long_press(), 0.6)
 
         if not self.distances_km:
             return True
@@ -1030,8 +1016,6 @@ class GrapheProfil(Widget):
     def on_touch_up(self, touch):
         if touch.grab_current is self:
             touch.ungrab(self)
-            if 'long_press_clock' in touch.ud:
-                touch.ud['long_press_clock'].cancel()
             if getattr(self, 'freeze_actif', False) or not self.distances_km:
                 return True
 
@@ -2072,6 +2056,30 @@ KV = """
                     on_release: root.on_click_live_pydroid()
                     background_color: 0.15, 0.68, 0.38, 1
                 Button:
+                    # Ouverture de l'appareil photo par SIMPLE CLIC
+                    # (on_release, aucune duree minimale d'appui). Voir
+                    # _verifier_et_ouvrir_camera : le message d'absence
+                    # de live s'affiche toujours. Bouton carre (48 dp,
+                    # comme la hauteur de la rangee) affichant l'icone
+                    # images/Camera.png en 48 x 48 dp (elle remplace
+                    # l'ancien texte "Cam").
+                    id: btn_cam
+                    size_hint_x: None
+                    width: dp(48)
+                    padding: 0, 0
+                    disabled: root.freeze_actif
+                    on_release: root._verifier_et_ouvrir_camera()
+                    background_color: 0.39, 0.58, 0.93, 1
+                    Image:
+                        source: root.CHEMIN_ICONE_CAM
+                        size_hint: None, None
+                        size: dp(48), dp(48)
+                        center_x: self.parent.center_x
+                        center_y: self.parent.center_y
+                        allow_stretch: True
+                        keep_ratio: True
+                        opacity: 0.35 if self.parent.disabled else 1
+                Button:
                     text: "Terminer"
                     disabled: root.freeze_actif
                     on_release: root.on_click_terminer_live()
@@ -2996,6 +3004,11 @@ class FusionScreen(Screen):
 class LiveScreen(Screen):
     freeze_actif = BooleanProperty(False)
     info_fichier = StringProperty("Aucune trace à suivre chargée.")
+    # Icone du bouton "Cam" (ouverture de l'appareil photo). L'image est
+    # cherchee a cote de main.py : images/Camera.png (meme principe que
+    # CHEMIN_BLUE_DOT, fonctionnel sur PC comme dans l'APK).
+    CHEMIN_ICONE_CAM = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "images", "Camera.png")
     info_point_text = StringProperty("")
     # Bloc "Informations du point sélectionné" (grille 3 lignes x 2
     # colonnes : Point/GPS, Distance/Altitude, Heure/Vitesse).
@@ -3083,11 +3096,6 @@ class LiveScreen(Screen):
         self.graphe = GrapheProfil()
         self.graphe.afficher_courbe_vitesse = False  # <--- AJOUT : Masque la courbe verte
         self.graphe.afficher_curseur = False  # aucun point n'est sélectionnable sur ce graphique
-        # Appui long sur le graphique -> appareil photo, uniquement si
-        # un live est actif (voir _verifier_et_ouvrir_camera). Limité au
-        # widget du graphique lui-même (et non plus à tout l'écran, y
-        # compris la carte).
-        self.graphe.callback_long_press = self._verifier_et_ouvrir_camera
         self.ids.zone_graphique.add_widget(self.graphe)
         
         self.en_cours_live = False  # Indique si le live est actif ou non
@@ -3209,8 +3217,12 @@ class LiveScreen(Screen):
             return
 
         liste_coords = [(p['lat'], p['lon']) for p in points]
+        # Le calque de la trace est posé APRÈS les marqueurs (D/A et
+        # waypoints) : ajouté en dernier, il s'affiche par-dessus eux,
+        # comme sur les onglets Carte (4) et Photos (6) — dans
+        # kivy_garden.mapview, le dernier élément ajouté s'affiche
+        # par-dessus les précédents.
         self.trace_layer = TraceLayer()
-        self.map_view.add_layer(self.trace_layer)
         self.trace_layer.set_points(liste_coords)
 
         # Gestion des points de départ et d'arrivée (inchangée)
@@ -3240,6 +3252,11 @@ class LiveScreen(Screen):
             )
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
+
+        # Ajout du calque de trace EN DERNIER (après tous les
+        # marqueurs) pour qu'il s'affiche par-dessus les curseurs
+        # bleus des waypoints.
+        self.map_view.add_layer(self.trace_layer)
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
@@ -4211,6 +4228,14 @@ class LiveScreen(Screen):
                 self.map_view.remove_marker(m)
         self.marqueurs_actifs = []
 
+        # Efface aussi les curseurs bleus des waypoints photo pris
+        # pendant le live : sans cela, ils restaient affichés sur la
+        # carte après "Terminer" alors que la trace, elle, disparaissait.
+        if CARTE_DISPONIBLE and self.map_view is not None:
+            for mw in self.marqueurs_waypoints:
+                self.map_view.remove_marker(mw)
+        self.marqueurs_waypoints = []
+
         self.profil = ([], [], [], [])
         self.profil_live = ([], [], [], [])
         self.graphe.set_donnees(*self.profil)
@@ -4394,23 +4419,13 @@ class LiveScreen(Screen):
 
     def _verifier_et_ouvrir_camera(self):
         """Vérifie si un live est en cours avant d'autoriser la prise de
-        photo par appui long, puis ouvre une balise <wpt> "en attente"
+        photo (bouton "Cam"), puis ouvre une balise <wpt> "en attente"
         sur le dernier point GPS connu de la trace en cours — refermée
         par _fermer_waypoint_photo dès que l'utilisateur revient sur
         l'appli après avoir quitté l'appareil photo (voir
         OutilsTracesApp.on_resume, qui détecte ce retour)."""
         if not getattr(self, 'en_cours_live', False):
-            # Le message d'erreur ne s'affiche QUE si le graphique
-            # contient quelque chose (trace chargee via "Charger une
-            # trace" ou donnees live) : sinon c'est un clic long sur
-            # la zone blanche du graphique vide, sans trace - aucun
-            # affichage (retour silencieux).
-            graphe_pourvu = bool(
-                getattr(self, 'graphe', None) is not None
-                and (self.graphe.distances_km or self.graphe.distances_km_secondaire)
-            )
-            if graphe_pourvu:
-                self._maj_statut_live("Impossible de prendre une photo : aucun live en cours.", (0.776, 0.157, 0.157, 1))
+            self._maj_statut_live("Impossible de prendre une photo : aucun live en cours.", (0.776, 0.157, 0.157, 1))
             return
         if not self.points_trace_live:
             self._maj_statut_live(
@@ -4905,8 +4920,11 @@ class CarteScreen(Screen):
             return
 
         liste_coords = [(p['lat'], p['lon']) for p in points]
+        # Le calque de la trace est posé APRÈS les marqueurs (D/A et
+        # waypoints) : ajouté en dernier, il s'affiche par-dessus eux,
+        # comme sur l'onglet Live (7). Sinon les curseurs bleus des
+        # waypoints passaient par-dessus la trace.
         self.trace_layer = TraceLayer()
-        self.map_view.add_layer(self.trace_layer)
         self.trace_layer.set_points(liste_coords)
 
         for wpt in (waypoints or []):
@@ -4933,6 +4951,8 @@ class CarteScreen(Screen):
             self.map_view.add_marker(m_depart)
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
+
+        self.map_view.add_layer(self.trace_layer)
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
@@ -5194,7 +5214,6 @@ class PhotosScreen(Screen):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.fichier_trace = ""
         self.points_trace = []
         self.fichier_photo = ""
         self.trace_layer = None
@@ -5271,7 +5290,6 @@ class PhotosScreen(Screen):
             self.info_trace = "Aucun point GPS valide trouvé dans ce fichier."
             return
 
-        self.fichier_trace = chemin
         self.points_trace = points
         self.info_trace = f"Trace : {os.path.basename(chemin)}."
 
@@ -5401,8 +5419,10 @@ class PhotosScreen(Screen):
             return
 
         liste_coords = [(p["lat"], p["lon"]) for p in points]
+        # Le calque de la trace est posé APRÈS les marqueurs de
+        # waypoints : ajouté en dernier, il s'affiche par-dessus eux,
+        # comme sur les onglets Live (7) et Carte (4).
         self.trace_layer = TraceLayer()
-        self.map_view.add_layer(self.trace_layer)
         self.trace_layer.set_points(liste_coords)
 
         for wpt in (waypoints or []):
@@ -5415,6 +5435,8 @@ class PhotosScreen(Screen):
             )
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
+
+        self.map_view.add_layer(self.trace_layer)
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
@@ -5587,44 +5609,6 @@ class OutilsTracesApp(App):
         except Exception as e:
             print(f"Erreur vérification intent au lancement : {e}")
 
-    def _convertir_uri_en_chemin(self, uri_string):
-        """Convertit l'URI Android (file:// ou content://) en un chemin de fichier lisible."""
-        import urllib.parse
-        import os
-        if uri_string.startswith("file://"):
-            return urllib.parse.unquote(uri_string[7:])
-        elif uri_string.startswith("content://"):
-            try:
-                from jnius import autoclass
-                PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                activity = PythonActivity.mActivity
-                context = activity.getApplicationContext()
-                contentResolver = context.getContentResolver()
-                
-                InputStream = contentResolver.openInputStream(uri)
-                File = autoclass('java.io.File')
-                FileOutputStream = autoclass('java.io.FileOutputStream')
-                
-                cache_dir = context.getCacheDir().getAbsolutePath()
-                fichier_tmp = os.path.join(cache_dir, "trace_externe_temp.gpx")
-                
-                fos = FileOutputStream(File(fichier_tmp))
-                # Copie des données du flux content:// vers un fichier cache local lisible en Python
-                from jnius import cast
-                byte_array = autoclass('java.lang.reflect.Array').newInstance(autoclass('java.lang.Byte'), 1024)
-                # Alternative plus simple avec les outils standards Python si le bridge le permet, 
-                # sinon création d'un fichier temporaire via un lecteur Java basique :
-                fos.close()
-                InputStream.close()
-                
-                # Astuce alternative robuste sous Kivy/Android pour les content:// :
-                # On délustre l'URI via un petit lecteur Java ou on copie via shutil si le provider autorise l'accès direct par descripteur.
-                return fichier_tmp
-            except Exception as e:
-                print(f"Erreur conversion content:// : {e}")
-                return None
-        return None
-
     def _traiter_fichier_externe(self, chemin):
         """Bascule sur l'écran 'carte' et charge le fichier de trace."""
         import os
@@ -5637,24 +5621,6 @@ class OutilsTracesApp(App):
             if hasattr(ecran_carte, "charger_trace"):
                 ecran_carte.charger_trace(chemin)
                 
-    def _verifier_intent_android(self, dt):
-        try:
-            from jnius import autoclass
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            activity = PythonActivity.mActivity
-            intent = activity.getIntent()
-            action = intent.getAction()
-            
-            if action == "android.intent.action.VIEW":
-                uri = intent.getData()
-                if uri:
-                    uri_string = uri.toString()
-                    chemin_reel = self._convertir_uri_en_chemin(uri_string)
-                    if chemin_reel and os.path.exists(chemin_reel):
-                        self._charger_trace_externe_onglet_carte(chemin_reel)
-        except Exception as e:
-            print(f"Erreur lors de la récupération de l'intent Android : {e}")
-
     def _convertir_uri_en_chemin(self, uri_string):
         """Convertit une URI content:// ou file:// en chemin de fichier exploitable."""
         if uri_string.startswith("file://"):
@@ -5698,16 +5664,6 @@ class OutilsTracesApp(App):
                 print(f"Erreur conversion content:// : {e}")
                 return None
         return None
-
-    def _charger_trace_externe_onglet_carte(self, chemin):
-        """Bascule sur l'onglet 4 (CarteScreen) et charge le fichier."""
-        # Supposons que votre ScreenManager s'appelle self.sm et l'écran carte 'carte'
-        if hasattr(self, 'sm'):
-            self.sm.current = 'carte' # Nom de l'écran 4 dans votre ScreenManager
-            # Récupération de l'instance de l'écran CarteScreen
-            ecran_carte = self.sm.get_screen('carte')
-            if ecran_carte and hasattr(ecran_carte, '_fichier_choisi'):
-                ecran_carte._fichier_choisi(chemin)
 
     def on_start(self):
         """Si l'appli vient d'être lancée en cliquant sur un fichier
