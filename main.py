@@ -375,6 +375,32 @@ if CARTE_DISPONIBLE:
         min_zoom=0, max_zoom=19,
         attribution="(c) OpenStreetMap contributors",
     )
+    # Fond topographique OpenTopoMap : courbes de niveau + ombrage.
+    # Serveur gratuit pour un usage leger (appli personnelle) ;
+    # attribution OpenStreetMap/OpenTopoMap requise.
+    SOURCE_TOPO = MapSource(
+        url="https://tile.opentopomap.org/{z}/{x}/{y}.png",
+        cache_key="opentopomap",
+        min_zoom=0, max_zoom=17,
+        attribution="(c) OpenStreetMap contributors, SRTM | Style: OpenTopoMap (CC-BY-SA)",
+    )
+    # Fond topographique Esri World Topo Map. Attention : ordre des
+    # coordonnees propre a ESRI ({z}/{y}/{x} et non {z}/{x}/{y}).
+    SOURCE_ESRI_TOPO = MapSource(
+        url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+        cache_key="esri_world_topo",
+        min_zoom=0, max_zoom=19,
+        attribution="Esri, HERE, Garmin, USGS, NGA",
+    )
+
+    # Correspondance valeur du selecteur -> fond de carte, pour tous
+    # les onglets (carte, photos, live).
+    SOURCES_FONDS_CARTES = {
+        "satellite": SOURCE_SATELLITE,
+        "plan": SOURCE_PLAN,
+        "topo": SOURCE_TOPO,
+        "esri_topo": SOURCE_ESRI_TOPO,
+    }
 
     class MapViewMolette(MapView):
         """MapView identique, sauf que la molette/le défilement trackpad
@@ -1506,19 +1532,23 @@ KV = """
                     text: "Charger une trace"
                     background_color: 0.2, 0.6, 0.86, 1
                     on_release: root.ouvrir_selecteur_fichier()
-                ToggleButton:
-                    text: "Satellite"
-                    group: "vue_carte"
-                    state: "down"
+                # Fond de carte : bouton carre ouvrant le menu deroulant
+                # des 4 vues (satellite par defaut), affichant l'icone
+                # images/Layer.png en 48 x 48 dp.
+                Button:
+                    id: btn_layer
                     size_hint_x: None
-                    width: dp(100)
-                    on_state: if self.state == "down": root.changer_vue_carte("satellite")
-                ToggleButton:
-                    text: "Plan"
-                    group: "vue_carte"
-                    size_hint_x: None
-                    width: dp(90)
-                    on_state: if self.state == "down": root.changer_vue_carte("plan")
+                    width: dp(48)
+                    padding: 0, 0
+                    on_release: root.ouvrir_menu_fonds(self)
+                    Image:
+                        source: app.CHEMIN_ICONE_LAYER
+                        size_hint: None, None
+                        size: dp(48), dp(48)
+                        center_x: self.parent.center_x
+                        center_y: self.parent.center_y
+                        allow_stretch: True
+                        keep_ratio: True
 
             Label:
                 text: root.info_fichier
@@ -1786,20 +1816,24 @@ KV = """
                     text: "Charger une photo"
                     background_color: 0.61, 0.35, 0.71, 1
                     on_release: root.ouvrir_selecteur_photo()
-
-            BoxLayout:
-                size_hint_y: None
-                height: dp(40)
-                spacing: dp(6)
-                ToggleButton:
-                    text: "Satellite"
-                    group: "vue_carte_photo"
-                    state: "down"
-                    on_state: if self.state == "down": root.changer_vue_carte("satellite")
-                ToggleButton:
-                    text: "Plan"
-                    group: "vue_carte_photo"
-                    on_state: if self.state == "down": root.changer_vue_carte("plan")
+                # Fond de carte : bouton carre ouvrant le menu deroulant
+                # des 4 vues (satellite par defaut), meme gabarit que le
+                # bouton "Cam" de l'onglet Live (48 dp), affichant
+                # l'icone images/Layer.png en 48 x 48 dp.
+                Button:
+                    id: btn_layer
+                    size_hint_x: None
+                    width: dp(48)
+                    padding: 0, 0
+                    on_release: root.ouvrir_menu_fonds(self)
+                    Image:
+                        source: app.CHEMIN_ICONE_LAYER
+                        size_hint: None, None
+                        size: dp(48), dp(48)
+                        center_x: self.parent.center_x
+                        center_y: self.parent.center_y
+                        allow_stretch: True
+                        keep_ratio: True
 
             Label:
                 text: root.info_trace
@@ -2030,21 +2064,25 @@ KV = """
                     disabled: root.freeze_actif
                     background_color: 0.2, 0.6, 0.86, 1
                     on_release: root.ouvrir_selecteur_fichier()
-                ToggleButton:
-                    text: "Satellite"
-                    group: "vue_carte_live"
-                    state: "down"
-                    disabled: root.freeze_actif
+                # Fond de carte : bouton carre ouvrant le menu deroulant
+                # des 4 vues (satellite par defaut), affichant l'icone
+                # images/Layer.png en 48 x 48 dp. Soumis au gel.
+                Button:
+                    id: btn_layer
                     size_hint_x: None
-                    width: dp(100)
-                    on_state: if self.state == "down": root.changer_vue_carte("satellite")
-                ToggleButton:
-                    text: "Plan"
-                    group: "vue_carte_live"
+                    width: dp(48)
+                    padding: 0, 0
                     disabled: root.freeze_actif
-                    size_hint_x: None
-                    width: dp(90)
-                    on_state: if self.state == "down": root.changer_vue_carte("plan")
+                    on_release: root.ouvrir_menu_fonds(self)
+                    Image:
+                        source: app.CHEMIN_ICONE_LAYER
+                        size_hint: None, None
+                        size: dp(48), dp(48)
+                        center_x: self.parent.center_x
+                        center_y: self.parent.center_y
+                        allow_stretch: True
+                        keep_ratio: True
+                        opacity: 0.35 if self.parent.disabled else 1
 
             BoxLayout:
                 size_hint_y: None
@@ -2536,6 +2574,34 @@ def _dialogue_natif_fichier(filtres, multiple=False):
         racine.destroy()
 
 
+def _construire_menu_fonds_carte(screen):
+    """Construit le menu déroulant compact des fonds de carte du bouton
+    carré "Layer" (onglets Carte, Photos et Live). Plus discret que le
+    menu principal : 4 entrées de 40 dp, largeur 150 dp. La vue
+    courante est marquée d'un point "• " en tête ; le satellite est le
+    fond par défaut (l'attribut _vue_carte_actuelle de l'écran vaut
+    alors "satellite", mis à jour à chaque sélection)."""
+    menu = DropDown(auto_width=False, width=dp(150))
+    actuelle = getattr(screen, "_vue_carte_actuelle", "satellite")
+    vues = [("satellite", "Satellite"), ("plan", "Plan"),
+            ("topo", "Topo"), ("esri_topo", "Topo+")]
+    for valeur, libelle in vues:
+        btn = Button(
+            text=libelle,
+            size_hint_y=None, height=dp(40), font_size="14sp")
+        # Vue courante mise en evidence par la couleur de fond (meme
+        # principe que le marquage de l'ecran actif dans le "Menu"
+        # principal), les autres restent sur le fond standard.
+        if valeur == actuelle:
+            btn.background_color = (0.15, 0.68, 0.38, 1)  # vert #2E7D32
+        btn.bind(on_release=lambda b, v=valeur: (
+            setattr(screen, "_vue_carte_actuelle", v),
+            screen.changer_vue_carte(v),
+            menu.dismiss()))
+        menu.add_widget(btn)
+    return menu
+
+
 def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", ".kml")):
     """Explorateur de fichiers (dossiers + fichiers) : dialogue natif sur
     PC, explorateur maison sur Android (voir _construire_explorateur_android)."""
@@ -3002,6 +3068,13 @@ class FusionScreen(Screen):
         Clock.schedule_once(_maj_ui, 0)
 
 class LiveScreen(Screen):
+    # Seuil (en mètres) du garde anti-doublons de _ajouter_point_live :
+    # un point reçu en direct déjà présent dans la trace à moins de
+    # cette distance est considéré comme réinjecté (reprise après
+    # écran noir / mise en veille / redémarrage) et ignoré. La précision
+    # GPS étant de quelques mètres, un VRAI nouveau point (l'utilisateur
+    # qui marche) est toujours plus loin que ce seuil du point précédent.
+    SEUIL_DOUBLON_POINT_LIVE = 2.0
     freeze_actif = BooleanProperty(False)
     info_fichier = StringProperty("Aucune trace à suivre chargée.")
     # Icone du bouton "Cam" (ouverture de l'appareil photo). L'image est
@@ -3056,6 +3129,7 @@ class LiveScreen(Screen):
         self.marqueurs_actifs_live = []
         self.fichier_gpx_actif_live = None
         self.compteur_sources_live = {}
+        self.compteur_doublons_live = 0  # points réinjectés ignorés (voir _ajouter_point_live)
         self.annotations_live = []  # photos prises pendant le live (voir _ouvrir_camera_Android)
         # Balise <wpt> "en attente" : ouverte par _verifier_et_ouvrir_camera
         # au lancement de l'appareil photo, refermée par
@@ -3151,9 +3225,18 @@ class LiveScreen(Screen):
     def changer_vue_carte(self, valeur):
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
-        self.map_view.map_source = SOURCE_SATELLITE if valeur == "satellite" else SOURCE_PLAN
+        self.map_view.map_source = SOURCES_FONDS_CARTES[valeur]
         # Indispensable pour éviter les zones grises ou non redessinées au zoom/dézoom
         self.map_view.trigger_update(True)
+
+    def ouvrir_menu_fonds(self, bouton):
+        """Ouvre le menu déroulant compact des fonds de carte sous le
+        bouton carré "Layer" (satellite par défaut, vue courante
+        marquée d'un point). Voir _construire_menu_fonds_carte."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        menu = _construire_menu_fonds_carte(self)
+        menu.open(bouton)
 
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
@@ -3348,6 +3431,7 @@ class LiveScreen(Screen):
         # que via le serveur d'écoute live) — seuls les nouveaux points
         # reçus en direct à partir d'ici seront comptés.
         self.compteur_sources_live = {}
+        self.compteur_doublons_live = 0
         self.annotations_live = []
         # NE PAS réinitialiser le fichier temporaire ici : une simple
         # resynchronisation (réveil d'écran, ou redémarrage après un
@@ -3528,6 +3612,7 @@ class LiveScreen(Screen):
         # log au moment de l'arrêt (_arreter_gpslogger), sans aucun
         # message ni indicateur visible pendant le suivi.
         self.compteur_sources_live = {}
+        self.compteur_doublons_live = 0
         self.annotations_live = []
         self._reinitialiser_temp_live()
         
@@ -3828,6 +3913,23 @@ class LiveScreen(Screen):
             if abs(dernier['lat'] - point['lat']) < 1e-6 and abs(dernier['lon'] - point['lon']) < 1e-6:
                 return  # Point identique au dernier déjà affiché (doublon) : ignoré.
 
+        # Garde anti-"rayons de roue" : après une reprise (écran noir,
+        # mise en veille, redémarrage de l'appli), des points DÉJÀ
+        # présents dans la trace peuvent être réinjectés par la source
+        # (re-délivrés par GPSLogger ou restés en file pendant la
+        # suspension). Le filtre ci-dessus ne compare qu'au DERNIER
+        # point, donc un point ANCIEN réinjecté passait au travers et
+        # la trace dessinait des allers-retours vers ce point de
+        # référence (motif en rayons de roue). Tout point identique
+        # (à SEUIL_DOUBLON_POINT_LIVE mètres) à un point QUELCONQUE
+        # de la trace est donc ignoré, et compté silencieusement pour
+        # le log d'arrêt (voir _arreter_gpslogger).
+        for p in self.points_trace_live:
+            if gps_logic.calculer_distance_haversine(
+                    p['lat'], p['lon'], point['lat'], point['lon']) <= self.SEUIL_DOUBLON_POINT_LIVE:
+                self.compteur_doublons_live += 1
+                return
+
         self.points_trace_live.append(point)
 
         # Comptage silencieux par source de géolocalisation (gps/network/
@@ -4116,10 +4218,16 @@ class LiveScreen(Screen):
             with open(chemin_log, "w", encoding="utf-8") as f:
                 for source, nb in sorted(self.compteur_sources_live.items()):
                     f.write(f"{source} : {nb}\n")
+                # Points réinjectés ignorés par le garde anti-doublons
+                # de _ajouter_point_live (motif "rayons de roue" après
+                # une reprise). Si ce compteur est > 0, la source a
+                # bien re-délivré des points déjà enregistrés.
+                f.write(f"doublons_ignores : {self.compteur_doublons_live}\n")
         except Exception:
             pass
         finally:
             self.compteur_sources_live = {}
+            self.compteur_doublons_live = 0
             self.annotations_live = []
 
         ok_stop = False
@@ -4826,11 +4934,20 @@ class CarteScreen(Screen):
         changer_vue_carte() dans la version desktop."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
-        self.map_view.map_source = SOURCE_SATELLITE if valeur == "satellite" else SOURCE_PLAN
+        self.map_view.map_source = SOURCES_FONDS_CARTES[valeur]
         # L'affectation seule ne suffit pas toujours à relancer le
         # chargement des tuiles : on force explicitement un rafraîchissement
         # complet (sinon le fond peut rester gris-bleu / ne pas revenir).
         self.map_view.trigger_update(True)
+
+    def ouvrir_menu_fonds(self, bouton):
+        """Ouvre le menu déroulant compact des fonds de carte sous le
+        bouton carré "Layer" (satellite par défaut, vue courante
+        marquée d'un point). Voir _construire_menu_fonds_carte."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        menu = _construire_menu_fonds_carte(self)
+        menu.open(bouton)
 
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
@@ -5266,8 +5383,17 @@ class PhotosScreen(Screen):
         changer_fond_carte_photo() dans la version desktop."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
-        self.map_view.map_source = SOURCE_SATELLITE if valeur == "satellite" else SOURCE_PLAN
+        self.map_view.map_source = SOURCES_FONDS_CARTES[valeur]
         self.map_view.trigger_update(True)
+
+    def ouvrir_menu_fonds(self, bouton):
+        """Ouvre le menu déroulant compact des fonds de carte sous le
+        bouton carré "Layer" (satellite par défaut, vue courante
+        marquée d'un point). Voir _construire_menu_fonds_carte."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        menu = _construire_menu_fonds_carte(self)
+        menu.open(bouton)
 
     def ouvrir_selecteur_trace(self):
         contenu = _construire_selecteur_fichier(self._trace_choisie)
@@ -5465,6 +5591,13 @@ class EcranAVenir(Screen):
 
 class OutilsTracesApp(App):
     title = "Bubu GPS"
+
+    # Icone du bouton des fonds de carte : accessible dans le kv via
+    # "app.CHEMIN_ICONE_LAYER" (le kv ne voit pas les globales du
+    # module, seulement app, root et les fonctions comme dp()).
+    # L'image est cherchee a cote de main.py : images/Layer.png.
+    CHEMIN_ICONE_LAYER = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "images", "Layer.png")
 
     def build(self):
         # --- VOTRE CODE D'INITIALISATION EXISTANT ---
