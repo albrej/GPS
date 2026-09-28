@@ -224,8 +224,18 @@ def demarrer(file_points, intervalle_ms=None, precision_max_m=None):
         _gestionnaire = gestionnaire
 
         try:
+            # IMPORTANT : requestLocationUpdates crée un Handler Android,
+            # ce qui exige un thread pourvu d'un Looper. Kivy exécute
+            # Python dans SDLThread (sans Looper) -> exception
+            # "Can't create handler inside thread that has not called
+            # Looper.prepare()". La parade officielle : passer le LOOPER
+            # PRINCIPAL (getMainLooper) en 5e argument, ce qui attache le
+            # listener à la boucle de messages du thread principal et
+            # permet l'appel depuis n'importe quel thread.
+            Looper = autoclass("android.os.Looper")
             gestionnaire.requestLocationUpdates(
-                fournisseur_choisi, _intervalle_ms, _distance_min_m, listener)
+                fournisseur_choisi, _intervalle_ms, _distance_min_m, listener,
+                Looper.getMainLooper())
         except Exception as e_secu:
             # SecurityException alors que.checkSelfPermission disait accordé :
             # bug rencontré sur MIUI après accord manuel via les réglages.
@@ -249,17 +259,25 @@ def demarrer(file_points, intervalle_ms=None, precision_max_m=None):
 
 
 def arreter():
-    """Arrête le suivi (désenregistre le listener). Ne lève jamais."""
+    """Arrête le suivi (désenregistre le listener). Ne lève jamais.
+    Même précaution que demarrer() : la variante removeUpdates(listener)
+    crée elle aussi un Handler (donc un Looper) — on utilise la variante
+    à 2 arguments avec le Looper principal, appelable depuis SDLThread."""
     global etat, _listener, _gestionnaire
     if _gestionnaire is not None and _listener is not None:
         try:
-            _gestionnaire.removeUpdates(_listener)
+            from jnius import autoclass
+            try:
+                Looper = autoclass("android.os.Looper")
+                _gestionnaire.removeUpdates(_listener, Looper.getMainLooper())
+            except Exception:
+                # Repli : variante simple (suffisante sur certains appareils)
+                _gestionnaire.removeUpdates(_listener)
         except Exception:
             pass
     _listener = None
     _gestionnaire = None
     etat = "inactif"
-
 
 def est_actif():
     return etat == "actif"
