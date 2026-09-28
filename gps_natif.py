@@ -7,13 +7,20 @@
  dictionnaire que les points GPSLogger et déposé dans la file
  thread-safe consommée par main.py (_traiter_file_points_live).
 
- Version 2 : la vérification de permission utilise directement
- Context.checkSelfPermission (API Android officielle) via pyjnius —
- le module kivy android.permissions renvoie des faux négatifs sur
- MIUI/HyperOS, ce qui bloquait le démarrage même après accord de la
- permission dans les réglages. La demande runtime utilise pareillement
- Activity.requestPermissions (pyjnius). Toute erreur est consignée dans
- derniere_erreur et affichable à l'écran.
+ Version 4 :
+   - requestLocationUpdates/removeUpdates passés avec le LOOPER
+     PRINCIPAL (getMainLooper) : obligatoire, Kivy exécute Python dans
+     SDLThread qui n'a pas de Looper ;
+   - LES DEUX FOURNISSEURS (gps et network) sont enregistrés : le GPS
+     seul peut mettre plusieurs minutes à fournir son premier fix
+     (démarrage à froid), le fournisseur network donne un premier point
+     approximatif bien plus vite ;
+   - plus de filtre de précision par défaut : les premiers fixes
+     grossiers (précision > 100 m) étaient rejetés silencieusement —
+     main.py élimine déjà les doublons exacts via _ajouter_point_live ;
+   - compteurs de diagnostic (fixes_recus / fixes_rejetes) consultables
+     par l'UI pour distinguer « GPS pas encore de fix » et « fix reçu
+     mais ignoré ».
 ============================================================================
 """
 
@@ -26,15 +33,18 @@ from kivy.utils import platform
 # 'actif'   : listener enregistré       | 'refuse' : permission réellement absente
 etat = "inactif"
 derniere_erreur = ""
+_fixes_recus = 0        # diagnostics : fixes arrivés à onLocationChanged
+_fixes_deposes = 0       # diagnostics : points réellement mis dans la file
+_dernier_fix_heure = ""  # horodatage du dernier fix reçu ("HH:MM:SS")
 
 # Références fortes : empêchent Python de libérer le listener avant
 # que le callback ne soit appelé (même principe que _ECOUTEURS_SCAN_PHOTO).
 _listener = None
 _gestionnaire = None
 _file_points = None
-_precision_max_m = 100.0
 _intervalle_ms = 1000
 _distance_min_m = 0.0
+_fournisseurs_enregistres = []
 
 _PERMISSION_FINE = "android.permission.ACCESS_FINE_LOCATION"
 _PERMISSION_COARSE = "android.permission.ACCESS_COARSE_LOCATION"
@@ -53,35 +63,26 @@ def _activite():
 
 def permission_accordee():
     """True si la permission de localisation fine est VRAIMENT accordée,
-    vérifié directement auprès d'Android (checkSelfPermission == 0).
-    C'est la seule source de vérité : le réglage utilisateur, le module
-    android.permissions de Kivy et les résultats de callback peuvent
-    diverger sur MIUI/HyperOS."""
+    vérifié directement auprès d'Android (checkSelfPermission == 0)."""
     activite = _activite()
     if activite is None:
         return False
     try:
-        resultat = activite.checkSelfPermission(_PERMISSION_FINE)
-        if resultat == 0:  # PERMISSION_GRANTED
+        if activite.checkSelfPermission(_PERMISSION_FINE) == 0:
             return True
-        # Repli sur COARSE (localisation approximative) si FINE refusée.
         return activite.checkSelfPermission(_PERMISSION_COARSE) == 0
     except Exception as e:
-        # Ancien Android (< 6) : checkSelfPermission n'existe pas,
-        # la permission est déclarée dans le manifeste → accordée.
+        # Android < 6 : permission accordée par le manifeste.
         global derniere_erreur
         derniere_erreur = f"checkSelfPermission indisponible (Android < 6 ? accordée par le manifeste) : {e}"
         return True
 
 
 def _demander_permission_runtime(callback_ok=None):
-    """Demande la permission via l'API officielle (Activity.requestPermissions).
-    La popup système s'affiche ; la réponse est asynchrone. L'appelant
-    (_verifier_demarrage_gps_natif de main.py) re-vérifie toutes les 4 s
-    via permission_accordee() : dès que l'accord est effectif CÔTÉ
-    ANDROID, le suivi démarre — les résultats bruts du callback Android
-    sont ignorés car parfois incohérents sur Xiaomi (accord affiché mais
-    tableau de résultats vide, etc.)."""
+    """Demande la permission via l'API officielle (requestPermissions).
+    La réponse est asynchrone ; l'appelant re-vérifie toutes les 4 s via
+    permission_accordee() — les résultats bruts du callback Android sont
+    ignorés (parfois incohérents sur MIUI/HyperOS)."""
     activite = _activite()
     if activite is None:
         if callback_ok:
@@ -101,8 +102,8 @@ def _demander_permission_runtime(callback_ok=None):
 
 def _fabriquer_listener():
     """LocationListener Python (PythonJavaClass) : appelé sur chaque fix,
-    dans un thread Java — on ne touche à AUCUN objet Kivy ici, on dépose
-    le point dans la file thread-safe."""
+    sur le thread principal Android (Looper principal) — on ne touche à
+    AUCUN objet Kivy ici, on dépose le point dans la file thread-safe."""
     from jnius import PythonJavaClass, java_method
 
     class ListenerGPS(PythonJavaClass):
@@ -118,15 +119,12 @@ def _fabriquer_listener():
 
         @java_method("(Landroid/location/Location;)V")
         def onLocationChanged(self, localisation):
+            global _fixes_recus, _fixes_deposes, _dernier_fix_heure
             try:
                 if localisation is None or _file_points is None:
                     return
-                try:
-                    precision = localisation.getAccuracy()
-                except Exception:
-                    precision = None
-                if _precision_max_m is not None and precision is not None and precision > _precision_max_m:
-                    return
+                _fixes_recus += 1
+                _dernier_fix_heure = datetime.now().strftime("%H:%M:%S")
 
                 ele = None
                 try:
@@ -145,6 +143,7 @@ def _fabriquer_listener():
                     "name": None,
                     "source": source,
                 })
+                _fixes_deposes += 1
             except Exception as e:
                 global derniere_erreur
                 derniere_erreur = f"traitement d'un fix GPS : {e}"
@@ -156,19 +155,15 @@ def _fabriquer_listener():
     return ListenerGPS()
 
 
-def demarrer(file_points, intervalle_ms=None, precision_max_m=None):
+def demarrer(file_points, intervalle_ms=None):
     """Démarre le suivi GPS natif. Renvoie (True, "") ou (False, raison).
 
-    Ordre :
-      1. permission réellement accordée (checkSelfPermission) ? Sinon :
-         demande runtime popup (l'appelant re-vérifie toutes les 4 s) ;
-      2. LocationManager.requestLocationUpdates sur le premier
-         fournisseur disponible (gps, puis network). Une
-         SecurityException ici ALORS QUE la permission est accordée
-         (bug MIUI) entraîne une re-demande runtime au lieu d'un refus.
-    """
+    Enregistre le listener sur TOUS les fournisseurs activés (gps et
+    network) : le GPS seul peut être lent à donner son premier fix ;
+    network fournit un point approximatif presque immédiatement. Les
+    doublons/dérives sont gérés en aval par _ajouter_point_live."""
     global etat, derniere_erreur, _listener, _gestionnaire
-    global _file_points, _intervalle_ms, _precision_max_m
+    global _file_points, _intervalle_ms, _fournisseurs_enregistres
 
     if platform != "android":
         etat = "refuse"
@@ -179,7 +174,6 @@ def demarrer(file_points, intervalle_ms=None, precision_max_m=None):
         _file_points = file_points
         return True, ""
 
-    # 1. Permission : vérité terrain via l'API Android.
     if not permission_accordee():
         etat = "attente"
         derniere_erreur = ("permission de localisation en attente : "
@@ -187,7 +181,6 @@ def demarrer(file_points, intervalle_ms=None, precision_max_m=None):
         _demander_permission_runtime()
         return False, derniere_erreur
 
-    # 2. Enregistrement du listener.
     try:
         from jnius import autoclass, cast
 
@@ -197,57 +190,52 @@ def demarrer(file_points, intervalle_ms=None, precision_max_m=None):
 
         if intervalle_ms is not None:
             _intervalle_ms = intervalle_ms
-        if precision_max_m is not None:
-            _precision_max_m = precision_max_m
         _file_points = file_points
 
         LocationManager = autoclass("android.location.LocationManager")
+        Looper = autoclass("android.os.Looper")
         contexte = cast("android.content.Context", activite)
         gestionnaire = contexte.getSystemService(activite.LOCATION_SERVICE)
 
-        fournisseur_choisi = None
-        for essai in (LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER):
+        listener = _fabriquer_listener()
+        # Références fortes AVANT l'enregistrement (sinon GC -> crash).
+        _listener = listener
+        _gestionnaire = gestionnaire
+        _fournisseurs_enregistres = []
+
+        au_moins_un = False
+        for nom, essai in (("gps", LocationManager.GPS_PROVIDER),
+                           ("network", LocationManager.NETWORK_PROVIDER)):
             try:
-                if gestionnaire.isProviderEnabled(essai):
-                    fournisseur_choisi = essai
-                    break
+                if not gestionnaire.isProviderEnabled(essai):
+                    continue
             except Exception:
                 continue
-        if fournisseur_choisi is None:
+            try:
+                # Le Looper principal en 5e argument est OBLIGATOIRE :
+                # Python/Kivy tourne dans SDLThread (sans Looper).
+                gestionnaire.requestLocationUpdates(
+                    essai, _intervalle_ms, _distance_min_m, listener,
+                    Looper.getMainLooper())
+                _fournisseurs_enregistres.append(nom)
+                au_moins_un = True
+            except Exception as e_secu:
+                if "security" in str(e_secu).lower():
+                    # SecurityException alors que.checkSelfPermission disait
+                    # accordé (bug MIUI) : re-demande runtime pour
+                    # resynchroniser l'état interne d'Android.
+                    etat = "attente"
+                    derniere_erreur = ("permission accordée mais non vue par Android "
+                                       f"(erreur de sécurité : {e_secu}) — nouvelle demande runtime lancée")
+                    _demander_permission_runtime()
+                    return False, derniere_erreur
+                raise
+
+        if not au_moins_un:
             etat = "refuse"
             derniere_erreur = ("aucun fournisseur de localisation activé : "
                                "activez la localisation dans la barre de notifications Android")
             return False, derniere_erreur
-
-        listener = _fabriquer_listener()
-        _listener = listener
-        _gestionnaire = gestionnaire
-
-        try:
-            # IMPORTANT : requestLocationUpdates crée un Handler Android,
-            # ce qui exige un thread pourvu d'un Looper. Kivy exécute
-            # Python dans SDLThread (sans Looper) -> exception
-            # "Can't create handler inside thread that has not called
-            # Looper.prepare()". La parade officielle : passer le LOOPER
-            # PRINCIPAL (getMainLooper) en 5e argument, ce qui attache le
-            # listener à la boucle de messages du thread principal et
-            # permet l'appel depuis n'importe quel thread.
-            Looper = autoclass("android.os.Looper")
-            gestionnaire.requestLocationUpdates(
-                fournisseur_choisi, _intervalle_ms, _distance_min_m, listener,
-                Looper.getMainLooper())
-        except Exception as e_secu:
-            # SecurityException alors que.checkSelfPermission disait accordé :
-            # bug rencontré sur MIUI après accord manuel via les réglages.
-            # La parade : re-demander la permission runtime UNE fois, ce qui
-            # « resynchronise » l'état interne d'Android.
-            if "security" in str(e_secu).lower():
-                etat = "attente"
-                derniere_erreur = ("permission accordée mais non vue par Android "
-                                   f"(erreur de sécurité : {e_secu}) — nouvelle demande runtime lancée")
-                _demander_permission_runtime()
-                return False, derniere_erreur
-            raise
 
         etat = "actif"
         derniere_erreur = ""
@@ -259,10 +247,7 @@ def demarrer(file_points, intervalle_ms=None, precision_max_m=None):
 
 
 def arreter():
-    """Arrête le suivi (désenregistre le listener). Ne lève jamais.
-    Même précaution que demarrer() : la variante removeUpdates(listener)
-    crée elle aussi un Handler (donc un Looper) — on utilise la variante
-    à 2 arguments avec le Looper principal, appelable depuis SDLThread."""
+    """Arrête le suivi (désenregistre le listener). Ne lève jamais."""
     global etat, _listener, _gestionnaire
     if _gestionnaire is not None and _listener is not None:
         try:
@@ -271,16 +256,37 @@ def arreter():
                 Looper = autoclass("android.os.Looper")
                 _gestionnaire.removeUpdates(_listener, Looper.getMainLooper())
             except Exception:
-                # Repli : variante simple (suffisante sur certains appareils)
                 _gestionnaire.removeUpdates(_listener)
         except Exception:
             pass
     _listener = None
     _gestionnaire = None
+    _fournisseurs_enregistres = []
     etat = "inactif"
+
 
 def est_actif():
     return etat == "actif"
+
+
+def fixes_recus():
+    """Diagnostic : nombre de fixes reçus du système depuis demarrer()."""
+    return _fixes_recus
+
+
+def fixes_deposes():
+    """Diagnostic : nombre de points réellement déposés dans la file."""
+    return _fixes_deposes
+
+
+def heure_dernier_fix():
+    """Diagnostic : horodatage ("HH:MM:SS") du dernier fix reçu, "" sinon."""
+    return _dernier_fix_heure
+
+
+def fournisseurs():
+    """Diagnostic : fournisseurs enregistrés (ex. ['gps', 'network'])."""
+    return list(_fournisseurs_enregistres)
 
 
 def ouvrir_reglages():
