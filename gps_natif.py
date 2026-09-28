@@ -3,48 +3,54 @@
 ============================================================================
  GPS NATIF ANDROID (pyjnius) — remplace GPSLogger pour le suivi en direct.
 
- Chaque fix du LocationManager est converti au MÊME format de
- dictionnaire que les points GPSLogger et déposé dans la file
- thread-safe consommée par main.py (_traiter_file_points_live).
+ Chaque fix est converti au MÊME format de dictionnaire que les points
+ GPSLogger et déposé dans la file thread-safe consommée par main.py
+ (_traiter_file_points_live).
 
- Version 4 :
-   - requestLocationUpdates/removeUpdates passés avec le LOOPER
-     PRINCIPAL (getMainLooper) : obligatoire, Kivy exécute Python dans
-     SDLThread qui n'a pas de Looper ;
-   - LES DEUX FOURNISSEURS (gps et network) sont enregistrés : le GPS
-     seul peut mettre plusieurs minutes à fournir son premier fix
-     (démarrage à froid), le fournisseur network donne un premier point
-     approximatif bien plus vite ;
-   - plus de filtre de précision par défaut : les premiers fixes
-     grossiers (précision > 100 m) étaient rejetés silencieusement —
-     main.py élimine déjà les doublons exacts via _ajouter_point_live ;
-   - compteurs de diagnostic (fixes_recus / fixes_rejetes) consultables
-     par l'UI pour distinguer « GPS pas encore de fix » et « fix reçu
-     mais ignoré ».
+ Version 5 — lecture par SONDAGE (polling) au lieu du callback :
+   Le listener Java (onLocationChanged) n'était JAMAIS rappelé côté
+   Python : pyjnius ne peut exécuter un callback Python que depuis un
+   thread créé par Python, or Android appelle le listener sur le thread
+   UI (main looper), qui n'est pas un thread Python -> aucun point,
+   même après 30 min, alors que le GPS calculait bien des fixes.
+
+   La parade, éprouvée et sans callback :
+     1. requestLocationUpdates reste enregistré (gps + network) : il
+        FORCE Android à calculer des positions et rafraîchir son cache
+        (c'est ce qui rend getLastKnownLocation vivant) ;
+     2. un THREAD PYTHON (daemon) interroge getLastKnownLocation()
+        toutes les secondes et dépose chaque NOUVEAU fix dans la file.
+        C'est un appel Java direct depuis Python : fiable à 100 %.
+
+  getLastKnownLocation est exactement ce que GPSLogger exploite en
+   intérieur : le système conserve le dernier fix calculé (GPS, réseau,
+   fused), même sans vue du ciel.
 ============================================================================
 """
 
+import threading
+import time
 from datetime import datetime
 
 from kivy.utils import platform
 
 # --- État global du module ------------------------------------------------
 # 'inactif' : aucun suivi | 'attente' : permission demandée / GPS en acquisition
-# 'actif'   : listener enregistré       | 'refuse' : permission réellement absente
+# 'actif'   : suivi en cours  | 'refuse' : permission réellement absente
 etat = "inactif"
 derniere_erreur = ""
-_fixes_recus = 0        # diagnostics : fixes arrivés à onLocationChanged
-_fixes_deposes = 0       # diagnostics : points réellement mis dans la file
-_dernier_fix_heure = ""  # horodatage du dernier fix reçu ("HH:MM:SS")
+_fixes_recus = 0        # diagnostics : fixes lus et déposés dans la file
+_dernier_fix_heure = ""
 
-# Références fortes : empêchent Python de libérer le listener avant
-# que le callback ne soit appelé (même principe que _ECOUTEURS_SCAN_PHOTO).
-_listener = None
+# Références fortes.
+_listener = None            # conservé : garde l'enregistrement système vivant
 _gestionnaire = None
 _file_points = None
+_thread_poll = None
 _intervalle_ms = 1000
 _distance_min_m = 0.0
 _fournisseurs_enregistres = []
+_dernier_fix_depose = None  # (lat, lon) du dernier point déposé
 
 _PERMISSION_FINE = "android.permission.ACCESS_FINE_LOCATION"
 _PERMISSION_COARSE = "android.permission.ACCESS_COARSE_LOCATION"
@@ -62,7 +68,7 @@ def _activite():
 
 
 def permission_accordee():
-    """True si la permission de localisation fine est VRAIMENT accordée,
+    """True si la permission de localisation est VRAIMENT accordée,
     vérifié directement auprès d'Android (checkSelfPermission == 0)."""
     activite = _activite()
     if activite is None:
@@ -74,15 +80,13 @@ def permission_accordee():
     except Exception as e:
         # Android < 6 : permission accordée par le manifeste.
         global derniere_erreur
-        derniere_erreur = f"checkSelfPermission indisponible (Android < 6 ? accordée par le manifeste) : {e}"
+        derniere_erreur = f"checkSelfPermission indisponible (Android < 6 ?) : {e}"
         return True
 
 
 def _demander_permission_runtime(callback_ok=None):
     """Demande la permission via l'API officielle (requestPermissions).
-    La réponse est asynchrone ; l'appelant re-vérifie toutes les 4 s via
-    permission_accordee() — les résultats bruts du callback Android sont
-    ignorés (parfois incohérents sur MIUI/HyperOS)."""
+    Réponse asynchrone : l'appelant re-vérifie via permission_accordee()."""
     activite = _activite()
     if activite is None:
         if callback_ok:
@@ -101,9 +105,10 @@ def _demander_permission_runtime(callback_ok=None):
 
 
 def _fabriquer_listener():
-    """LocationListener Python (PythonJavaClass) : appelé sur chaque fix,
-    sur le thread principal Android (Looper principal) — on ne touche à
-    AUCUN objet Kivy ici, on dépose le point dans la file thread-safe."""
+    """Listener Java factice : le callback Python n'est de toute façon
+    pas exécuté (thread UI Android, pas un thread Python) — on l'enregistre
+    UNIQUEMENT pour forcer Android à calculer des fixes et alimenter
+    getLastKnownLocation. Les points sont lus par le thread de sondage."""
     from jnius import PythonJavaClass, java_method
 
     class ListenerGPS(PythonJavaClass):
@@ -119,34 +124,10 @@ def _fabriquer_listener():
 
         @java_method("(Landroid/location/Location;)V")
         def onLocationChanged(self, localisation):
-            global _fixes_recus, _fixes_deposes, _dernier_fix_heure
-            try:
-                if localisation is None or _file_points is None:
-                    return
-                _fixes_recus += 1
-                _dernier_fix_heure = datetime.now().strftime("%H:%M:%S")
-
-                ele = None
-                try:
-                    if localisation.hasAltitude():
-                        ele = round(float(localisation.getAltitude()), 1)
-                except Exception:
-                    ele = None
-
-                source = str(localisation.getProvider() or "gps")
-
-                _file_points.put({
-                    "lat": float(localisation.getLatitude()),
-                    "lon": float(localisation.getLongitude()),
-                    "ele": ele,
-                    "time": datetime.now(),
-                    "name": None,
-                    "source": source,
-                })
-                _fixes_deposes += 1
-            except Exception as e:
-                global derniere_erreur
-                derniere_erreur = f"traitement d'un fix GPS : {e}"
+            # Ne devrait jamais être appelé côté Python (voir docstring
+            # du module) ; si ça l'est malgré tout (thread chanceux),
+            # le sondage déposera de toute façon le même fix.
+            pass
 
         @java_method("(Ljava/lang/String;Landroid/os/Bundle;)V")
         def onStatusChanged(self, fournisseur, statut, extras):
@@ -155,14 +136,98 @@ def _fabriquer_listener():
     return ListenerGPS()
 
 
+def _deposer_fix(localisation):
+    """Dépose un fix Java (android.location.Location) dans la file, s'il
+    est NOUVEAU (coordonnées différentes du dernier point déposé).
+    Appelé depuis le thread de sondage : aucune manip Kivy ici."""
+    global _fixes_recus, _dernier_fix_heure, _dernier_fix_depose
+    if localisation is None or _file_points is None:
+        return False
+    try:
+        lat = float(localisation.getLatitude())
+        lon = float(localisation.getLongitude())
+    except Exception:
+        return False
+
+    # Anti-doublon : même position (à ~1 m) que le dernier point déposé ?
+    if _dernier_fix_depose is not None:
+        dlat, dlon = _dernier_fix_depose
+        if abs(dlat - lat) < 1e-5 and abs(dlon - lon) < 1e-5:
+            return False
+
+    ele = None
+    try:
+        if localisation.hasAltitude():
+            ele = round(float(localisation.getAltitude()), 1)
+    except Exception:
+        ele = None
+
+    source = "gps"
+    try:
+        source = str(localisation.getProvider() or "gps")
+    except Exception:
+        pass
+
+    _file_points.put({
+        "lat": lat,
+        "lon": lon,
+        "ele": ele,
+        "time": datetime.now(),
+        "name": None,
+        "source": source,
+    })
+    _fixes_recus += 1
+    _dernier_fix_heure = datetime.now().strftime("%H:%M:%S")
+    _dernier_fix_depose = (lat, lon)
+    return True
+
+
+def _boucle_sondage():
+    """Thread daemon : interroge getLastKnownLocation() de chaque
+    fournisseur chaque seconde et dépose tout nouveau fix. getLastKnown-
+    Location est l'appel Java qui fonctionne TOUJOURS depuis Python
+    (pas de callback) ; il est rafraîchi par notre requestLocationUpdates
+    resté enregistré, et par tout autre consommateur du système
+    (Google Play Services, GPSLogger...), même en intérieur."""
+    global _gestionnaire
+    while etat == "actif":
+        try:
+            gestionnaire = _gestionnaire
+            if gestionnaire is not None:
+                meilleur = None
+                for nom_fournisseur in ("fused", "gps", "network", "passive"):
+                    try:
+                        loc = gestionnaire.getLastKnownLocation(nom_fournisseur)
+                    except Exception:
+                        continue
+                    if loc is None:
+                        continue
+                    if meilleur is None:
+                        meilleur = loc
+                    else:
+                        try:
+                            if loc.getTime() > meilleur.getTime():
+                                meilleur = loc
+                        except Exception:
+                            pass
+                if meilleur is not None:
+                    _deposer_fix(meilleur)
+        except Exception as e:
+            global derniere_erreur
+            derniere_erreur = f"sondage GPS : {e}"
+        time.sleep(1.0)
+
+
 def demarrer(file_points, intervalle_ms=None):
     """Démarre le suivi GPS natif. Renvoie (True, "") ou (False, raison).
 
-    Enregistre le listener sur TOUS les fournisseurs activés (gps et
-    network) : le GPS seul peut être lent à donner son premier fix ;
-    network fournit un point approximatif presque immédiatement. Les
-    doublons/dérives sont gérés en aval par _ajouter_point_live."""
-    global etat, derniere_erreur, _listener, _gestionnaire
+    1. Enregistre requestLocationUpdates (gps + network, Looper principal
+       obligatoire car Python tourne dans SDLThread) : force Android à
+       calculer des positions et à alimenter getLastKnownLocation ;
+    2. Lance le thread de sondage qui lit ces positions chaque seconde
+       et les dépose dans la file — sans aucun callback Java->Python,
+       qui ne fonctionne pas sous Kivy/pyjnius."""
+    global etat, derniere_erreur, _listener, _gestionnaire, _thread_poll
     global _file_points, _intervalle_ms, _fournisseurs_enregistres
 
     if platform != "android":
@@ -198,7 +263,6 @@ def demarrer(file_points, intervalle_ms=None):
         gestionnaire = contexte.getSystemService(activite.LOCATION_SERVICE)
 
         listener = _fabriquer_listener()
-        # Références fortes AVANT l'enregistrement (sinon GC -> crash).
         _listener = listener
         _gestionnaire = gestionnaire
         _fournisseurs_enregistres = []
@@ -212,7 +276,7 @@ def demarrer(file_points, intervalle_ms=None):
             except Exception:
                 continue
             try:
-                # Le Looper principal en 5e argument est OBLIGATOIRE :
+                # Looper principal en 5e argument OBLIGATOIRE :
                 # Python/Kivy tourne dans SDLThread (sans Looper).
                 gestionnaire.requestLocationUpdates(
                     essai, _intervalle_ms, _distance_min_m, listener,
@@ -221,9 +285,6 @@ def demarrer(file_points, intervalle_ms=None):
                 au_moins_un = True
             except Exception as e_secu:
                 if "security" in str(e_secu).lower():
-                    # SecurityException alors que.checkSelfPermission disait
-                    # accordé (bug MIUI) : re-demande runtime pour
-                    # resynchroniser l'état interne d'Android.
                     etat = "attente"
                     derniere_erreur = ("permission accordée mais non vue par Android "
                                        f"(erreur de sécurité : {e_secu}) — nouvelle demande runtime lancée")
@@ -237,8 +298,11 @@ def demarrer(file_points, intervalle_ms=None):
                                "activez la localisation dans la barre de notifications Android")
             return False, derniere_erreur
 
+        # Thread de sondage : c'est LUI qui fournit les points.
+        _thread_poll = threading.Thread(target=_boucle_sondage, daemon=True)
         etat = "actif"
         derniere_erreur = ""
+        _thread_poll.start()
         return True, ""
     except Exception as e:
         etat = "refuse"
@@ -247,8 +311,11 @@ def demarrer(file_points, intervalle_ms=None):
 
 
 def arreter():
-    """Arrête le suivi (désenregistre le listener). Ne lève jamais."""
-    global etat, _listener, _gestionnaire
+    """Arrête le suivi : désenregistre le listener et termine le thread
+    de sondage (il sort de sa boucle en voyant etat != actif). Ne lève
+    jamais."""
+    global etat, _listener, _gestionnaire, _thread_poll
+    etat = "inactif"  # posé AVANT : le thread s'arrête de lui-même
     if _gestionnaire is not None and _listener is not None:
         try:
             from jnius import autoclass
@@ -261,8 +328,8 @@ def arreter():
             pass
     _listener = None
     _gestionnaire = None
+    _thread_poll = None
     _fournisseurs_enregistres = []
-    etat = "inactif"
 
 
 def est_actif():
@@ -270,17 +337,12 @@ def est_actif():
 
 
 def fixes_recus():
-    """Diagnostic : nombre de fixes reçus du système depuis demarrer()."""
+    """Diagnostic : nombre de points déposés dans la file depuis demarrer()."""
     return _fixes_recus
 
 
-def fixes_deposes():
-    """Diagnostic : nombre de points réellement déposés dans la file."""
-    return _fixes_deposes
-
-
 def heure_dernier_fix():
-    """Diagnostic : horodatage ("HH:MM:SS") du dernier fix reçu, "" sinon."""
+    """Diagnostic : horodatage ("HH:MM:SS") du dernier point déposé."""
     return _dernier_fix_heure
 
 
