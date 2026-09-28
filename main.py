@@ -47,8 +47,8 @@ from kivy.utils import escape_markup
 from kivy.uix.textinput import TextInput
 from kivy.properties import BooleanProperty
 
-import gps_natif
 import gps_logic
+import gps_natif
 
 # Extensions considérées comme des photos pour le nom d'un waypoint
 # (<name> d'un <wpt> ou d'un Placemark KML) : dans ce cas, le nom affiché
@@ -3494,8 +3494,8 @@ class LiveScreen(Screen):
             2.5,
         )
 
-        return  # GPS natif : la resynchronisation GPSLogger est inutile (les points arrivent directement)
     def _resynchroniser_avec_gpslogger(self):
+        return  # GPS natif : la resynchronisation GPSLogger est inutile (les points arrivent directement)
         """Appelée automatiquement au retour au premier plan de l'appli
         (redémarrage après un plantage ou un clic involontaire sur
         "Quitter", ou simple réveil de l'écran) : si GPSLogger est en
@@ -3660,7 +3660,10 @@ class LiveScreen(Screen):
                 self.map_view.remove_marker(m)
             self.marqueurs_actifs_live = []
 
-        # --- Phase 2 : démarrage du GPS NATIF (module gps_natif) ---
+        # d. Le texte de statut passe à l'orange.
+        self._maj_statut_live("Démarrage du suivi en direct : activation du GPS de l'appareil...", (0.937, 0.424, 0.0, 1))  # #EF6C00
+
+        # --- Démarrage du GPS NATIF (module gps_natif) ---
         # Les points sont déposés directement dans la file thread-safe
         # self.file_points_live, déjà consommée par
         # _traiter_file_points_live : le petit serveur HTTP local qui
@@ -3672,11 +3675,10 @@ class LiveScreen(Screen):
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             )
         else:
-            # Cas le plus fréquent : la permission de localisation vient
-            # d'être demandée à l'utilisateur (réponse asynchrone), ou
-            # le GPS attend son premier fix. On re-vérifie quelques
-            # secondes plus tard (_verifier_demarrage_gps_natif) : dès
-            # que la permission est accordée, le suivi démarre tout seul.
+            # Permission en cours de demande (popup système), fix en
+            # acquisition, localisation système désactivée... : le
+            # contrôle différé re-vérifie toutes les 4 s et démarre le
+            # suivi dès que possible, avec le message exact du module.
             self._maj_statut_live(
                 str(message),
                 (0.937, 0.424, 0.0, 1)  # #EF6C00
@@ -3684,10 +3686,10 @@ class LiveScreen(Screen):
             Clock.schedule_once(self._verifier_demarrage_gps_natif, 4)
 
     def _verifier_demarrage_gps_natif(self, dt):
-        """Contrôle différé du démarrage du GPS natif (réponse à la
-        demande de permission, acquisition du premier fix...) : met à
-        jour le statut live, sans jamais relancer un suivi par erreur.
-        Si la permission vient d'être accordée, redemarre le GPS natif
+        """Contrôle différé du démarrage du GPS natif : met à jour le
+        statut live avec l'erreur EXACTE du module gps_natif (plus de
+        message générique), sans jamais relancer un suivi par erreur.
+        Si la permission vient d'être accordée, redémarre le GPS natif
         puis reprogramme un contrôle tant qu'il n'est pas actif."""
         if not self.en_cours_live:
             return
@@ -3699,15 +3701,32 @@ class LiveScreen(Screen):
             return
         if gps_natif.etat == "refuse":
             self.en_cours_live = False
-            self._maj_statut_live(
-                "Enregistrement impossible : permission de localisation refusée. Accordez la permission via le bouton Réglages affiché.",
-                (0.776, 0.157, 0.157, 1)  # #C62828
-            )
-            self._popup_permission_refusee()
+            if not gps_natif.permission_accordee():
+                # Vraie permission manquante : popup réglages/réessayer.
+                self._maj_statut_live(
+                    "Enregistrement impossible : permission de localisation refusée. Accordez la permission via le bouton Réglages affiché.",
+                    (0.776, 0.157, 0.157, 1)  # #C62828
+                )
+                self._popup_permission_refusee()
+            else:
+                # Permission accordée mais autre blocage (localisation
+                # système désactivée, erreur Android...) : l'erreur EXACTE
+                # du module gps_natif est affichée.
+                self._maj_statut_live(
+                    f"Enregistrement impossible : {gps_natif.derniere_erreur}",
+                    (0.776, 0.157, 0.157, 1)  # #C62828
+                )
             return
         # Permission accordée entre-temps ? On retente le démarrage,
         # puis on reprogramme un contrôle si ce n'est pas encore actif.
+        # En attente (popup permission affichée, fix en acquisition) :
+        # le message détaillé du module reste visible à l'écran.
         gps_natif.demarrer(self.file_points_live)
+        if not gps_natif.est_actif() and gps_natif.derniere_erreur:
+            self._maj_statut_live(
+                f"En attente du GPS : {gps_natif.derniere_erreur}",
+                (0.937, 0.424, 0.0, 1)  # #EF6C00
+            )
         Clock.schedule_once(self._verifier_demarrage_gps_natif, 4)
 
     def _popup_permission_refusee(self):
@@ -3724,7 +3743,7 @@ class LiveScreen(Screen):
         lbl = Label(
             text=("La permission de localisation a été refusée.\n\n"
                   "Android ne redemandera plus automatiquement.\n"
-                  "Accordez la permission « Position » dans les réglages,\n"
+                  "Accordez la permission Position dans les réglages,\n"
                   "puis revenez et appuyez sur Réessayer."),
             text_size=(dp(280), None), halign="left", valign="middle",
             size_hint_y=None,
@@ -4283,9 +4302,9 @@ class LiveScreen(Screen):
            effort), puis soit invite à fermer GPSLogger manuellement
            (trace enregistrée), soit réinitialise entièrement l'onglet
            (trace abandonnée)."""
-
-        self.pause_traitement_live = True
-        self._maj_statut_live("Suivi en direct mis en pause...", (0.937, 0.424, 0.0, 1))  # #EF6C00
+        # Les points du GPS natif arrivent directement dans la file :
+        # rien à rattraper avant de figer la trace (l'ancienne
+        # resynchronisation GPSLogger n'a plus d'objet).
 
         contenu = _construire_confirmation_oui_non_annuler(
             "Voulez-vous enregistrer la trace en cours dans un fichier GPX ?",
@@ -4423,10 +4442,6 @@ class LiveScreen(Screen):
 
         Renvoie (True, True, détail) — signature conservée pour ne pas
         toucher aux appelants (on_click_terminer_live). Ne lève jamais."""
-        # --- Écriture silencieuse du log de comptage par source de
-        # géolocalisation + journal de post-mortem des points directs
-        # (voir _ajouter_point_live) : toujours tentée en premier,
-        # indépendamment du succès de l'arrêt lui-même.
         try:
             dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
             os.makedirs(dossier_cible, exist_ok=True)
@@ -4452,7 +4467,6 @@ class LiveScreen(Screen):
             self.compteur_sources_live = {}
             self.annotations_live = []
 
-        # --- Arrêt du GPS natif : désenregistrement du listener ---
         details = []
         try:
             gps_natif.arreter()

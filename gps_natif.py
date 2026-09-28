@@ -3,118 +3,106 @@
 ============================================================================
  GPS NATIF ANDROID (pyjnius) — remplace GPSLogger pour le suivi en direct.
 
- Principe : s'enregistre auprès du service de localisation d'Android
- (LocationManager) via un LocationListener écrit en Python (PythonJavaClass).
- Chaque fix GPS est converti au MÊME format de dictionnaire que les points
- envoyés autrefois par GPSLogger au serveur local de main.py :
+ Chaque fix du LocationManager est converti au MÊME format de
+ dictionnaire que les points GPSLogger et déposé dans la file
+ thread-safe consommée par main.py (_traiter_file_points_live).
 
-     {'lat': float, 'lon': float, 'ele': float|None,
-      'time': datetime, 'name': None, 'source': 'gps'}
-
- et déposé dans une file thread-safe (queue.Queue) que main.py consomme
- déjà (_traiter_file_points_live / _ajouter_point_live, inchangés).
-
- Aucune modification du pipeline d'affichage/enregistrement de main.py :
- ce module ne fait QUE produire les points.
-
- Permissions :
-   - buildozer.spec : android.permissions = ACCESS_FINE_LOCATION,ACCESS_COARSE_LOCATION
-   - exécution : demande automatique à la première utilisation
-     (Android 6+ exige une demande à l'exécution).
-
- Limitation connue : Android suspend le GPS d'une application sans
- service de premier plan quand l'écran s'éteint. Pour enregistrer écran
- éteint, il faut un foreground service (voir discussion) — en attendant,
- garder l'écran allumé pendant le suivi (comme pour la navigation).
+ Version 2 : la vérification de permission utilise directement
+ Context.checkSelfPermission (API Android officielle) via pyjnius —
+ le module kivy android.permissions renvoie des faux négatifs sur
+ MIUI/HyperOS, ce qui bloquait le démarrage même après accord de la
+ permission dans les réglages. La demande runtime utilise pareillement
+ Activity.requestPermissions (pyjnius). Toute erreur est consignée dans
+ derniere_erreur et affichable à l'écran.
 ============================================================================
 """
 
-import os
-import queue
 from datetime import datetime
 
 from kivy.utils import platform
 
 # --- État global du module ------------------------------------------------
-# 'inactif'       : aucun suivi
-# 'attente'       : permission demandée ou GPS en cours d'acquisition
-# 'actif'         : le LocationListener est enregistré
-# 'refuse'        : l'utilisateur a refusé la permission
+# 'inactif' : aucun suivi | 'attente' : permission demandée / GPS en acquisition
+# 'actif'   : listener enregistré       | 'refuse' : permission réellement absente
 etat = "inactif"
 derniere_erreur = ""
 
-# Références fortes : empêchent Python de libérer le listener Java/Python
-# avant que le callback ne soit appelé (même principe que
-# _ECOUTEURS_SCAN_PHOTO dans main.py).
+# Références fortes : empêchent Python de libérer le listener avant
+# que le callback ne soit appelé (même principe que _ECOUTEURS_SCAN_PHOTO).
 _listener = None
 _gestionnaire = None
 _file_points = None
-_precision_max_m = 100.0        # fix ignoré si précision GPS > cette valeur (None = tout garder)
-_intervalle_ms = 1000          # fréquence de demande de fix (1 s, comme GPSLogger par défaut)
-_distance_min_m = 0.0           # pas de filtrage par distance (tout point suffisant est gardé)
+_precision_max_m = 100.0
+_intervalle_ms = 1000
+_distance_min_m = 0.0
+
+_PERMISSION_FINE = "android.permission.ACCESS_FINE_LOCATION"
+_PERMISSION_COARSE = "android.permission.ACCESS_COARSE_LOCATION"
 
 
-def _contexte():
-    """Renvoie l'activité Android courante (Contexte), ou None."""
+def _activite():
+    """Renvoie l'activité Android courante, ou None."""
     try:
         from jnius import autoclass
-        PythonActivity = autoclass("org.kivy.android.PythonActivity")
-        return PythonActivity.mActivity
-    except Exception:
+        return autoclass("org.kivy.android.PythonActivity").mActivity
+    except Exception as e:
+        global derniere_erreur
+        derniere_erreur = f"activité Android introuvable : {e}"
         return None
 
 
 def permission_accordee():
-    """True si la permission de localisation fine est déjà accordée."""
+    """True si la permission de localisation fine est VRAIMENT accordée,
+    vérifié directement auprès d'Android (checkSelfPermission == 0).
+    C'est la seule source de vérité : le réglage utilisateur, le module
+    android.permissions de Kivy et les résultats de callback peuvent
+    diverger sur MIUI/HyperOS."""
+    activite = _activite()
+    if activite is None:
+        return False
     try:
-        from android.permissions import check_permission
-        from android.permissions import Permission
-        return check_permission(Permission.ACCESS_FINE_LOCATION)
-    except Exception:
-        # Module indisponible (PC, APK ancien) : considérer accordé pour ne
-        # pas bloquer ; le LocationManager échouera de toute façon sinon.
+        resultat = activite.checkSelfPermission(_PERMISSION_FINE)
+        if resultat == 0:  # PERMISSION_GRANTED
+            return True
+        # Repli sur COARSE (localisation approximative) si FINE refusée.
+        return activite.checkSelfPermission(_PERMISSION_COARSE) == 0
+    except Exception as e:
+        # Ancien Android (< 6) : checkSelfPermission n'existe pas,
+        # la permission est déclarée dans le manifeste → accordée.
+        global derniere_erreur
+        derniere_erreur = f"checkSelfPermission indisponible (Android < 6 ? accordée par le manifeste) : {e}"
         return True
 
 
-def demander_permission(callback=None):
-    """Demande la permission à l'exécution (Android 6+). callback(ok) est
-    appelé avec True/False une fois la réponse de l'utilisateur reçue.
-    Sur PC / module absent, appelle immédiatement callback(True)."""
-    global etat, derniere_erreur
-    if platform != "android" or permission_accordee():
-        etat = "inactif"
-        if callback:
-            callback(True)
+def _demander_permission_runtime(callback_ok=None):
+    """Demande la permission via l'API officielle (Activity.requestPermissions).
+    La popup système s'affiche ; la réponse est asynchrone. L'appelant
+    (_verifier_demarrage_gps_natif de main.py) re-vérifie toutes les 4 s
+    via permission_accordee() : dès que l'accord est effectif CÔTÉ
+    ANDROID, le suivi démarre — les résultats bruts du callback Android
+    sont ignorés car parfois incohérents sur Xiaomi (accord affiché mais
+    tableau de résultats vide, etc.)."""
+    activite = _activite()
+    if activite is None:
+        if callback_ok:
+            callback_ok(False)
         return
     try:
-        from android.permissions import request_permissions, Permission
-
-        def _reponse(permissions, resultats):
-            ok = bool(resultats) and all(resultats)
-            if not ok:
-                global etat, derniere_erreur
-                etat = "refuse"
-                derniere_erreur = "permission de localisation refusée"
-            if callback:
-                callback(ok)
-
-        etat = "attente"
-        request_permissions(
-            [Permission.ACCESS_FINE_LOCATION, Permission.ACCESS_COARSE_LOCATION],
-            _reponse,
-        )
+        activite.requestPermissions([_PERMISSION_FINE, _PERMISSION_COARSE], 1)
+        if callback_ok:
+            callback_ok(permission_accordee())
     except Exception as e:
+        global etat, derniere_erreur
         etat = "refuse"
-        derniere_erreur = f"demande de permission impossible : {e}"
-        if callback:
-            callback(False)
+        derniere_erreur = f"requestPermissions impossible : {e}"
+        if callback_ok:
+            callback_ok(False)
 
 
 def _fabriquer_listener():
-    """Crée le LocationListener Python (PythonJavaClass) : appelé par
-    Android sur CHAQUE fix. Le callback tourne dans le thread Java de
-    l'API de localisation : on ne touche à AUCUN objet Kivy ici, on se
-    contente de déposer le point dans la file thread-safe."""
+    """LocationListener Python (PythonJavaClass) : appelé sur chaque fix,
+    dans un thread Java — on ne touche à AUCUN objet Kivy ici, on dépose
+    le point dans la file thread-safe."""
     from jnius import PythonJavaClass, java_method
 
     class ListenerGPS(PythonJavaClass):
@@ -133,8 +121,6 @@ def _fabriquer_listener():
             try:
                 if localisation is None or _file_points is None:
                     return
-                # Filtre de précision : un fix imprécis (intérieur, couverture)
-                # est ignoré plutôt que de polluer la trace.
                 try:
                     precision = localisation.getAccuracy()
                 except Exception:
@@ -171,40 +157,43 @@ def _fabriquer_listener():
 
 
 def demarrer(file_points, intervalle_ms=None, precision_max_m=None):
-    """Démarre le suivi GPS natif.
+    """Démarre le suivi GPS natif. Renvoie (True, "") ou (False, raison).
 
-    Renvoie (True, "") si l'enregistrement du listener est lancé (ou
-    déjà actif), (False, raison) sinon. La permission est demandée au
-    besoin ; tant qu'elle n'est pas accordée, renvoie (False, "permission
-    en attente...") — l'appelant peut retenter demarrer() après la
-    réponse utilisateur (le callback de demande ne peut pas relancer
-    seul le suivi sans toucher à Kivy depuis un thread Java).
+    Ordre :
+      1. permission réellement accordée (checkSelfPermission) ? Sinon :
+         demande runtime popup (l'appelant re-vérifie toutes les 4 s) ;
+      2. LocationManager.requestLocationUpdates sur le premier
+         fournisseur disponible (gps, puis network). Une
+         SecurityException ici ALORS QUE la permission est accordée
+         (bug MIUI) entraîne une re-demande runtime au lieu d'un refus.
     """
     global etat, derniere_erreur, _listener, _gestionnaire
     global _file_points, _intervalle_ms, _precision_max_m
 
     if platform != "android":
         etat = "refuse"
-        return False, "GPS natif disponible uniquement sur Android"
+        derniere_erreur = "GPS natif disponible uniquement sur Android"
+        return False, derniere_erreur
 
     if etat == "actif":
-        # Déjà en cours : on se contente de rebrancher la file (l'appelant
-        # a pu purger/réinitialiser ses listes).
         _file_points = file_points
         return True, ""
 
+    # 1. Permission : vérité terrain via l'API Android.
     if not permission_accordee():
-        if etat != "attente":
-            demander_permission()
-            derniere_erreur = "permission de localisation en attente..."
+        etat = "attente"
+        derniere_erreur = ("permission de localisation en attente : "
+                           "accordez-la dans la popup ou dans les réglages de l'application")
+        _demander_permission_runtime()
         return False, derniere_erreur
 
+    # 2. Enregistrement du listener.
     try:
         from jnius import autoclass, cast
 
-        activite = _contexte()
+        activite = _activite()
         if activite is None:
-            raise RuntimeError("activité Android introuvable")
+            raise RuntimeError(derniere_erreur or "activité introuvable")
 
         if intervalle_ms is not None:
             _intervalle_ms = intervalle_ms
@@ -216,12 +205,8 @@ def demarrer(file_points, intervalle_ms=None, precision_max_m=None):
         contexte = cast("android.content.Context", activite)
         gestionnaire = contexte.getSystemService(activite.LOCATION_SERVICE)
 
-        # Fournisseurs testés dans l'ordre : GPS puis network (repli en
-        # intérieur). FUSED est évité car indisponible sans Google Play
-        # Services récents et non déclaré par défaut.
         fournisseur_choisi = None
-        for nom, essai in (("gps", LocationManager.GPS_PROVIDER),
-                           ("network", LocationManager.NETWORK_PROVIDER)):
+        for essai in (LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER):
             try:
                 if gestionnaire.isProviderEnabled(essai):
                     fournisseur_choisi = essai
@@ -230,15 +215,30 @@ def demarrer(file_points, intervalle_ms=None, precision_max_m=None):
                 continue
         if fournisseur_choisi is None:
             etat = "refuse"
-            return False, "aucun fournisseur de localisation activé (GPS et réseau désactivés ?)"
+            derniere_erreur = ("aucun fournisseur de localisation activé : "
+                               "activez la localisation dans la barre de notifications Android")
+            return False, derniere_erreur
 
         listener = _fabriquer_listener()
-        # Références fortes AVANT l'enregistrement (sinon GC → crash au callback).
         _listener = listener
         _gestionnaire = gestionnaire
 
-        gestionnaire.requestLocationUpdates(
-            fournisseur_choisi, _intervalle_ms, _distance_min_m, listener)
+        try:
+            gestionnaire.requestLocationUpdates(
+                fournisseur_choisi, _intervalle_ms, _distance_min_m, listener)
+        except Exception as e_secu:
+            # SecurityException alors que.checkSelfPermission disait accordé :
+            # bug rencontré sur MIUI après accord manuel via les réglages.
+            # La parade : re-demander la permission runtime UNE fois, ce qui
+            # « resynchronise » l'état interne d'Android.
+            if "security" in str(e_secu).lower():
+                etat = "attente"
+                derniere_erreur = ("permission accordée mais non vue par Android "
+                                   f"(erreur de sécurité : {e_secu}) — nouvelle demande runtime lancée")
+                _demander_permission_runtime()
+                return False, derniere_erreur
+            raise
+
         etat = "actif"
         derniere_erreur = ""
         return True, ""
@@ -267,13 +267,11 @@ def est_actif():
 
 def ouvrir_reglages():
     """Ouvre la page Réglages Android de l'application (Permissions),
-    seule issue quand l'utilisateur a coché « Ne plus demander » :
-    Android n'affichera PLUS jamais la popup, la permission doit être
-    accordée ici à la main. Ne lève jamais."""
+    seule issue quand « Ne plus demander » est coché. Ne lève jamais."""
     try:
         from jnius import autoclass, cast
 
-        activite = _contexte()
+        activite = _activite()
         if activite is None:
             return
         Intent = autoclass("android.content.Intent")
