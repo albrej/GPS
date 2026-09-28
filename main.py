@@ -3437,6 +3437,8 @@ class LiveScreen(Screen):
 
         self.points_trace_live = points
         self.fichier_gpx_actif_live = chemin
+        self._journaliser_evenement_live(
+            f"reprise;gpx={os.path.basename(chemin)};points_lus={len(points)}")
 
         # Journal silencieux des sources, redémarré à partir de
         # maintenant : les points déjà présents dans le fichier n'ont
@@ -3580,10 +3582,14 @@ class LiveScreen(Screen):
 
         Ne touche jamais à la trace "chargée" manuellement (bleue)
         ni à aucun autre onglet."""
+        self._journaliser_evenement_live(
+            f"clic_live;etat_gpslogger={self._gpslogger_actif}")
         if self._gpslogger_actif is True:
             # GPSLogger enregistre déjà (icone présente) : afficher
             # la trace du GPX le plus récent, sans délai.
             chemin = self._trouver_dernier_gpx_gpslogger()
+            self._journaliser_evenement_live(
+                f"voie=started;gpx_recent={chemin}")
             if chemin is not None:
                 self._reprendre_trace_gpslogger_active(chemin)
                 return
@@ -3638,6 +3644,8 @@ class LiveScreen(Screen):
             # EVENT l'aura normalement deja fait, mais l'etat etait
             # inconnu au clic — on le fixe maintenant de facon certaine).
             self._enregistrer_etat_gpslogger(True)
+            self._journaliser_evenement_live(
+                f"resync;fichier_en_croissance={chemin}")
             self._reprendre_trace_gpslogger_active(chemin)
         else:
             self._demarrer_nouveau_suivi_live()
@@ -4077,6 +4085,19 @@ class LiveScreen(Screen):
             except Exception as e:
                 print(f"[Live GPSLogger] Erreur lors de l'ajout d'un point live (point ignoré) : {e}")
 
+    def _journaliser_evenement_live(self, texte):
+        """Ajoute une ligne d'EVENEMENT au journal de post-mortem des
+        points live (debug_points_*.txt, voir _arreter_gpslogger) :
+        clic "Live" avec l'état détecté, chemin de reprise emprunté,
+        nombre de points lus au rechargement, etc. Permet de
+        reconstituer une reprise problématique (ex. compteur reparti
+        de zéro alors que le fichier GPX contenait déjà des points)."""
+        try:
+            self._journal_points_live.append(
+                ("EVENT", datetime.now().strftime("%H:%M:%S.%f")[:-3], texte))
+        except Exception:
+            pass
+
     def _ajouter_point_live(self, point):
         """Ajoute un nouveau point reçu en direct à la trace de cet
         onglet : étend le tracé sur la carte (rouge) et sa courbe
@@ -4421,9 +4442,12 @@ class LiveScreen(Screen):
                 nom_debug = f"debug_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
                 chemin_debug = os.path.join(dossier_cible, nom_debug)
                 with open(chemin_debug, "w", encoding="utf-8") as f:
-                    f.write("heure_reception;lat;lon;ele;source\n")
+                    f.write("TYPE;HEURE;LAT/TEXTE;LON;ELE;SOURCE\n")
                     for entree in self._journal_points_live:
-                        f.write(";".join(str(v) for v in entree) + "\n")
+                        if entree and entree[0] == "EVENT":
+                            f.write(f"EVENT;{entree[1]};{entree[2]}\n")
+                        else:
+                            f.write("POINT;" + ";".join(str(v) for v in entree) + "\n")
         except Exception:
             pass
         finally:
