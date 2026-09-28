@@ -3497,11 +3497,17 @@ class LiveScreen(Screen):
         """Appelée automatiquement au retour au premier plan de l'appli
         (redémarrage après un plantage ou un clic involontaire sur
         "Quitter", ou simple réveil de l'écran) : si GPSLogger est en
-        train d'enregistrer une trace dans son dossier de sortie
-        (fichier qui continue de grossir), réinitialise la trace live
-        affichée et la recharge intégralement depuis ce fichier, pour
-        que le nombre de points affiché corresponde exactement à celui
-        de GPSLogger ("Vue détaillée" -> "Parcouru").
+        train d'enregistrer une trace dans son dossier de sortie,
+        réinitialise la trace live affichée et la recharge intégralement
+        depuis ce fichier, pour que le nombre de points affiché
+        corresponde exactement à celui de GPSLogger ("Vue détaillée"
+        -> "Parcouru").
+
+        Si l'état de GPSLogger est CONNU "started" (broadcast EVENT ou
+        fichier d'état persiste) : rechargement IMMÉDIAT du fichier —
+        pas de délai. Sinon (état inconnu) : vérification par
+        croissance de fichier (comptage, 20 s, re-comptage) avant de
+        recharger, comme avant.
 
         Contrairement à on_click_live_pydroid, cette méthode ne démarre
         JAMAIS un nouveau suivi ni GPSLogger : si aucun fichier n'est
@@ -3531,6 +3537,18 @@ class LiveScreen(Screen):
 
         chemin_candidat = self._trouver_dernier_gpx_gpslogger()
         if chemin_candidat is None:
+            return
+
+        # État CONNU "started" (broadcast EVENT / fichier d'état) :
+        # GPSLogger enregistre, le fichier GPX est la source de vérité
+        # — rechargement IMMÉDIAT, sans attendre la vérification de
+        # croissance (qui n'existe que pour DEVINER l'état inconnu).
+        # C'est ce qui rendait la reprise après mise en veille plus
+        # lente qu'après un "Quitter" (20 s de comptage inutiles).
+        if self._gpslogger_actif is True:
+            self._journaliser_evenement_live(
+                f"resync_immediate;gpx={os.path.basename(chemin_candidat)}")
+            self._reprendre_trace_gpslogger_active(chemin_candidat)
             return
 
         try:
