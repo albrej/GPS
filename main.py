@@ -3446,7 +3446,10 @@ class LiveScreen(Screen):
         self.compteur_sources_live = {}
         self._journal_points_live = []
 
-        self.annotations_live = []
+        # NE PAS vider annotations_live ici : les photos/waypoints pris
+        # pendant le live doivent survivre à la reprise. S'ils sont
+        # perdus en mémoire (redémarrage à froid), ils sont restaurés
+        # depuis le journal du fichier temporaire ci-dessous.
         # NE PAS réinitialiser le fichier temporaire ici : une simple
         # resynchronisation (réveil d'écran, ou redémarrage après un
         # plantage) doit au contraire le CONSERVER s'il est déjà suivi
@@ -3454,6 +3457,7 @@ class LiveScreen(Screen):
         # redémarrer à froid (voir _recuperer_fichier_temp_live_orphelin),
         # pour ne perdre aucune photo déjà associée à cette trace.
         self._recuperer_fichier_temp_live_orphelin()
+        self._restaurer_annotations_depuis_journal()
 
         if points:
             self._afficher_trace_live_sur_carte()
@@ -3475,6 +3479,16 @@ class LiveScreen(Screen):
         self._maj_statut_live(
             f"Trace GPSLogger déjà en cours reprise : {os.path.basename(chemin)} ({len(points)} points).",
             (0.180, 0.490, 0.196, 1)  # #2E7D32
+        )
+        # Retour au statut live standard après 2,5 s (même mécanisme
+        # que le retour après une photo) : le message de reprise est
+        # informatif mais ne doit pas rester figé tant que GPSLogger
+        # n'envoie pas de nouveau point (ex. fix GPS perdu en
+        # intérieur) — le statut standard, lui, se met à jour à
+        # chaque point reçu.
+        Clock.schedule_once(
+            lambda dt: self._maj_statut_live(self._texte_statut_live(), (0.180, 0.490, 0.196, 1)),
+            2.5,
         )
 
     def _resynchroniser_avec_gpslogger(self):
@@ -4088,6 +4102,22 @@ class LiveScreen(Screen):
             if abs(dernier['lat'] - point['lat']) < 1e-6 and abs(dernier['lon'] - point['lon']) < 1e-6:
                 return  # Point identique au dernier déjà affiché (doublon) : ignoré.
 
+        # Garde anti-"rayons de roue" : lors d'une reprise (écran noir,
+        # mise en veille, redémarrage de l'appli), GPSLogger RE-ENVOIE
+        # vers le serveur local des points déjà enregistrés (salve
+        # des requêtes mises en file pendant la suspension) : ce sont
+        # les MÊMES fixes GPS, donc des coordonnées identiques au
+        # 6e décimal (~0,1 m) à des points DÉJÀ dans la trace (chargée
+        # depuis le fichier GPX). Le filtre ci-dessus ne compare qu'au
+        # DERNIER point ; ici on rejette donc tout point identique
+        # (à 1e-6 pres, comme ci-dessus) à un point QUELCONQUE de la
+        # trace. Un VRAI nouveau point, meme quasi immobile (bruit GPS
+        # de plusieurs metres), ne coincide jamais a 0,1 m pres avec
+        # un point existant : ce filtre ne le rejette donc jamais.
+        for p in self.points_trace_live:
+            if abs(p['lat'] - point['lat']) < 1e-6 and abs(p['lon'] - point['lon']) < 1e-6:
+                return  # Point déjà présent dans la trace (re-envoi post-reprise) : ignoré.
+
         self.points_trace_live.append(point)
 
         # Comptage silencieux par source de géolocalisation (gps/network/
@@ -4568,6 +4598,47 @@ class LiveScreen(Screen):
             )
         except Exception as e:
             print(f"[Live] Récupération du fichier temporaire impossible : {e}")
+
+    def _restaurer_annotations_depuis_journal(self):
+        """Après une reprise (resynchronisation à chaud ou redémarrage à
+        froid), reconstruit self.annotations_live (compteur de waypoints
+        du statut, marqueurs bleus sur la carte) à partir du journal du
+        fichier temporaire (journal_temp_live), qui est la source de
+        vérité persistée. Ne fait rien si les annotations sont déjà en
+        mémoire (reprise à chaud : tout est déjà affiché)."""
+        if self.annotations_live:
+            return  # déjà en mémoire (reprise à chaud) : rien à restaurer
+        if not self.journal_temp_live:
+            return  # aucun waypoint à restaurer
+
+        for w in self.journal_temp_live:
+            temps = w.get('time')
+            if isinstance(temps, str):
+                try:
+                    temps = datetime.fromisoformat(temps)
+                except ValueError:
+                    temps = None
+            self.annotations_live.append({
+                'lat': w.get('lat'), 'lon': w.get('lon'),
+                'ele': w.get('ele'), 'time': temps,
+                'name': w.get('name'), 'description': w.get('description'),
+            })
+
+        # Marqueurs bleus sur la carte, s'ils n'y sont pas déjà.
+        if CARTE_DISPONIBLE and self.map_view is not None and not self.marqueurs_waypoints:
+            for w in self.annotations_live:
+                if w.get('lat') is None or w.get('lon') is None:
+                    continue
+                mw = MarqueurWaypoint(
+                    zoom=self.map_view.zoom, lat=w['lat'], lon=w['lon'],
+                    nom=w.get('name'), description=w.get('description'),
+                )
+                self.map_view.add_marker(mw)
+                self.marqueurs_waypoints.append(mw)
+
+        # Le statut est rafraîchi par le prochain _ajouter_point_live ou
+        # par la bascule post-reprise (2,5 s) : le compteur de waypoints
+        # y apparaîtra désormais correctement.
 
     def _construire_waypoints_pour_export(self):
         """Construit la liste de waypoints à intégrer dans le GPX final à
