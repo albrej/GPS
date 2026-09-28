@@ -46,9 +46,307 @@ from kivy.utils import platform
 from kivy.utils import escape_markup
 from kivy.uix.textinput import TextInput
 from kivy.properties import BooleanProperty
-from kivy_garden.mapview import MapMarker
 
 import gps_logic
+
+# Extensions considérées comme des photos pour le nom d'un waypoint
+# (<name> d'un <wpt> ou d'un Placemark KML) : dans ce cas, le nom affiché
+# dans le popup du waypoint est cliquable et ouvre la photo dans la Galerie.
+EXTENSIONS_IMAGE = (".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".bmp", ".gif")
+
+
+def est_nom_image(nom):
+    """True si nom (ex. 'IMG_20260922_012604.jpg') a une extension d'image."""
+    return bool(nom) and str(nom).strip().lower().endswith(EXTENSIONS_IMAGE)
+
+
+_ECOUTEURS_SCAN_PHOTO = []  # empêche Python de libérer le listener Android avant le callback
+
+
+def _chemins_photo_candidats(nom_fichier):
+    """Chemins où chercher nom_fichier sur le stockage partagé si la
+    médiathèque Android ne le connaît pas encore (photo très récente,
+    pas encore indexée). DCIM/Camera est cherché en premier."""
+    chemins = []
+    try:
+        from jnius import autoclass
+        Environment = autoclass('android.os.Environment')
+        dcim = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM).getAbsolutePath()
+        pictures = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES).getAbsolutePath()
+        chemins.append(os.path.join(dcim, "Camera", nom_fichier))
+        chemins.append(os.path.join(dcim, nom_fichier))
+        chemins.append(os.path.join(pictures, nom_fichier))
+    except Exception:
+        pass
+    # Repli si Environment n'est pas accessible : chemin standard connu.
+    chemins.append(f"/storage/emulated/0/DCIM/Camera/{nom_fichier}")
+    return chemins
+
+# Paquets des applications Galerie connues, dans l'ordre de preference.
+# Le premier paquet installe sur l'appareil ouvrira la photo DIRECTEMENT
+# dans la Galerie, sans le selecteur ("Visualiseur d'images (Natif)" /
+# "Afficher les photos"). Sur Xiaomi/Redmi (MIUI/HyperOS) c'est
+# com.miui.gallery ; les autres entrees couvrent Samsung, Google et la
+# galerie AOSP, pour que le comportement reste correct sur un autre
+# appareil. Si aucun ne fonctionne, on retombe sur le ACTION_VIEW
+# classique (selecteur Android).
+PAQUETS_GALERIE = [
+    "com.miui.gallery",            # Xiaomi / Redmi / POCO (MIUI, HyperOS)
+    "com.sec.android.gallery3d",   # Samsung Gallery
+    "com.google.android.gallery3d",  # Galerie Google (anciens Nexus/Pixel)
+    "com.android.gallery3d",       # Galerie AOSP (Androids nus)
+    "com.coloros.gallery",         # Oppo
+    "com.vivo.gallery",            # Vivo
+]
+
+
+def _ouvrir_uri_image(uri):
+    """Lance un Intent ACTION_VIEW sur une URI d'image deja connue
+    (content:// issue de MediaStore ou d'un scan).
+
+    La photo est ouverte DIRECTEMENT dans la Galerie de l'appareil
+    (sans selecteur d'application). On passe en revue les paquets de
+    PAQUETS_GALERIE et on lance l'Intent cible sur chacun :
+      - si le paquet est installe et sait afficher l'image -> ouverture
+        immediate, c'est fini ;
+      - sinon Android leve une exception (ActivityNotFoundException)
+        que l'on intercepte pour essayer le paquet suivant.
+
+    On N'utilise PAS resolveActivity() : depuis Android 11 (API 30),
+    la "visibilite des paquets" fait que resolveActivity renvoie null
+    pour des applis pourtant installees mais non declarees dans le
+    manifeste de l'app (balise <queries>) - c'est exactement pourquoi
+    le selecteur apparaissait encore sur le Redmi malgre setPackage.
+    Si aucun paquet connu ne marche, on retombe sur le ACTION_VIEW
+    classique (Android affichera alors son selecteur)."""
+    try:
+        from jnius import autoclass
+        Intent = autoclass('android.content.Intent')
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        activite = PythonActivity.mActivity
+
+        def _lancer(intent):
+            intent.setDataAndType(uri, "image/*")
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            activite.startActivity(intent)
+
+        # 1) Ouverture directe dans la Galerie : Intent cible sur chaque
+        #    paquet connu ; l'echec (paquet absent) se traduit par une
+        #    exception interceptee pour essayer le suivant.
+        for paquet in PAQUETS_GALERIE:
+            try:
+                intent = Intent(Intent.ACTION_VIEW)
+                intent.setPackage(paquet)
+                _lancer(intent)
+                print("[Waypoint] Photo ouverte via la galerie : " + paquet)
+                return
+            except Exception as e:
+                print("[Waypoint] Galerie " + paquet + " indisponible : " + str(e))
+
+        # 2) Repli : aucune galerie connue n'a fonctionne -> ACTION_VIEW
+        #    classique (Android affichera le selecteur si besoin).
+        print("[Waypoint] Galerie specifique introuvable : ouverture classique.")
+        _lancer(Intent(Intent.ACTION_VIEW))
+    except Exception as e:
+        print(f"[Waypoint] Impossible d'ouvrir la photo : {e}")
+
+
+def _signaler_erreur(message):
+    """Affiche le message d'erreur a l'ecran (Popup) ET dans les logs.
+    Indispensable pour diagnostiquer sur l'appareil : sans cela, les
+    echecs d'ouverture de photo etaient invisibles (logcat uniquement)."""
+    print("[Waypoint] " + str(message))
+    try:
+        def _afficher(dt):
+            contenu = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(10))
+            lbl = Label(text=str(message), size_hint_y=None,
+                        text_size=(dp(280), None), halign="left", valign="middle")
+            lbl.bind(texture_size=lambda w, v: setattr(w, "height", v[1]))
+            btn = Button(text="Fermer", size_hint_y=None, height=dp(44))
+            contenu.add_widget(lbl)
+            contenu.add_widget(btn)
+            pop = Popup(title="Ouverture photo", content=contenu,
+                        size_hint=(0.85, 0.45))
+            btn.bind(on_release=pop.dismiss)
+            pop.open()
+        Clock.schedule_once(_afficher, 0)
+    except Exception:
+        pass
+
+
+def _tableau_chaines(liste):
+    """Convertit une liste Python de chaines en tableau Java String[].
+
+    Compatible avec TOUTES les versions de pyjnius :
+      - versions recentes : via jnius.JArray si present ;
+      - versions anciennes (empaquetees dans les APK Kivy, qui n'ont
+        pas JArray - source du bug "cannot import name 'JArray'") :
+        pyjnius convertit tout seul une liste Python passee en
+        argument de methode Java ; on la passe telle quelle."""
+    try:
+        from jnius import JArray
+        return JArray('java.lang.String')(liste)
+    except ImportError:
+        return liste
+    except Exception:
+        return liste
+
+
+def _uri_content_pour(chemin_complet, nom_fichier):
+    """Interroge la mediatheque Android (MediaStore) et renvoie une URI
+    content:// pour la photo, ou None si la mediatheque ne la connait pas.
+
+    Obligatoire depuis Android 7 (API 24) : un Intent ACTION_VIEW sur une
+    URI file:// (Uri.fromFile) leve FileUriExposedException et la photo
+    ne s'ouvre pas. Seule une URI content:// fournie par MediaStore
+    fonctionne.
+
+    Deux recherches, dans l'ordre :
+      1. par chemin complet (colonne _data) ;
+      2. par nom de fichier seul (colonne _display_name) - retrouve la
+         photo meme si elle a ete deplacee/renommee."""
+    try:
+        from jnius import autoclass
+        ImagesMedia = autoclass('android.provider.MediaStore$Images$Media')
+        ContentUris = autoclass('android.content.ContentUris')
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+
+        resolver = PythonActivity.mActivity.getContentResolver()
+        table = ImagesMedia.EXTERNAL_CONTENT_URI
+
+        def _requete(colonne, valeur):
+            curseur = None
+            try:
+                curseur = resolver.query(
+                    table,
+                    _tableau_chaines(["_id"]),
+                    colonne + "=?",
+                    _tableau_chaines([valeur]),
+                    None,
+                )
+                if curseur is not None and curseur.moveToFirst():
+                    return ContentUris.withAppendedId(table, curseur.getLong(0))
+                return None
+            except Exception as e:
+                _signaler_erreur("MediaStore (" + colonne + ") : " + str(e))
+                return None
+            finally:
+                if curseur is not None:
+                    try:
+                        curseur.close()
+                    except Exception:
+                        pass
+
+        if chemin_complet:
+            uri = _requete("_data", chemin_complet)
+            if uri is not None:
+                return uri
+        if nom_fichier:
+            uri = _requete("_display_name", nom_fichier)
+            if uri is not None:
+                return uri
+        return None
+    except Exception as e:
+        _signaler_erreur("MediaStore indisponible : " + str(e))
+        return None
+
+
+def _fabriquer_listener_scan():
+    """Cree un listener Java (MediaScannerConnection$OnScanCompletedListener)
+    en Python via pyjnius : appele par Android quand le scan du fichier
+    est termine, avec l'URI content:// a jour. La reference est conservee
+    dans _ECOUTEURS_SCAN_PHOTO (voir declaration en tete de fichier) pour
+    empecher Python de liberer l'objet avant le callback."""
+    from jnius import PythonJavaClass, java_method
+
+    class ListenerScan(PythonJavaClass):
+        __javainterfaces__ = ['android/media/MediaScannerConnection$OnScanCompletedListener']
+
+        @java_method('(Ljava/lang/String;Landroid/net/Uri;)V')
+        def onScanCompleted(self, chemin, uri):
+            try:
+                if uri is not None:
+                    print("[Waypoint] Scan termine, URI : " + str(uri))
+                    _ouvrir_uri_image(uri)
+                else:
+                    _signaler_erreur(
+                        "Photo toujours absente de la mediatheque apres scan :\n"
+                        + str(chemin))
+            except Exception as e:
+                _signaler_erreur("Erreur apres scan : " + str(e))
+
+    return ListenerScan()
+
+
+def ouvrir_photo_dans_galerie(chemin_ou_nom):
+    """Ouvre la photo dans la Galerie d'Android a partir de son chemin
+    complet ou de son nom de fichier.
+
+    Ordre de tentative :
+      1. MediaStore (URI content:// - seul type accepte depuis Android 7),
+         recherche par chemin complet puis par nom de fichier ;
+      2. si la photo n'est pas encore indexee (tres recente) : scan
+         MediaScannerConnection, puis ouverture automatique via le
+         callback avec l'URI content:// fraichement creee.
+    Tout echec est affiche dans un Popup a l'ecran (cf. _signaler_erreur)."""
+    if platform != "android" or not chemin_ou_nom:
+        return
+    try:
+        from jnius import autoclass
+
+        nom_fichier = os.path.basename(chemin_ou_nom)
+
+        # Si on a un chemin absolu complet (ex: /storage/emulated/0/DCIM/...)
+        if chemin_ou_nom.startswith("/"):
+            chemin_cible = chemin_ou_nom
+        else:
+            # Sinon, on cherche via les candidats habituels (DCIM/Camera...)
+            chemin_cible = next(
+                (c for c in _chemins_photo_candidats(chemin_ou_nom) if os.path.exists(c)), None
+            )
+
+        if not chemin_cible or not os.path.exists(chemin_cible):
+            # Le fichier n'est pas trouve au chemin attendu : la
+            # mediatheque peut quand meme le connaitre (photo deplacee).
+            uri = _uri_content_pour(None, nom_fichier)
+            if uri is not None:
+                print("[Waypoint] Ouverture via MediaStore (nom seul) : " + str(uri))
+                _ouvrir_uri_image(uri)
+            else:
+                _signaler_erreur(
+                    "Fichier image introuvable sur le disque :\n" + str(chemin_ou_nom))
+            return
+
+        print("[Waypoint] Ouverture directe du fichier : " + str(chemin_cible))
+
+        # 1) URI content:// via MediaStore (methode valide Android 7+)
+        uri = _uri_content_pour(chemin_cible, nom_fichier)
+        if uri is not None:
+            print("[Waypoint] Ouverture via MediaStore : " + str(uri))
+            _ouvrir_uri_image(uri)
+            return
+
+        # 2) Photo pas encore indexee : scan, puis ouverture via callback
+        MediaScannerConnection = autoclass('android.media.MediaScannerConnection')
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        try:
+            listener = _fabriquer_listener_scan()
+            _ECOUTEURS_SCAN_PHOTO.clear()
+            _ECOUTEURS_SCAN_PHOTO.append(listener)
+            MediaScannerConnection.scanFile(
+                PythonActivity.mActivity,
+                _tableau_chaines([chemin_cible]),
+                _tableau_chaines(["image/*"]),
+                listener,
+            )
+            print("[Waypoint] Photo non indexee : scan MediaScanner lance.")
+        except Exception as e:
+            _signaler_erreur("Scan MediaScanner impossible : " + str(e))
+
+    except Exception as e:
+        _signaler_erreur("Impossible d'ouvrir la photo :\n" + str(e))
+
 
 # ----------------------------------------------------------------------
 # Carte interactive (onglet Carte/Découpe) : kivy_garden.mapview est
@@ -77,6 +375,32 @@ if CARTE_DISPONIBLE:
         min_zoom=0, max_zoom=19,
         attribution="(c) OpenStreetMap contributors",
     )
+    # Fond topographique OpenTopoMap : courbes de niveau + ombrage.
+    # Serveur gratuit pour un usage leger (appli personnelle) ;
+    # attribution OpenStreetMap/OpenTopoMap requise.
+    SOURCE_TOPO = MapSource(
+        url="https://tile.opentopomap.org/{z}/{x}/{y}.png",
+        cache_key="opentopomap",
+        min_zoom=0, max_zoom=17,
+        attribution="(c) OpenStreetMap contributors, SRTM | Style: OpenTopoMap (CC-BY-SA)",
+    )
+    # Fond topographique Esri World Topo Map. Attention : ordre des
+    # coordonnees propre a ESRI ({z}/{y}/{x} et non {z}/{x}/{y}).
+    SOURCE_ESRI_TOPO = MapSource(
+        url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+        cache_key="esri_world_topo",
+        min_zoom=0, max_zoom=19,
+        attribution="Esri, HERE, Garmin, USGS, NGA",
+    )
+
+    # Correspondance valeur du selecteur -> fond de carte, pour tous
+    # les onglets (carte, photos, live).
+    SOURCES_FONDS_CARTES = {
+        "satellite": SOURCE_SATELLITE,
+        "plan": SOURCE_PLAN,
+        "topo": SOURCE_TOPO,
+        "esri_topo": SOURCE_ESRI_TOPO,
+    }
 
     class MapViewMolette(MapView):
         """MapView identique, sauf que la molette/le défilement trackpad
@@ -101,17 +425,69 @@ if CARTE_DISPONIBLE:
                 # Force le rechargement immédiat et complet des tuiles manquantes
                 self.trigger_update(True)
 
+        # CLIC LONG (0.6 s) DE GEL/DEGEL : detection au niveau de la
+        # carte ELLE-MEME (pas au niveau Window) : sur PC comme sur
+        # Android, un toucher sur la carte est TOUJOURS consomme (par
+        # le Scatter de la carte quand elle est active, par le
+        # ScrollView ancetre quand elle est gelee si on renvoyait
+        # False) - or Kivy ne declenche PAS les callbacks Window.bind
+        # quand un widget consomme le toucher. Les handlers Window ne
+        # voyaient donc jamais les clics sur la carte. Meme duree que
+        # le clic long du graphique (appareil photo).
+        DUREE_CLIC_LONG_FREEZE = 0.6
+        SEUIL_DEPLACEMENT_FREEZE_DP = 10
+
+        def _bascule_freeze_clic_long(self, touch):
+            """Bascule le gel UNE SEULE fois par geste : declenchee par
+            le timer de 0.6 s (doigt pose sans bouger) OU au
+            relachement d'un appui d'au moins 0.6 s (chemin de repli
+            independant du timer)."""
+            if touch.ud.get("bascule_freeze_effectuee"):
+                return
+            if touch.ud.get("appui_long_annule"):
+                return
+            touch.ud["bascule_freeze_effectuee"] = True
+            timer = touch.ud.get("timer_clic_long_freeze")
+            if timer is not None:
+                timer.cancel()
+                touch.ud["timer_clic_long_freeze"] = None
+            if self.freeze_callback:
+                self.freeze_callback()
+
+        def _annuler_clic_long(self, touch):
+            timer = touch.ud.get("timer_clic_long_freeze")
+            if timer is not None:
+                timer.cancel()
+                touch.ud["timer_clic_long_freeze"] = None
+            touch.ud["appui_long_annule"] = True
+
         def on_touch_down(self, touch):
             if not self.collide_point(*touch.pos):
                 return super().on_touch_down(touch)
 
-            # Si gelé, on ignore la molette et les drags, mais on laisse passer 
-            # l'événement à super() pour que Kivy continue d'analyser le double-tap.
-            if getattr(self, 'freeze_actif', False):
-                return False 
+            # Armement du clic long de gel/degel, AVANT tout test de
+            # gel : doit fonctionner dans les DEUX sens (geler une
+            # carte active ET degeler une carte gelee). IDEMPOTENT :
+            # le handler Window (LiveScreen._debut_touch_carte) arme
+            # AUSSI un timer pour ce toucher, AVANT le dispatch widget ;
+            # si un timer existe deja (cles touch.ud partagees), on ne
+            # rearme rien - un second timer ecraserait la reference du
+            # premier, qui continuerait de vivre et de tirer.
+            touch.ud["clic_long_carte_actif"] = True
+            if touch.ud.get("timer_clic_long_freeze") is None:
+                touch.ud["carte_pos_depart"] = (touch.x, touch.y)
+                touch.ud["temps_depart_freeze"] = Clock.get_time()
+                touch.ud["bascule_freeze_effectuee"] = False
+                touch.ud["appui_long_annule"] = False
+                touch.ud["timer_clic_long_freeze"] = Clock.schedule_once(
+                    lambda dt: self._bascule_freeze_clic_long(touch),
+                    self.DUREE_CLIC_LONG_FREEZE)
 
             bouton = getattr(touch, "button", "")
             if bouton in ("scrollup", "scrolldown", "scrollleft", "scrollright"):
+                # Molette (PC) = deplacement de la carte, pas un clic
+                # long : timer annule.
+                self._annuler_clic_long(touch)
                 dx = dy = 0
                 if bouton == "scrollup":
                     dy = -self.PAS_DEPLACEMENT_PX
@@ -127,62 +503,65 @@ if CARTE_DISPONIBLE:
                 self.center_on(nouvelle_lat, nouvelle_lon)
                 return True
 
+            if getattr(self, 'freeze_actif', False):
+                # Gelee : on CONSOMME le toucher (return True, sans le
+                # "grabber"). Si on renvoyait False, le ScrollView
+                # ancetre le grabberait pour son defilement, et les
+                # evenements move/up deviendraient incoherents pour la
+                # carte. Le timer de clic long (degel) reste actif.
+                return True
+
             return super().on_touch_down(touch)
-    
+
         def on_touch_move(self, touch):
-            # ---> Bloque net le glisser-déposer (pan) de la carte si le gel est actif
+            # Le doigt se deplace : au-dela du seuil, ce n'est plus un
+            # clic long mais un glisser de carte -> timer annule.
+            if touch.ud.get("clic_long_carte_actif"):
+                depart = touch.ud.get("carte_pos_depart")
+                if depart is not None and (
+                        abs(touch.x - depart[0]) > dp(self.SEUIL_DEPLACEMENT_FREEZE_DP)
+                        or abs(touch.y - depart[1]) > dp(self.SEUIL_DEPLACEMENT_FREEZE_DP)):
+                    self._annuler_clic_long(touch)
+
+            # ---> Bloque net le glisser-deplacer (pan) de la carte si le gel est actif
             if getattr(self, 'freeze_actif', False):
                 return True
-                
-            # Empêche le zoom par pincement en neutralisant l'effet multi-touch de la carte
+
+            # Empeche le zoom par pincement en neutralisant l'effet multi-touch de la carte
             if touch.grab_current is not self and len(getattr(self, 'touches', [])) > 1:
                 return True
             return super().on_touch_move(touch)
-    
+
         def on_touch_up(self, touch):
+            if touch.ud.pop("clic_long_carte_actif", False):
+                # Ce toucher avait demarre sur la carte : on annule le
+                # timer s'il pend encore (relachement avant 0.6 s), et
+                # s'il a dure au moins 0.6 s sans bouger et sans bascule
+                # deja effectuee, on bascule AU RELACHEMENT (repli
+                # independant du timer).
+                duree = Clock.get_time() - touch.ud.get("temps_depart_freeze", 0.0)
+                timer = touch.ud.get("timer_clic_long_freeze")
+                if timer is not None:
+                    timer.cancel()
+                    touch.ud["timer_clic_long_freeze"] = None
+                if (not touch.ud.get("bascule_freeze_effectuee")
+                        and not touch.ud.get("appui_long_annule")
+                        and duree >= self.DUREE_CLIC_LONG_FREEZE):
+                    self._bascule_freeze_clic_long(touch)
+
             if not self.collide_point(*touch.pos):
                 return super().on_touch_up(touch)
 
-            # C'est ici, au relâchement du 2nd clic, que Kivy valide is_double_tap
-            if touch.is_double_tap:
-                # Anti-rebond : le journal de diagnostic a montré qu'un
-                # seul geste de double-tap physique déclenche ici DEUX
-                # appels consécutifs (is_double_tap=True vu deux fois de
-                # suite, quasi instantanément — cause précise non confirmée
-                # côté dispatch tactile Kivy, mais le symptôme, lui, est
-                # parfaitement reproductible). On ignore donc toute
-                # nouvelle détection de double-tap trop rapprochée de la
-                # précédente bascule, pour n'en garder qu'une seule par
-                # geste réel de l'utilisateur.
-                maintenant = Clock.get_time()
-                dernier = getattr(self, '_dernier_bascule_freeze_temps', -999)
-                if maintenant - dernier < 0.75:
-                    super().on_touch_up(touch)
-                    return True
-                self._dernier_bascule_freeze_temps = maintenant
-
-                if self.freeze_callback:
-                    self.freeze_callback()
-                # IMPORTANT : ce toucher a quand même été "grabbé" par
-                # on_touch_down de la classe de base MapView (tant que
-                # freeze_actif n'était pas encore actif à ce moment précis),
-                # qui y a incrémenté self._touch_count et mis self._pause à
-                # True. Il FAUT donc laisser la classe de base le "dégrabber"
-                # ici (elle redescend _touch_count à 0 et repasse _pause à
-                # False) — sinon _pause reste bloqué à True pour toujours,
-                # et load_tile_for_source() (kivy_garden.mapview) ne charge
-                # plus jamais aucune nouvelle tuile ensuite. On ignore sa
-                # valeur de retour et on renvoie toujours True nous-mêmes,
-                # pour ne rien changer d'autre au comportement du double-tap.
-                super().on_touch_up(touch)
-                return True
-
             if getattr(self, 'freeze_actif', False):
-                # Même raison que ci-dessus : si ce toucher avait déjà été
-                # grabbé par la classe de base avant que le gel ne s'active
-                # (ex: gelé via la barre d'outils pendant un glisser en
-                # cours), on la laisse le dégrabber correctement, mais on
-                # renvoie toujours True nous-mêmes.
+                # Si ce toucher avait ete "grabbe" par la classe de base
+                # MapView avant que le gel ne s'active (ex: gel declenche
+                # par le clic long pendant que le doigt est encore pose,
+                # ou gele pendant un glisser en cours), on la laisse le
+                # "degrabber" correctement (elle redescend _touch_count
+                # a 0 et repasse _pause a False) - sinon _pause resterait
+                # bloque a True pour toujours et load_tile_for_source()
+                # (kivy_garden.mapview) ne chargerait plus aucune nouvelle
+                # tuile ensuite. On renvoie toujours True nous-memes.
                 if touch.grab_current is self:
                     super().on_touch_up(touch)
                 return True
@@ -250,6 +629,139 @@ if CARTE_DISPONIBLE:
             self._label.center_x = self.center_x
             self._label.center_y = self.center_y + dp(6)
 
+    # Curseur rond et bleu des waypoints (onglet Photos). L'image est cherchée
+    # à côté de main.py : images/blue_dot.png.
+    CHEMIN_BLUE_DOT = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "images", "blue_dot.png")
+
+    def taille_marqueur_waypoint(zoom):
+        """Côté (en pixels) du curseur des waypoints selon le zoom de la
+        carte : petit quand on est loin (16 dp), plus gros quand on zoome
+        (jusqu'à 44 dp). Diamètre doublé par rapport à la première version
+        (onglets Photos et Live)."""
+        return dp(max(16, min(44, 16 + 3.5 * (zoom - 10))))
+
+    class MarqueurWaypoint(MapMarker):
+        """Petit curseur rond et bleu (images/blue_dot.png) posé sur un
+        waypoint. Centré sur le point ; sa taille est redimensionnée par
+        maj_taille(zoom) chaque fois que le zoom de la carte change.
+        Un tap dessus ouvre un popup avec son nom (<name>) et sa
+        description (<desc>)."""
+
+        def __init__(self, zoom=10, nom=None, description=None, **kwargs):
+            kwargs.setdefault("source", CHEMIN_BLUE_DOT)
+            super().__init__(**kwargs)
+            self.nom = nom
+            self.description = description
+            self._cote = None
+            self.anchor_x = 0.5
+            self.anchor_y = 0.5
+            self.size_hint = (None, None)
+            try:
+                self.allow_stretch = True   # permet d'agrandir l'image
+            except Exception:
+                pass
+            # Image absente : on dessine un disque bleu à la place.
+            if not os.path.exists(str(self.source)):
+                from kivy.graphics import Ellipse
+                with self.canvas:
+                    Color(0.12, 0.53, 0.90, 1)
+                    self._disque = Ellipse(pos=self.pos, size=self.size)
+                self.bind(pos=self._maj_disque, size=self._maj_disque)
+            # La taille suit le zoom, pas la taille native de l'image.
+            self.bind(texture_size=self._reappliquer_taille)
+            self.maj_taille(zoom)
+
+        def _maj_disque(self, *args):
+            self._disque.pos = self.pos
+            self._disque.size = self.size
+
+        def maj_taille(self, zoom):
+            self._cote = taille_marqueur_waypoint(zoom)
+            self._reappliquer_taille()
+
+        def _reappliquer_taille(self, *args):
+            if self._cote is None:
+                return
+            if tuple(self.size) != (self._cote, self._cote):
+                cx, cy = self.center       # on garde le centre sur le point
+                self.size = (self._cote, self._cote)
+                self.center = (cx, cy)
+
+        def on_touch_down(self, touch):
+            if self.collide_point(*touch.pos):
+                touch.grab(self)
+                return True
+            return super().on_touch_down(touch)
+
+        def on_touch_up(self, touch):
+            if touch.grab_current is self:
+                touch.ungrab(self)
+                if self.collide_point(*touch.pos):
+                    self._afficher_popup()
+                return True
+            return super().on_touch_up(touch)
+
+        def _afficher_popup(self):
+            contenu = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(10),
+                                 size_hint_y=None)
+            contenu.bind(minimum_height=contenu.setter("height"))
+            
+            if self.description:
+                label_desc = Label(
+                    text=escape_markup(self.description),
+                    markup=True,
+                    halign="center",
+                    valign="middle",
+                    size_hint_y=None,
+                )
+                label_desc.bind(width=lambda w, val: setattr(w, "text_size", (val, None)))
+                label_desc.bind(texture_size=lambda w, val: setattr(w, "height", val[1]))
+                contenu.add_widget(label_desc)
+            
+            texte_nom = escape_markup(self.nom) if self.nom else "Waypoint"
+            nom_est_image = bool(self.nom) and est_nom_image(self.nom)
+            if nom_est_image:
+                # Couleur "bleu Kivy", comme le libellé "Supprimer les
+                # waypoints" : signale que le nom est cliquable.
+                texte_nom = f"[ref=photo][u][color=2fa7d4ff]{texte_nom}[/color][/u][/ref]"
+            
+            label_nom = Label(
+                text=texte_nom,
+                markup=True,
+                halign="center",
+                valign="middle",
+                size_hint_y=None,
+                height=dp(30),
+            )
+            label_nom.bind(width=lambda w, val: setattr(w, "text_size", (val, None)))
+            contenu.add_widget(label_nom)
+            
+            btn_fermer = Button(text="Fermer", size_hint_y=None, height=dp(44))
+            contenu.add_widget(btn_fermer)
+            
+            exterieur = BoxLayout(orientation="vertical")
+            exterieur.add_widget(Widget())
+            exterieur.add_widget(contenu)
+            exterieur.add_widget(Widget())
+            
+            # --- LE POPUP EST CRÉÉ ICI EN PREMIER ---
+            popup = Popup(title="", separator_height=0, content=exterieur, size_hint=(0.85, 0.4))
+            btn_fermer.bind(on_release=popup.dismiss)
+
+            # --- ENSUITE ON BIND LE CLIC DE LA PHOTO EN CONNAISSANCE DE CAUSE ---
+            if nom_est_image:
+                def _clic_photo(instance, ref):
+                    print(f"DEBUG: Tentative d'ouverture de la photo -> {self.nom}")
+                    popup.dismiss()
+                    try:
+                        ouvrir_photo_dans_galerie(self.nom)
+                    except Exception as e:
+                        print(f"ERREUR lors de l'ouverture de la galerie: {e}")
+                label_nom.bind(on_ref_press=_clic_photo)
+
+            popup.open()
+
 
 class GrapheProfil(Widget):
     """Graphique altitude/vitesse redessiné nativement avec les outils
@@ -286,14 +798,8 @@ class GrapheProfil(Widget):
         self.altitudes_secondaire = []
         self.distance_selection = None
         self.callback_clic = None
-        # Appelé (sans argument) sur un appui long (0.6 s) dans la zone
-        # du graphique — utilisé uniquement par l'onglet Live pour
-        # ouvrir l'appareil photo Android. None par défaut : aucun
-        # comportement ajouté pour les autres écrans.
-        self.callback_long_press = None
-        # Bloque toute interaction tactile (sélection de point, appui
-        # long) quand True — même principe et même nom que sur
-        # MapViewMolette, propagé par LiveScreen.basculer_freeze() pour
+        # Bloque toute interaction tactile (sélection de point) quand
+        # True — même principe et même nom que sur MapViewMolette,
         # que le gel/dégel s'applique de la même façon partout. False
         # par défaut : aucun effet pour les écrans qui ne le touchent
         # jamais (Carte/Découpe, Photos).
@@ -505,19 +1011,11 @@ class GrapheProfil(Widget):
             return True
         if not self.collide_point(*touch.pos):
             return super().on_touch_down(touch)
-        if not self.distances_km and not self.callback_long_press:
+        if not self.distances_km:
             return super().on_touch_down(touch)
 
         # Capture le toucher pour suivre le glissement
         touch.grab(self)
-
-        # Appui long (0.6 s) dans la zone du graphique : ouvre l'appareil
-        # photo Android (voir callback_long_press ; None sur les écrans
-        # autres que l'onglet Live, donc sans effet pour eux). Fonctionne
-        # même sans trace chargée sur le graphique (contrairement à la
-        # sélection de point ci-dessous).
-        if self.callback_long_press:
-            touch.ud['long_press_clock'] = Clock.schedule_once(lambda dt: self.callback_long_press(), 0.6)
 
         if not self.distances_km:
             return True
@@ -544,8 +1042,6 @@ class GrapheProfil(Widget):
     def on_touch_up(self, touch):
         if touch.grab_current is self:
             touch.ungrab(self)
-            if 'long_press_clock' in touch.ud:
-                touch.ud['long_press_clock'].cancel()
             if getattr(self, 'freeze_actif', False) or not self.distances_km:
                 return True
 
@@ -1036,19 +1532,23 @@ KV = """
                     text: "Charger une trace"
                     background_color: 0.2, 0.6, 0.86, 1
                     on_release: root.ouvrir_selecteur_fichier()
-                ToggleButton:
-                    text: "Satellite"
-                    group: "vue_carte"
-                    state: "down"
+                # Fond de carte : bouton carre ouvrant le menu deroulant
+                # des 4 vues (satellite par defaut), affichant l'icone
+                # images/Layer.png en 48 x 48 dp.
+                Button:
+                    id: btn_layer
                     size_hint_x: None
-                    width: dp(100)
-                    on_state: if self.state == "down": root.changer_vue_carte("satellite")
-                ToggleButton:
-                    text: "Plan"
-                    group: "vue_carte"
-                    size_hint_x: None
-                    width: dp(90)
-                    on_state: if self.state == "down": root.changer_vue_carte("plan")
+                    width: dp(48)
+                    padding: 0, 0
+                    on_release: root.ouvrir_menu_fonds(self)
+                    Image:
+                        source: app.CHEMIN_ICONE_LAYER
+                        size_hint: None, None
+                        size: dp(48), dp(48)
+                        center_x: self.parent.center_x
+                        center_y: self.parent.center_y
+                        allow_stretch: True
+                        keep_ratio: True
 
             Label:
                 text: root.info_fichier
@@ -1316,20 +1816,24 @@ KV = """
                     text: "Charger une photo"
                     background_color: 0.61, 0.35, 0.71, 1
                     on_release: root.ouvrir_selecteur_photo()
-
-            BoxLayout:
-                size_hint_y: None
-                height: dp(40)
-                spacing: dp(6)
-                ToggleButton:
-                    text: "Satellite"
-                    group: "vue_carte_photo"
-                    state: "down"
-                    on_state: if self.state == "down": root.changer_vue_carte("satellite")
-                ToggleButton:
-                    text: "Plan"
-                    group: "vue_carte_photo"
-                    on_state: if self.state == "down": root.changer_vue_carte("plan")
+                # Fond de carte : bouton carre ouvrant le menu deroulant
+                # des 4 vues (satellite par defaut), meme gabarit que le
+                # bouton "Cam" de l'onglet Live (48 dp), affichant
+                # l'icone images/Layer.png en 48 x 48 dp.
+                Button:
+                    id: btn_layer
+                    size_hint_x: None
+                    width: dp(48)
+                    padding: 0, 0
+                    on_release: root.ouvrir_menu_fonds(self)
+                    Image:
+                        source: app.CHEMIN_ICONE_LAYER
+                        size_hint: None, None
+                        size: dp(48), dp(48)
+                        center_x: self.parent.center_x
+                        center_y: self.parent.center_y
+                        allow_stretch: True
+                        keep_ratio: True
 
             Label:
                 text: root.info_trace
@@ -1560,21 +2064,25 @@ KV = """
                     disabled: root.freeze_actif
                     background_color: 0.2, 0.6, 0.86, 1
                     on_release: root.ouvrir_selecteur_fichier()
-                ToggleButton:
-                    text: "Satellite"
-                    group: "vue_carte_live"
-                    state: "down"
-                    disabled: root.freeze_actif
+                # Fond de carte : bouton carre ouvrant le menu deroulant
+                # des 4 vues (satellite par defaut), affichant l'icone
+                # images/Layer.png en 48 x 48 dp. Soumis au gel.
+                Button:
+                    id: btn_layer
                     size_hint_x: None
-                    width: dp(100)
-                    on_state: if self.state == "down": root.changer_vue_carte("satellite")
-                ToggleButton:
-                    text: "Plan"
-                    group: "vue_carte_live"
+                    width: dp(48)
+                    padding: 0, 0
                     disabled: root.freeze_actif
-                    size_hint_x: None
-                    width: dp(90)
-                    on_state: if self.state == "down": root.changer_vue_carte("plan")
+                    on_release: root.ouvrir_menu_fonds(self)
+                    Image:
+                        source: app.CHEMIN_ICONE_LAYER
+                        size_hint: None, None
+                        size: dp(48), dp(48)
+                        center_x: self.parent.center_x
+                        center_y: self.parent.center_y
+                        allow_stretch: True
+                        keep_ratio: True
+                        opacity: 0.35 if self.parent.disabled else 1
 
             BoxLayout:
                 size_hint_y: None
@@ -1585,6 +2093,30 @@ KV = """
                     disabled: root.freeze_actif
                     on_release: root.on_click_live_pydroid()
                     background_color: 0.15, 0.68, 0.38, 1
+                Button:
+                    # Ouverture de l'appareil photo par SIMPLE CLIC
+                    # (on_release, aucune duree minimale d'appui). Voir
+                    # _verifier_et_ouvrir_camera : le message d'absence
+                    # de live s'affiche toujours. Bouton carre (48 dp,
+                    # comme la hauteur de la rangee) affichant l'icone
+                    # images/Camera.png en 48 x 48 dp (elle remplace
+                    # l'ancien texte "Cam").
+                    id: btn_cam
+                    size_hint_x: None
+                    width: dp(48)
+                    padding: 0, 0
+                    disabled: root.freeze_actif
+                    on_release: root._verifier_et_ouvrir_camera()
+                    background_color: 0.39, 0.58, 0.93, 1
+                    Image:
+                        source: root.CHEMIN_ICONE_CAM
+                        size_hint: None, None
+                        size: dp(48), dp(48)
+                        center_x: self.parent.center_x
+                        center_y: self.parent.center_y
+                        allow_stretch: True
+                        keep_ratio: True
+                        opacity: 0.35 if self.parent.disabled else 1
                 Button:
                     text: "Terminer"
                     disabled: root.freeze_actif
@@ -1884,7 +2416,11 @@ class NumerotationScreen(Screen):
                         nb_points_numerotes += 1
 
             # Calcul du nombre de waypoints présents
-            nb_waypoints = len(self.waypoints_lus) if self.waypoints_lus else 0
+            # Même règle que l'onglet Statistiques : ni n° de points (nom
+            # uniquement en chiffres), ni waypoints superposés au départ
+            # ou à l'arrivée de la trace.
+            nb_waypoints = len(gps_logic.vrais_waypoints(
+                self.waypoints_lus, gps_logic.extremites_segments(self.segments_lus)))
             
             # Affichage demandé
             self.info_fichier = f"Trace : {nom_f}\n{nb_points_numerotes} points déjà numérotés; {nb_waypoints} waypoints."
@@ -2036,6 +2572,34 @@ def _dialogue_natif_fichier(filtres, multiple=False):
             return resultat if resultat else None
     finally:
         racine.destroy()
+
+
+def _construire_menu_fonds_carte(screen):
+    """Construit le menu déroulant compact des fonds de carte du bouton
+    carré "Layer" (onglets Carte, Photos et Live). Plus discret que le
+    menu principal : 4 entrées de 40 dp, largeur 150 dp. La vue
+    courante est marquée d'un point "• " en tête ; le satellite est le
+    fond par défaut (l'attribut _vue_carte_actuelle de l'écran vaut
+    alors "satellite", mis à jour à chaque sélection)."""
+    menu = DropDown(auto_width=False, width=dp(150))
+    actuelle = getattr(screen, "_vue_carte_actuelle", "satellite")
+    vues = [("satellite", "Satellite"), ("plan", "Plan"),
+            ("topo", "Topo"), ("esri_topo", "Topo+")]
+    for valeur, libelle in vues:
+        btn = Button(
+            text=libelle,
+            size_hint_y=None, height=dp(40), font_size="14sp")
+        # Vue courante mise en evidence par la couleur de fond (meme
+        # principe que le marquage de l'ecran actif dans le "Menu"
+        # principal), les autres restent sur le fond standard.
+        if valeur == actuelle:
+            btn.background_color = (0.15, 0.68, 0.38, 1)  # vert #2E7D32
+        btn.bind(on_release=lambda b, v=valeur: (
+            setattr(screen, "_vue_carte_actuelle", v),
+            screen.changer_vue_carte(v),
+            menu.dismiss()))
+        menu.add_widget(btn)
+    return menu
 
 
 def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", ".kml")):
@@ -2503,17 +3067,14 @@ class FusionScreen(Screen):
 
         Clock.schedule_once(_maj_ui, 0)
 
-class MarqueurWaypoint(MapMarker):
-    """Marqueur rond et bleu pour les waypoints."""
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.source = "" # Optionnel : désactive l'icône par défaut si besoin
-        # Vous pouvez définir ici l'apparence visuelle si elle utilise une image spécifique, 
-        # ou laisser Kivy dessiner un point via un Canvas si le composant le supporte.
-        
 class LiveScreen(Screen):
     freeze_actif = BooleanProperty(False)
     info_fichier = StringProperty("Aucune trace à suivre chargée.")
+    # Icone du bouton "Cam" (ouverture de l'appareil photo). L'image est
+    # cherchee a cote de main.py : images/Camera.png (meme principe que
+    # CHEMIN_BLUE_DOT, fonctionnel sur PC comme dans l'APK).
+    CHEMIN_ICONE_CAM = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "images", "Camera.png")
     info_point_text = StringProperty("")
     # Bloc "Informations du point sélectionné" (grille 3 lignes x 2
     # colonnes : Point/GPS, Distance/Altitude, Heure/Vitesse).
@@ -2549,10 +3110,8 @@ class LiveScreen(Screen):
         self.map_view = None
         self.trace_layer = None
         self.marqueurs_actifs = []
+        self.marqueurs_waypoints = []   # curseurs bleus des waypoints (comme l'onglet Photos)
         self.points_courants = []
-        
-        # ---> AJOUT ICI : Liste dédiée pour les waypoints
-        self.marqueurs_waypoints_actifs = []
 
         # --- Trace EN DIRECT (rouge) : totalement indépendante de la
         # trace "chargée" manuellement ci-dessus (bleue). Réinitialisée
@@ -2603,11 +3162,6 @@ class LiveScreen(Screen):
         self.graphe = GrapheProfil()
         self.graphe.afficher_courbe_vitesse = False  # <--- AJOUT : Masque la courbe verte
         self.graphe.afficher_curseur = False  # aucun point n'est sélectionnable sur ce graphique
-        # Appui long sur le graphique -> appareil photo, uniquement si
-        # un live est actif (voir _verifier_et_ouvrir_camera). Limité au
-        # widget du graphique lui-même (et non plus à tout l'écran, y
-        # compris la carte).
-        self.graphe.callback_long_press = self._verifier_et_ouvrir_camera
         self.ids.zone_graphique.add_widget(self.graphe)
         
         self.en_cours_live = False  # Indique si le live est actif ou non
@@ -2616,8 +3170,15 @@ class LiveScreen(Screen):
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
             self.map_view.freeze_callback = self.basculer_freeze
             # AJOUT : Lier le suivi tactile global de la fenêtre comme sur l'onglet 4
-            Window.bind(on_touch_down=self._debut_touch_carte, on_touch_up=self._sur_touch_carte)
+            # AJOUT : Lier le suivi tactile global de la fenêtre comme sur l'onglet 4.
+            # Les handlers peuvent cesser de recevoir les touchers après un cycle
+            # pause/reprise d'Android (ex : retour de l'appareil photo) : on les
+            # rebranche donc aussi depuis OutilsTracesApp.on_resume (méthode
+            # _relier_touchers_fenetre).
+            self._relier_touchers_fenetre()
             self.ids.map_container.add_widget(self.map_view)
+            # La taille des curseurs de waypoints suit le zoom de la carte.
+            self.map_view.bind(zoom=self._maj_taille_waypoints)
         else:
             self.ids.map_container.add_widget(Label(
                 text=(
@@ -2628,6 +3189,10 @@ class LiveScreen(Screen):
                 color=(0.6, 0.1, 0.1, 1),
                 halign="center",
             ))
+
+    def _maj_taille_waypoints(self, instance, zoom):
+        for mw in self.marqueurs_waypoints:
+            mw.maj_taille(zoom)
 
     def dezoomer_carte(self):
         if not CARTE_DISPONIBLE or self.map_view is None:
@@ -2652,9 +3217,18 @@ class LiveScreen(Screen):
     def changer_vue_carte(self, valeur):
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
-        self.map_view.map_source = SOURCE_SATELLITE if valeur == "satellite" else SOURCE_PLAN
+        self.map_view.map_source = SOURCES_FONDS_CARTES[valeur]
         # Indispensable pour éviter les zones grises ou non redessinées au zoom/dézoom
         self.map_view.trigger_update(True)
+
+    def ouvrir_menu_fonds(self, bouton):
+        """Ouvre le menu déroulant compact des fonds de carte sous le
+        bouton carré "Layer" (satellite par défaut, vue courante
+        marquée d'un point). Voir _construire_menu_fonds_carte."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        menu = _construire_menu_fonds_carte(self)
+        menu.open(bouton)
 
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
@@ -2669,8 +3243,10 @@ class LiveScreen(Screen):
             return
         try:
             points = gps_logic.lire_fichier_pour_conversion(chemin)
-            # ---> AJOUT ICI : Lecture des waypoints de la trace
-            waypoints = gps_logic.lire_waypoints_source(chemin, heure_locale=False)
+            # Waypoints de la trace : mêmes « vrais » waypoints que dans
+            # l'onglet Statistiques (ni n° de points, ni waypoints
+            # superposés au départ/à l'arrivée).
+            waypoints_bruts = gps_logic.lire_waypoints_source(chemin, heure_locale=False)
         except Exception as e:
             self.info_fichier = f"Erreur de lecture : {e}"
             return
@@ -2679,13 +3255,20 @@ class LiveScreen(Screen):
             self.info_fichier = "Aucun point GPS trouvé dans ce fichier."
             return
 
+        try:
+            waypoints = gps_logic.vrais_waypoints(
+                waypoints_bruts,
+                [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])],
+            )
+        except Exception:
+            waypoints = []
+
         self.points_courants = points
         self.info_fichier = f"Trace à suivre : {os.path.basename(chemin)}."
         
         self.profil = gps_logic.calculer_profil(points)
         self.graphe.set_donnees(*self.profil)
         
-        # ---> MODIFICATION ICI : On transmet les waypoints à l'affichage
         self._afficher_trace_sur_carte(points, waypoints=waypoints)
 
     def _afficher_trace_sur_carte(self, points, waypoints=None):
@@ -2701,17 +3284,20 @@ class LiveScreen(Screen):
             self.map_view.remove_marker(m)
         self.marqueurs_actifs = []
 
-        # ---> AJOUT ICI : Nettoyage des anciens curseurs de waypoints
-        for mw in self.marqueurs_waypoints_actifs:
+        for mw in self.marqueurs_waypoints:
             self.map_view.remove_marker(mw)
-        self.marqueurs_waypoints_actifs = []
+        self.marqueurs_waypoints = []
 
         if not points:
             return
 
         liste_coords = [(p['lat'], p['lon']) for p in points]
+        # Le calque de la trace est posé APRÈS les marqueurs (D/A et
+        # waypoints) : ajouté en dernier, il s'affiche par-dessus eux,
+        # comme sur les onglets Carte (4) et Photos (6) — dans
+        # kivy_garden.mapview, le dernier élément ajouté s'affiche
+        # par-dessus les précédents.
         self.trace_layer = TraceLayer()
-        self.map_view.add_layer(self.trace_layer)
         self.trace_layer.set_points(liste_coords)
 
         # Gestion des points de départ et d'arrivée (inchangée)
@@ -2729,19 +3315,23 @@ class LiveScreen(Screen):
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
-        # ---> AJOUT ICI : Affichage des waypoints avec un petit curseur rond et bleu
-        # Affichage des waypoints avec un curseur rond et bleu distinct
-        if waypoints:
-            for wpt in waypoints:
-                lat_w = wpt.get('lat')
-                lon_w = wpt.get('lon')
-                if lat_w is not None and lon_w is not None:
-                    # Utilisation d'un marqueur distinct (assurez-vous d'avoir une icône 'marker_blue.png' 
-                    # ou un widget personnalisé, sinon ajustez la source de l'image)
-                    m_wpt = MapMarker(lat=lat_w, lon=lon_w, source='images/marker_blue.png')
-                    
-                    self.map_view.add_marker(m_wpt)
-                    self.marqueurs_waypoints_actifs.append(m_wpt)
+        # Waypoints : petit curseur rond et bleu (images/blue_dot.png),
+        # comme dans l'onglet Photos ; sa taille suit le zoom de la carte.
+        for wpt in (waypoints or []):
+            lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
+            if lat_w is None or lon_w is None:
+                continue
+            mw = MarqueurWaypoint(
+                zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
+                nom=wpt.get('name'), description=wpt.get('description'),
+            )
+            self.map_view.add_marker(mw)
+            self.marqueurs_waypoints.append(mw)
+
+        # Ajout du calque de trace EN DERNIER (après tous les
+        # marqueurs) pour qu'il s'affiche par-dessus les curseurs
+        # bleus des waypoints.
+        self.map_view.add_layer(self.trace_layer)
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
@@ -3049,7 +3639,7 @@ class LiveScreen(Screen):
         ok, message = self._lancer_gpslogger_et_demarrer_enregistrement()
         if ok:
             self._maj_statut_live(
-                f"Live en cours... ({len(self.points_trace_live)} points)",
+                self._texte_statut_live(),
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             )
         else:
@@ -3057,6 +3647,15 @@ class LiveScreen(Screen):
                 f"Enregistrement impossible. Veuillez installer l'application << GPSLogger for Android (Mendhak) >> pour continuer.",
                 (0.776, 0.157, 0.157, 1)  # #C62828
             )
+
+    def _texte_statut_live(self):
+        """Texte du statut live : nombre de points, et nombre de
+        waypoints (photos) des qu'il y en a au moins un."""
+        nb_points = len(self.points_trace_live)
+        nb_waypoints = len(self.annotations_live)
+        if nb_waypoints:
+            return f"Live en cours... ({nb_points} points, {nb_waypoints} waypoint{'s' if nb_waypoints > 1 else ''})"
+        return f"Live en cours... ({nb_points} points)"
 
     def _maj_statut_live(self, texte, couleur=(0.33, 0.33, 0.33, 1)):
         """Affiche un message à la fois dans la console et dans le label
@@ -3322,7 +3921,7 @@ class LiveScreen(Screen):
         self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
 
         self._maj_statut_live(
-            f"Live en cours... ({len(self.points_trace_live)} points)",
+            self._texte_statut_live(),
             (0.180, 0.490, 0.196, 1)  # #2E7D32
         )
 
@@ -3467,7 +4066,7 @@ class LiveScreen(Screen):
         self._maj_statut_live("Reprise du suivi en direct.", (0.180, 0.490, 0.196, 1))  # #2E7D32
         Clock.schedule_once(
             lambda dt: self._maj_statut_live(
-                f"Live en cours... ({len(self.points_trace_live)} points)",
+                self._texte_statut_live(),
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             ),
             1.5,
@@ -3704,6 +4303,14 @@ class LiveScreen(Screen):
                 self.map_view.remove_marker(m)
         self.marqueurs_actifs = []
 
+        # Efface aussi les curseurs bleus des waypoints photo pris
+        # pendant le live : sans cela, ils restaient affichés sur la
+        # carte après "Terminer" alors que la trace, elle, disparaissait.
+        if CARTE_DISPONIBLE and self.map_view is not None:
+            for mw in self.marqueurs_waypoints:
+                self.map_view.remove_marker(mw)
+        self.marqueurs_waypoints = []
+
         self.profil = ([], [], [], [])
         self.profil_live = ([], [], [], [])
         self.graphe.set_donnees(*self.profil)
@@ -3843,11 +4450,7 @@ class LiveScreen(Screen):
                 json.dump(donnees, f, ensure_ascii=False, indent=2, default=str)
             os.replace(chemin_part, self.fichier_temp_live)
 
-            self.temp_live_text = (
-                "Fichier temporaire (supprimé après l'enregistrement de la trace) :\n"
-                f"{os.path.basename(self.fichier_temp_live)}\n"
-                f"Emplacement : {os.path.dirname(self.fichier_temp_live)}"
-            )
+            self.temp_live_text = ""
             return True
         except Exception as e:
             print(f"[Live] Écriture du fichier temporaire impossible : {e}")
@@ -3871,7 +4474,7 @@ class LiveScreen(Screen):
                     os.remove(f)
             self.fichier_temp_live = None
             self.journal_temp_live = []
-            self.temp_live_text = f"Fichier temporaire supprimé : {nom}\nEmplacement : {dossier}"
+            self.temp_live_text = ""
         except Exception as e:
             print(f"[Live] Suppression du fichier temporaire impossible : {e}")
             self.temp_live_text = (
@@ -3891,7 +4494,7 @@ class LiveScreen(Screen):
 
     def _verifier_et_ouvrir_camera(self):
         """Vérifie si un live est en cours avant d'autoriser la prise de
-        photo par appui long, puis ouvre une balise <wpt> "en attente"
+        photo (bouton "Cam"), puis ouvre une balise <wpt> "en attente"
         sur le dernier point GPS connu de la trace en cours — refermée
         par _fermer_waypoint_photo dès que l'utilisateur revient sur
         l'appli après avoir quitté l'appareil photo (voir
@@ -3955,6 +4558,12 @@ class LiveScreen(Screen):
         ok_temp = self._ecrire_fichier_temp_live()
         suffixe = " — fichier temporaire mis à jour." if ok_temp else ""
         self._maj_statut_live(f"Photo(s) enregistrée(s) : {nom_annotation}{suffixe}", (0.180, 0.490, 0.196, 1))
+        # Retour au statut live standard apres 2,5 s : il affiche des
+        # lors le nombre de waypoints ("(n points, x waypoints)").
+        Clock.schedule_once(
+            lambda dt: self._maj_statut_live(self._texte_statut_live(), (0.180, 0.490, 0.196, 1)),
+            2.5,
+        )
 
     def _lister_photos_depuis(self, temps_ouverture):
         """Interroge le MediaStore Android pour lister le nom de toutes
@@ -4053,15 +4662,6 @@ class LiveScreen(Screen):
         # Bascule l'état du gel
         self.freeze_actif = not self.freeze_actif
 
-        # --- DIAGNOSTIC TEMPORAIRE : compte chaque appel de cette
-        # méthode et l'affiche à l'écran (zone "info_fichier", peu
-        # sollicitée par ailleurs sur cet onglet, pour ne pas être
-        # aussitôt recouvert par les messages de statut live). Objectif :
-        # voir si un seul double-tap déclenche 1 seul appel (normal) ou
-        # 2+ appels d'affilée (double bascule = gel qui "ne tient pas").
-        self._compteur_bascule_freeze = getattr(self, '_compteur_bascule_freeze', 0) + 1
-        print(f"[DIAG FREEZE] appel #{self._compteur_bascule_freeze} -> freeze_actif={self.freeze_actif}")
-
         if getattr(self.map_view, 'freeze_actif', None) is not None:
             self.map_view.freeze_actif = self.freeze_actif
 
@@ -4087,25 +4687,126 @@ class LiveScreen(Screen):
             else:
                 self._effacer_info_point_live("Aucun point live enregistré.")
 
+    # Constantes du clic long de gel/degel (identiques a celles de la
+    # carte MapViewMolette ; utilisees par les handlers Window de
+    # secours ci-dessous).
+    DUREE_CLIC_LONG_FREEZE = 0.6
+    SEUIL_DEPLACEMENT_FREEZE_DP = 10
+
+    def _relier_touchers_fenetre(self):
+        """(Re)branche les handlers Window de suivi des touchers sur la
+        carte (rafraichissement des tuiles apres un zoom ou un
+        deplacement - meme principe que sur l'onglet 4). Appele a la
+        construction de l'ecran ET depuis OutilsTracesApp.on_resume :
+        apres un cycle pause/reprise d'Android (retour de l'appareil
+        photo, de la galerie...), les bindings Window peuvent cesser de
+        recevoir les touchers. On debbranche puis rebranche, pour
+        eviter tout doublon d'appel.
+
+        NOTE : la bascule gel/degel par CLIC LONG n'est PAS geree ici :
+        elle vit dans la carte elle-meme (MapViewMolette.on_touch_down),
+        car un toucher sur la carte est toujours consomme par un widget
+        (Scatter de la carte, ou ScrollView ancetre si on laissait
+        filer le toucher) et Kivy ne declenche alors PAS les callbacks
+        Window.bind - les handlers Window ne voient donc jamais les
+        clics sur la carte, seulement ceux sur les zones sans widget
+        interactif."""
+        Window.unbind(
+            on_touch_down=self._debut_touch_carte,
+            on_touch_move=self._mouvement_touch_carte,
+            on_touch_up=self._sur_touch_carte,
+        )
+        Window.bind(
+            on_touch_down=self._debut_touch_carte,
+            on_touch_move=self._mouvement_touch_carte,
+            on_touch_up=self._sur_touch_carte,
+        )
+
+    def _rect_carte_ecran(self):
+        """Rectangle REELLEMENT AFFICHE de la carte, en coordonnees
+        fenetre : map_view.pos est (0,0) et ne reflete pas sa position
+        a l'ecran (le ScrollView deplace le rendu sans mettre a jour
+        pos, et le plein ecran change l'echelle) - l'ancien test
+        collide_point(*touch.pos) comparait donc le clic a un rectangle
+        fictif coin bas-gauche de la fenetre, d'ou la "zone d'action
+        deplacee" observee apres defilement. to_window() convertit la
+        position locale du widget en coordonnees fenetre reelles."""
+        mv = self.map_view
+        mx, my = mv.to_window(mv.x, mv.y)
+        return mx, my, mv.width, mv.height
+
+    def _clic_sur_carte_ecran(self, touch):
+        """True si le toucher (coordonnees fenetre) tombe sur le
+        rectangle reellement affiche de la carte (voir
+        _rect_carte_ecran)."""
+        if self.map_view is None:
+            return False
+        mx, my, mw, mh = self._rect_carte_ecran()
+        return (mx <= touch.x <= mx + mw) and (my <= touch.y <= my + mh)
 
     def _debut_touch_carte(self, window, touch):
-        if (
-            self.manager is not None and self.manager.current == self.name
-            and self.map_view is not None and self.map_view.collide_point(*touch.pos)
-        ):
-            touch.ud["carte_pos_depart"] = (touch.x, touch.y)
+        if self.manager is not None and self.manager.current == self.name:
+            if self._clic_sur_carte_ecran(touch):
+                # SECOURS du clic long de gel/degel : si la carte ELLE-MEME
+                # n.a pas ete distribuee pour ce toucher (cas observe :
+                # carte gelee, aucun evenement on_touch_down),
+                # la Window, elle, voit le toucher. Armement IDEMPOTENT :
+                # on n'arme un timer QUE si aucun n'est deja arme pour ce
+                # toucher par la carte (cles touch.ud partagees).
+                if touch.ud.get("timer_clic_long_freeze") is None:
+                    touch.ud["carte_pos_depart"] = (touch.x, touch.y)
+                    touch.ud["temps_depart_freeze"] = Clock.get_time()
+                    touch.ud["bascule_freeze_effectuee"] = False
+                    touch.ud["appui_long_annule"] = False
+                    touch.ud["timer_clic_long_freeze"] = Clock.schedule_once(
+                        lambda dt: self.map_view._bascule_freeze_clic_long(touch),
+                        self.DUREE_CLIC_LONG_FREEZE)
+                else:
+                    touch.ud["carte_pos_depart"] = (touch.x, touch.y)
+        return False
+        return False
+
+    def _mouvement_touch_carte(self, window, touch):
+        # Doigt qui bouge : annule le clic long (seuil partage avec la
+        # carte, cles touch.ud identiques). Sans effet si le timer a
+        # deja ete consomme par la carte.
+        timer = touch.ud.get("timer_clic_long_freeze")
+        if timer is None:
+            return False
+        depart = touch.ud.get("carte_pos_depart")
+        if depart is not None and (
+                abs(touch.x - depart[0]) > dp(self.SEUIL_DEPLACEMENT_FREEZE_DP)
+                or abs(touch.y - depart[1]) > dp(self.SEUIL_DEPLACEMENT_FREEZE_DP)):
+            timer.cancel()
+            touch.ud["timer_clic_long_freeze"] = None
+            touch.ud["appui_long_annule"] = True
         return False
 
     def _sur_touch_carte(self, window, touch):
+        # Chemin de repli au relachement : si le doigt est reste pose
+        # au moins 0.6 s sans bouger et sans bascule deja effectuee,
+        # on bascule (meme logique que dans la carte, cles partagees).
+        timer = touch.ud.get("timer_clic_long_freeze")
+        if timer is not None:
+            timer.cancel()
+            touch.ud["timer_clic_long_freeze"] = None
+        if (self.manager is not None and self.manager.current == self.name
+                and touch.ud.get("carte_pos_depart") is not None
+                and not touch.ud.get("appui_long_annule")
+                and not touch.ud.get("bascule_freeze_effectuee")
+                and Clock.get_time() - touch.ud.get("temps_depart_freeze", 0.0)
+                >= self.DUREE_CLIC_LONG_FREEZE):
+            self.map_view._bascule_freeze_clic_long(touch)
         if self.manager is None or self.manager.current != self.name:
             return False
         depart = touch.ud.get("carte_pos_depart")
         if CARTE_DISPONIBLE and self.map_view is not None and depart is not None:
-            # Force la mise à jour des tuiles après un zoom ou un déplacement
+            # Force la mise a jour des tuiles apres un zoom ou un deplacement
             self.map_view.trigger_update(True)
         return False
-        
-        
+        return False
+
+
 class CarteScreen(Screen):
     fichier_source = StringProperty("")
     info_fichier = StringProperty("Aucune trace chargée.")
@@ -4163,6 +4864,7 @@ class CarteScreen(Screen):
         super().__init__(**kwargs)
         self.points_courants = []
         self.marqueurs_actifs = []
+        self.marqueurs_waypoints = []   # curseurs bleus des waypoints (comme Photos/Live)
         self.marqueur_curseur = None
         self.trace_layer = None
         self.map_view = None
@@ -4181,6 +4883,8 @@ class CarteScreen(Screen):
             # et bloquerait le glisser — ce qu'on a observé en pratique.
             Window.bind(on_touch_down=self._debut_touch_carte, on_touch_up=self._sur_touch_carte)
             self.ids.map_container.add_widget(self.map_view)
+            # La taille des curseurs de waypoints suit le zoom de la carte.
+            self.map_view.bind(zoom=self._maj_taille_waypoints)
         else:
             self.ids.map_container.add_widget(Label(
                 text=(
@@ -4197,11 +4901,20 @@ class CarteScreen(Screen):
         changer_vue_carte() dans la version desktop."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
-        self.map_view.map_source = SOURCE_SATELLITE if valeur == "satellite" else SOURCE_PLAN
+        self.map_view.map_source = SOURCES_FONDS_CARTES[valeur]
         # L'affectation seule ne suffit pas toujours à relancer le
         # chargement des tuiles : on force explicitement un rafraîchissement
         # complet (sinon le fond peut rester gris-bleu / ne pas revenir).
         self.map_view.trigger_update(True)
+
+    def ouvrir_menu_fonds(self, bouton):
+        """Ouvre le menu déroulant compact des fonds de carte sous le
+        bouton carré "Layer" (satellite par défaut, vue courante
+        marquée d'un point). Voir _construire_menu_fonds_carte."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        menu = _construire_menu_fonds_carte(self)
+        menu.open(bouton)
 
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
@@ -4245,9 +4958,13 @@ class CarteScreen(Screen):
         self.point_coupure_text = ""
         self.status_text = ""
         
-        # ---> MODIFICATION ICI : Calcul des points et des waypoints
+        # Même règle que les onglets Statistiques/Photos/Live : ni n° de
+        # points (nom uniquement en chiffres), ni waypoints superposés au
+        # départ ou à l'arrivée de la trace.
         nb_points = len(points)
-        nb_waypoints = len(waypoints) if waypoints else 0
+        vrais_wpts = gps_logic.vrais_waypoints(
+            waypoints, [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])])
+        nb_waypoints = len(vrais_wpts)
         self.info_fichier = f"Trace : {os.path.basename(chemin)}\n{nb_points} points; {nb_waypoints} waypoints."
 
         self.info_point_text = "Tape sur la carte ou le graphique pour voir le détail d'un point."
@@ -4259,12 +4976,14 @@ class CarteScreen(Screen):
         self.info_point_vit = ""
         self.profil = gps_logic.calculer_profil(points)
         self.graphe.set_donnees(*self.profil)
-        self._afficher_trace_sur_carte(points)
+        self._afficher_trace_sur_carte(points, waypoints=vrais_wpts)
 
-    def _afficher_trace_sur_carte(self, points):
+    def _afficher_trace_sur_carte(self, points, waypoints=None):
         """Equivalent de afficher_trace_sur_carte() dans la version
         desktop : trace la polyligne, place les marqueurs D/A, centre
-        et zoome la carte sur l'emprise de la trace."""
+        et zoome la carte sur l'emprise de la trace. Les waypoints
+        éventuels sont indiqués par un petit curseur rond et bleu
+        (MarqueurWaypoint), comme dans les onglets Photos et Live."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
 
@@ -4274,6 +4993,9 @@ class CarteScreen(Screen):
         for m in self.marqueurs_actifs:
             self.map_view.remove_marker(m)
         self.marqueurs_actifs = []
+        for mw in self.marqueurs_waypoints:
+            self.map_view.remove_marker(mw)
+        self.marqueurs_waypoints = []
         if self.marqueur_curseur is not None:
             self.map_view.remove_marker(self.marqueur_curseur)
             self.marqueur_curseur = None
@@ -4282,9 +5004,23 @@ class CarteScreen(Screen):
             return
 
         liste_coords = [(p['lat'], p['lon']) for p in points]
+        # Le calque de la trace est posé APRÈS les marqueurs (D/A et
+        # waypoints) : ajouté en dernier, il s'affiche par-dessus eux,
+        # comme sur l'onglet Live (7). Sinon les curseurs bleus des
+        # waypoints passaient par-dessus la trace.
         self.trace_layer = TraceLayer()
-        self.map_view.add_layer(self.trace_layer)
         self.trace_layer.set_points(liste_coords)
+
+        for wpt in (waypoints or []):
+            lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
+            if lat_w is None or lon_w is None:
+                continue
+            mw = MarqueurWaypoint(
+                zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
+                nom=wpt.get('name'), description=wpt.get('description'),
+            )
+            self.map_view.add_marker(mw)
+            self.marqueurs_waypoints.append(mw)
 
         dist_dep_arr = gps_logic.calculer_distance_haversine(
             points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
@@ -4300,6 +5036,8 @@ class CarteScreen(Screen):
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
+        self.map_view.add_layer(self.trace_layer)
+
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
         min_lat, max_lat = min(lats), max(lats)
@@ -4310,6 +5048,10 @@ class CarteScreen(Screen):
         if max_delta > 0:
             zoom = int(12 - math.log2(max_delta * 10))
             self.map_view.zoom = max(2, min(zoom, 18))
+
+    def _maj_taille_waypoints(self, instance, zoom):
+        for mw in self.marqueurs_waypoints:
+            mw.maj_taille(zoom)
 
     def _debut_touch_carte(self, window, touch):
         """Mémorise la position de l'appui si le toucher démarre sur la
@@ -4556,17 +5298,19 @@ class PhotosScreen(Screen):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.fichier_trace = ""
         self.points_trace = []
         self.fichier_photo = ""
         self.trace_layer = None
         self.marqueurs_actifs = []
+        self.marqueurs_waypoints = []   # curseurs bleus des waypoints
         self.marqueur_photo = None
         self.map_view = None
 
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
             self.ids.map_container.add_widget(self.map_view)
+            # La taille des curseurs de waypoints suit le zoom de la carte.
+            self.map_view.bind(zoom=self._maj_taille_waypoints)
         else:
             self.ids.map_container.add_widget(Label(
                 text=(
@@ -4577,6 +5321,10 @@ class PhotosScreen(Screen):
                 color=(0.6, 0.1, 0.1, 1),
                 halign="center",
             ))
+
+    def _maj_taille_waypoints(self, instance, zoom):
+        for mw in self.marqueurs_waypoints:
+            mw.maj_taille(zoom)
 
     def dezoomer_carte(self):
         """Réduit le niveau de zoom de la carte (bouton "-", même
@@ -4602,8 +5350,17 @@ class PhotosScreen(Screen):
         changer_fond_carte_photo() dans la version desktop."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
-        self.map_view.map_source = SOURCE_SATELLITE if valeur == "satellite" else SOURCE_PLAN
+        self.map_view.map_source = SOURCES_FONDS_CARTES[valeur]
         self.map_view.trigger_update(True)
+
+    def ouvrir_menu_fonds(self, bouton):
+        """Ouvre le menu déroulant compact des fonds de carte sous le
+        bouton carré "Layer" (satellite par défaut, vue courante
+        marquée d'un point). Voir _construire_menu_fonds_carte."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        menu = _construire_menu_fonds_carte(self)
+        menu.open(bouton)
 
     def ouvrir_selecteur_trace(self):
         contenu = _construire_selecteur_fichier(self._trace_choisie)
@@ -4626,10 +5383,20 @@ class PhotosScreen(Screen):
             self.info_trace = "Aucun point GPS valide trouvé dans ce fichier."
             return
 
-        self.fichier_trace = chemin
         self.points_trace = points
         self.info_trace = f"Trace : {os.path.basename(chemin)}."
-        self._afficher_trace_sur_carte(points)
+
+        # Waypoints de la trace : mêmes « vrais » waypoints que dans l'onglet
+        # Statistiques (ni n° de points, ni waypoints superposés au
+        # départ/à l'arrivée).
+        try:
+            waypoints = gps_logic.vrais_waypoints(
+                gps_logic.lire_waypoints_source(chemin, heure_locale=False),
+                [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])],
+            )
+        except Exception:
+            waypoints = []
+        self._afficher_trace_sur_carte(points, waypoints=waypoints)
 
     def ouvrir_selecteur_photo(self):
         contenu = _construire_selecteur_fichier_photo(self._photo_choisie)
@@ -4720,9 +5487,11 @@ class PhotosScreen(Screen):
             self.status_text = f"Échec de l'enregistrement : {e}"
             self.status_color = [0.8, 0.1, 0.1, 1]
 
-    def _afficher_trace_sur_carte(self, points):
+    def _afficher_trace_sur_carte(self, points, waypoints=None):
         """Trace la polyligne sur la carte et recadre dessus, équivalent
-        de afficher_trace_sur_carte_photo() dans la version desktop."""
+        de afficher_trace_sur_carte_photo() dans la version desktop.
+        Les waypoints éventuels sont indiqués par un petit curseur rond
+        et bleu (MarqueurWaypoint) dont la taille suit le zoom."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
 
@@ -4732,6 +5501,9 @@ class PhotosScreen(Screen):
         for m in self.marqueurs_actifs:
             self.map_view.remove_marker(m)
         self.marqueurs_actifs = []
+        for mw in self.marqueurs_waypoints:
+            self.map_view.remove_marker(mw)
+        self.marqueurs_waypoints = []
         if self.marqueur_photo is not None:
             self.map_view.remove_marker(self.marqueur_photo)
             self.marqueur_photo = None
@@ -4740,9 +5512,24 @@ class PhotosScreen(Screen):
             return
 
         liste_coords = [(p["lat"], p["lon"]) for p in points]
+        # Le calque de la trace est posé APRÈS les marqueurs de
+        # waypoints : ajouté en dernier, il s'affiche par-dessus eux,
+        # comme sur les onglets Live (7) et Carte (4).
         self.trace_layer = TraceLayer()
-        self.map_view.add_layer(self.trace_layer)
         self.trace_layer.set_points(liste_coords)
+
+        for wpt in (waypoints or []):
+            lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
+            if lat_w is None or lon_w is None:
+                continue
+            mw = MarqueurWaypoint(
+                zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
+                nom=wpt.get('name'), description=wpt.get('description'),
+            )
+            self.map_view.add_marker(mw)
+            self.marqueurs_waypoints.append(mw)
+
+        self.map_view.add_layer(self.trace_layer)
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
@@ -4771,6 +5558,13 @@ class EcranAVenir(Screen):
 
 class OutilsTracesApp(App):
     title = "Bubu GPS"
+
+    # Icone du bouton des fonds de carte : accessible dans le kv via
+    # "app.CHEMIN_ICONE_LAYER" (le kv ne voit pas les globales du
+    # module, seulement app, root et les fonctions comme dp()).
+    # L'image est cherchee a cote de main.py : images/Layer.png.
+    CHEMIN_ICONE_LAYER = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "images", "Layer.png")
 
     def build(self):
         # --- VOTRE CODE D'INITIALISATION EXISTANT ---
@@ -4804,6 +5598,15 @@ class OutilsTracesApp(App):
         # Réveil de l'écran / retour au premier plan : resynchronise la
         # trace live avec GPSLogger si un enregistrement est actif.
         ecran_live._resynchroniser_avec_gpslogger()
+        # Rebranche les handlers Window du clic long de gel : ils peuvent
+        # cesser de recevoir les touchers après un cycle pause/reprise
+        # d'Android (ex : retour de l'appareil photo). La détection de
+        # secours au niveau widget (MapViewMolette) couvre le cas où ce
+        # rebranchement ne suffirait pas.
+        try:
+            ecran_live._relier_touchers_fenetre()
+        except Exception:
+            pass
         return True
 
     def build(self):
@@ -4906,44 +5709,6 @@ class OutilsTracesApp(App):
         except Exception as e:
             print(f"Erreur vérification intent au lancement : {e}")
 
-    def _convertir_uri_en_chemin(self, uri_string):
-        """Convertit l'URI Android (file:// ou content://) en un chemin de fichier lisible."""
-        import urllib.parse
-        import os
-        if uri_string.startswith("file://"):
-            return urllib.parse.unquote(uri_string[7:])
-        elif uri_string.startswith("content://"):
-            try:
-                from jnius import autoclass
-                PythonActivity = autoclass('org.kivy.android.PythonActivity')
-                activity = PythonActivity.mActivity
-                context = activity.getApplicationContext()
-                contentResolver = context.getContentResolver()
-                
-                InputStream = contentResolver.openInputStream(uri)
-                File = autoclass('java.io.File')
-                FileOutputStream = autoclass('java.io.FileOutputStream')
-                
-                cache_dir = context.getCacheDir().getAbsolutePath()
-                fichier_tmp = os.path.join(cache_dir, "trace_externe_temp.gpx")
-                
-                fos = FileOutputStream(File(fichier_tmp))
-                # Copie des données du flux content:// vers un fichier cache local lisible en Python
-                from jnius import cast
-                byte_array = autoclass('java.lang.reflect.Array').newInstance(autoclass('java.lang.Byte'), 1024)
-                # Alternative plus simple avec les outils standards Python si le bridge le permet, 
-                # sinon création d'un fichier temporaire via un lecteur Java basique :
-                fos.close()
-                InputStream.close()
-                
-                # Astuce alternative robuste sous Kivy/Android pour les content:// :
-                # On délustre l'URI via un petit lecteur Java ou on copie via shutil si le provider autorise l'accès direct par descripteur.
-                return fichier_tmp
-            except Exception as e:
-                print(f"Erreur conversion content:// : {e}")
-                return None
-        return None
-
     def _traiter_fichier_externe(self, chemin):
         """Bascule sur l'écran 'carte' et charge le fichier de trace."""
         import os
@@ -4956,24 +5721,6 @@ class OutilsTracesApp(App):
             if hasattr(ecran_carte, "charger_trace"):
                 ecran_carte.charger_trace(chemin)
                 
-    def _verifier_intent_android(self, dt):
-        try:
-            from jnius import autoclass
-            PythonActivity = autoclass('org.kivy.android.PythonActivity')
-            activity = PythonActivity.mActivity
-            intent = activity.getIntent()
-            action = intent.getAction()
-            
-            if action == "android.intent.action.VIEW":
-                uri = intent.getData()
-                if uri:
-                    uri_string = uri.toString()
-                    chemin_reel = self._convertir_uri_en_chemin(uri_string)
-                    if chemin_reel and os.path.exists(chemin_reel):
-                        self._charger_trace_externe_onglet_carte(chemin_reel)
-        except Exception as e:
-            print(f"Erreur lors de la récupération de l'intent Android : {e}")
-
     def _convertir_uri_en_chemin(self, uri_string):
         """Convertit une URI content:// ou file:// en chemin de fichier exploitable."""
         if uri_string.startswith("file://"):
@@ -5017,16 +5764,6 @@ class OutilsTracesApp(App):
                 print(f"Erreur conversion content:// : {e}")
                 return None
         return None
-
-    def _charger_trace_externe_onglet_carte(self, chemin):
-        """Bascule sur l'onglet 4 (CarteScreen) et charge le fichier."""
-        # Supposons que votre ScreenManager s'appelle self.sm et l'écran carte 'carte'
-        if hasattr(self, 'sm'):
-            self.sm.current = 'carte' # Nom de l'écran 4 dans votre ScreenManager
-            # Récupération de l'instance de l'écran CarteScreen
-            ecran_carte = self.sm.get_screen('carte')
-            if ecran_carte and hasattr(ecran_carte, '_fichier_choisi'):
-                ecran_carte._fichier_choisi(chemin)
 
     def on_start(self):
         """Si l'appli vient d'être lancée en cliquant sur un fichier

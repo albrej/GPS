@@ -3104,6 +3104,12 @@ class LiveScreen(Screen):
     PACKAGE_GPSLOGGER = "com.mendhak.gpslogger"
     ACTION_TASKER_GPSLOGGER = "com.mendhak.gpslogger.TASKER_COMMAND"
     RECEIVER_TASKER_GPSLOGGER = "com.mendhak.gpslogger.TaskerReceiver"
+    # Broadcast d'ETAT envoye par GPSLogger lui-meme a chaque
+    # demarrage/arret d'enregistrement (feature "automation events")
+    # : lire ses extras (started/stopped) suffit a savoir si une
+    # trace est en cours — remplace la verification par croissance
+    # de fichier (20 s) comme detection principale.
+    ACTION_EVENT_GPSLOGGER = "com.mendhak.gpslogger.EVENT"
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -3125,6 +3131,17 @@ class LiveScreen(Screen):
         # Journal de post-mortem des points directs (voir
         # _ajouter_point_live / _arreter_gpslogger).
         self._journal_points_live = []
+
+        # --- Etat d'enregistrement de GPSLogger (icone de notification
+        # "presente" = started) : mis a jour en temps reel par le
+        # broadcast com.mendhak.gpslogger.EVENT (voir
+        # _enregistrer_receiver_etat_gpslogger / _sur_event_gpslogger)
+        # et persiste dans un petit fichier pour survivre aux
+        # redemarrages de l'appli.
+        self._gpslogger_actif = None  # None = inconnu, True = started, False = stopped
+        self._receiver_etat_gpslogger = None  # recepteur broadcast EVENT (Android)
+        self._charger_etat_gpslogger()
+        self._enregistrer_receiver_etat_gpslogger()
 
         self.annotations_live = []  # photos prises pendant le live (voir _ouvrir_camera_Android)
         # Balise <wpt> "en attente" : ouverte par _verifier_et_ouvrir_camera
@@ -3530,27 +3547,45 @@ class LiveScreen(Screen):
             self._reprendre_trace_gpslogger_active(chemin)
 
     def on_click_live_pydroid(self):
-        """Bouton "Live" (onglet 7) :
-        Étape 0 : vérifie d'abord si GPSLogger n'est pas déjà à l'état
-        actif (trace déjà en cours d'enregistrement, bouton vert
-        "Arrêter l'enregistrement"). GPSLogger n'offrant aucune API pour
-        interroger directement son état, la détection se fait en
-        observant si son dernier fichier .gpx continue de grossir : on
-        compte ses lignes maintenant, puis on recompte 20 secondes plus
-        tard (voir _verifier_gpslogger_actif_suite). Un nombre de lignes
-        qui a grossi signifie qu'un enregistrement est en cours ; sinon,
-        on considère qu'il n'y a pas d'enregistrement en cours.
+        """Bouton "Live" (onglet 7) — nouvelle séquence (détection par
+        l'état de GPSLogger, broadcast com.mendhak.gpslogger.EVENT,
+        équivalent de l'icone de notification présente/absente :
 
-        - Si un enregistrement est en cours : tous les points déjà
-          enregistrés de cette trace sont affichés (carte + graphique)
-          et l'affichage live se poursuit à partir de là.
-        - Sinon (ou si aucun fichier .gpx n'existe) : la séquence
-          habituelle démarre un nouveau suivi (_demarrer_nouveau_suivi_
-          live), exactement comme avant.
+        - état CONNU "started" (GPSLogger enregistre déjà) : affiche
+          directement la trace du GPX le plus récent de GPSLoggerTraces
+          et poursuit le live à partir de là — réponse immédiate,
+          plus aucun délai de vérification.
+        - état CONNU "stopped" : lance GPSLogger (immediatestart,
+          comme avant), puis affiche la trace dès qu'elle existe et
+          démarre le serveur d'écoute — le premier point GPS arrive
+          dans les secondes qui suivent.
+        - état INCONNU (premier lancement, ou broadcast jamais reçu
+          et fichier d'état absent) : repli sur l'ancienne détection
+          par croissance de fichier, réduite à 5 s (au lieu de 20)
+          — voir _verifier_gpslogger_actif_suite.
 
-        Ne touche jamais à la trace "chargée" manuellement (bleue,
-        gérée par ouvrir_selecteur_fichier/_fichier_choisi ci-dessus) ni
-        à aucun autre onglet."""
+        Ne touche jamais à la trace "chargée" manuellement (bleue)
+        ni à aucun autre onglet."""
+        if self._gpslogger_actif is True:
+            # GPSLogger enregistre déjà (icone présente) : afficher
+            # la trace du GPX le plus récent, sans délai.
+            chemin = self._trouver_dernier_gpx_gpslogger()
+            if chemin is not None:
+                self._reprendre_trace_gpslogger_active(chemin)
+                return
+            # Icône "started" mais aucun GPX trouvé (dossiers de
+            # sortie inattendus) : nouveau suivi quand même.
+            self._demarrer_nouveau_suivi_live()
+            return
+
+        if self._gpslogger_actif is False:
+            # Aucun enregistrement en cours (icone absente) : lancer
+            # GPSLogger puis afficher la trace du GPX qui apparaît.
+            self._demarrer_nouveau_suivi_live()
+            return
+
+        # Etat inconnu : repli sur la vérification de croissance de
+        # fichier (comptage maintenant, re-comptage 5 s plus tard).
         chemin_candidat = self._trouver_dernier_gpx_gpslogger()
         if chemin_candidat is None:
             self._demarrer_nouveau_suivi_live()
@@ -3563,33 +3598,32 @@ class LiveScreen(Screen):
             self._demarrer_nouveau_suivi_live()
             return
 
-        # Le nom du fichier candidat est affiché ici (temporairement) :
-        # s'il n'apparaît jamais à l'écran après un clic sur "Live",
-        # c'est que _trouver_dernier_gpx_gpslogger() ne trouve aucun
-        # fichier dans les dossiers surveillés (GPSLogger utilise
-        # probablement un dossier de sortie différent de ceux listés
-        # dans cette méthode).
         self._maj_statut_live(
-            f"Vérification de GPSLogger... ({os.path.basename(chemin_candidat)})",
+            f"Vérification de GPSlogger... ({os.path.basename(chemin_candidat)})",
             (0.33, 0.33, 0.33, 1)
         )
         Clock.schedule_once(
             lambda dt: self._verifier_gpslogger_actif_suite(chemin_candidat, nb_lignes_reference),
-            20,
+            5,
         )
 
     def _verifier_gpslogger_actif_suite(self, chemin, nb_lignes_reference):
-        """Suite (unique, 20 secondes plus tard) de la détection démarrée
-        par on_click_live_pydroid : si le fichier a grossi depuis le
-        premier comptage (nb_lignes_reference), GPSLogger est bien en
-        train d'enregistrer une trace. Sinon, démarre un nouveau suivi
-        normalement."""
+        """Suite (unique, 5 secondes plus tard) de la détection de repli
+        démarrée par on_click_live_pydroid (uniquement quand l'état de
+        GPSLogger est INCONNU — broadcast jamais reçu et fichier d'état
+        absent) : si le fichier a grossi depuis le premier comptage
+        (nb_lignes_reference), GPSLogger est bien en train d'enregistrer
+        une trace. Sinon, démarre un nouveau suivi normalement."""
         try:
             nb_lignes_actuel = self._compter_lignes(chemin)
         except OSError:
             nb_lignes_actuel = nb_lignes_reference
 
         if nb_lignes_actuel != nb_lignes_reference:
+            # L'enregistrement est actif : le memoriser (le broadcast
+            # EVENT l'aura normalement deja fait, mais l'etat etait
+            # inconnu au clic — on le fixe maintenant de facon certaine).
+            self._enregistrer_etat_gpslogger(True)
             self._reprendre_trace_gpslogger_active(chemin)
         else:
             self._demarrer_nouveau_suivi_live()
@@ -3717,6 +3751,120 @@ class LiveScreen(Screen):
         self.info_point_alt = ""
         self.info_point_heure = ""
         self.info_point_vit = ""
+
+    # ------------------------------------------------------------------
+    # Etat d'enregistrement de GPSLogger (icone de notification)
+    # ------------------------------------------------------------------
+    def _chemin_etat_gpslogger(self):
+        """Petit fichier persistant ou l'etat started/stopped de
+        GPSLogger est memorise, pour survivre aux redemarrages de
+        l'appli (le broadcast EVENT n'etant emis qu'aux changements
+        d'etat, un demarrage de GPSLogger pendant que notre appli est
+        morte ne serait pas vu sans lui)."""
+        dossier = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
+        try:
+            os.makedirs(dossier, exist_ok=True)
+        except Exception:
+            pass
+        return os.path.join(dossier, "etat_gpslogger.txt")
+
+    def _charger_etat_gpslogger(self):
+        """Relit l'etat persiste au demarrage de l'appli (None si
+        absent = inconnu)."""
+        try:
+            with open(self._chemin_etat_gpslogger(), "r", encoding="utf-8") as f:
+                contenu = f.read().strip()
+            self._gpslogger_actif = contenu == "started"
+        except Exception:
+            self._gpslogger_actif = None
+
+    def _enregistrer_etat_gpslogger(self, actif):
+        """Memorise l'etat (en memoire ET dans le fichier persiste)."""
+        self._gpslogger_actif = actif
+        try:
+            with open(self._chemin_etat_gpslogger(), "w", encoding="utf-8") as f:
+                f.write("started" if actif else "stopped")
+        except Exception:
+            pass
+
+    def _enregistrer_receiver_etat_gpslogger(self):
+        """Enregistre (une seule fois) le recepteur Android du broadcast
+        com.mendhak.gpslogger.EVENT : GPSLogger l'emet a chaque
+        demarrage (extra started=true) et arret (extra stopped=true)
+        d'enregistrement. C'est la detection "icone presente/absente"
+        demandee : immediate, sans permission speciale, sans lecture
+        des notifications. Sur PC ou si pyjnius echoue (broadcast
+        bloque par le systeme, etc.) : silencieusement sans effet —
+        l'etat reste alors celui du fichier persiste / inconnu, et le
+        clic "Live" bascule sur la verification de croissance de
+        fichier (repli, voir on_click_live_pydroid)."""
+        if self._receiver_etat_gpslogger is not None:
+            return
+        if platform != "android":
+            return
+        try:
+            from jnius import autoclass, PythonJavaClass, java_method
+
+            contexte = None
+            for chemin_classe in ("org.kivy.android.PythonActivity", "org.kivy.android.PythonService"):
+                try:
+                    contexte = autoclass(chemin_classe).mActivity
+                    if contexte:
+                        break
+                except Exception:
+                    continue
+            if contexte is None:
+                return
+
+            action_event = self.ACTION_EVENT_GPSLOGGER
+            sur_event = self._sur_event_gpslogger
+
+            # Recepteur Android implemente en Python (pyjnius) : a
+            # chaque broadcast EVENT de GPSLogger, lit l'extra
+            # started/stopped et met a jour l'etat. La closure
+            # capture les references necessaires : onReceive n'a pas
+            # acces au LiveScreen via self (self = le recepteur).
+            class RecepteurEtat(PythonJavaClass):
+                __javainterfaces__ = ["org/broadcast/RecepteurEtat"]
+                __javacontext__ = "app"
+
+                @java_method("(Landroid/content/Context;Landroid/content/Intent;)V")
+                def onReceive(self, contexte_android, intent):
+                    try:
+                        if intent.getAction() != action_event:
+                            return
+                        if intent.getBooleanExtra("started", False):
+                            sur_event(True)
+                        elif intent.getBooleanExtra("stopped", False):
+                            sur_event(False)
+                    except Exception:
+                        pass
+
+            recepteur = RecepteurEtat()
+            IntentFilter = autoclass("android.content.IntentFilter")
+            filtre = IntentFilter(action_event)
+
+            # Android 13+ exige RECEIVER_EXPORTED pour un broadcast
+            # emis par une AUTRE appli ; si l'appel echoue (Android
+            # plus ancien), on retombe sur l'enregistrement simple.
+            Context = autoclass("android.content.Context")
+            try:
+                contexte.registerReceiver(recepteur, filtre, Context.RECEIVER_EXPORTED)
+            except Exception:
+                contexte.registerReceiver(recepteur, filtre)
+
+            self._receiver_etat_gpslogger = recepteur
+        except Exception as e:
+            # Pyjnius indisponible, module android absent, ou
+            # enregistrement refuse : repli silencieux (verification
+            # de croissance de fichier lors du clic "Live").
+            print(f"[Live GPSLogger] Recepteur d'etat non installe ({e}) : repli sur la verification de fichier.")
+
+    def _sur_event_gpslogger(self, actif):
+        """Callback du broadcast EVENT : memorise le nouvel etat.
+        Appelle depuis le thread Android du recepteur — tout est
+        simple (ecriture fichier + booleen), thread-safe ici."""
+        self._enregistrer_etat_gpslogger(actif)
 
     def demarrer_serveur_live(self):
         """Démarre (une seule fois) le petit serveur HTTP local qui
@@ -4216,6 +4364,10 @@ class LiveScreen(Screen):
 
         Renvoie (ok_arret_enregistrement, ok_fermeture, détail). Ne lève
         jamais d'exception."""
+        # L'ordre d'arrêt est envoyé : l'état repasse à "stopped" (le
+        # broadcast EVENT de GPSLogger le confirmera, mais en cas de
+        # broadcast bloqué par le système, cet état reste correct).
+        self._enregistrer_etat_gpslogger(False)
         # --- Écriture silencieuse du log de comptage par source de
         # géolocalisation (aucun message, comme demandé). Toujours
         # tentée en tout premier, indépendamment du succès du reste de
