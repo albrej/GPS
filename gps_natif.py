@@ -263,3 +263,29 @@ def arreter():
 
 def est_actif():
     return etat == "actif"
+
+
+def ouvrir_reglages():
+    """Ouvre la page Réglages Android de l'application (Permissions),
+    seule issue quand l'utilisateur a coché « Ne plus demander » :
+    Android n'affichera PLUS jamais la popup, la permission doit être
+    accordée ici à la main. Ne lève jamais."""
+    try:
+        from jnius import autoclass, cast
+
+        activite = _contexte()
+        if activite is None:
+            return
+        Intent = autoclass("android.content.Intent")
+        Uri = autoclass("android.net.Uri")
+        contexte = cast("android.content.Context", activite)
+
+        intention = Intent(
+            "android.settings.APPLICATION_DETAILS_SETTINGS",
+            Uri.parse("package:" + contexte.getPackageName()),
+        )
+        intention.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        contexte.startActivity(intention)
+    except Exception as e:
+        global derniere_erreur
+        derniere_erreur = f"impossible d'ouvrir les réglages : {e}"

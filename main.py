@@ -3494,8 +3494,8 @@ class LiveScreen(Screen):
             2.5,
         )
 
-    def _resynchroniser_avec_gpslogger(self):
         return  # GPS natif : la resynchronisation GPSLogger est inutile (les points arrivent directement)
+    def _resynchroniser_avec_gpslogger(self):
         """Appelée automatiquement au retour au premier plan de l'appli
         (redémarrage après un plantage ou un clic involontaire sur
         "Quitter", ou simple réveil de l'écran) : si GPSLogger est en
@@ -3660,9 +3660,6 @@ class LiveScreen(Screen):
                 self.map_view.remove_marker(m)
             self.marqueurs_actifs_live = []
 
-        # d. Le texte de statut passe à l'orange.
-        self._maj_statut_live("Démarrage du suivi en direct : activation du GPS de l'appareil...", (0.937, 0.424, 0.0, 1))  # #EF6C00
-
         # --- Phase 2 : démarrage du GPS NATIF (module gps_natif) ---
         # Les points sont déposés directement dans la file thread-safe
         # self.file_points_live, déjà consommée par
@@ -3703,14 +3700,50 @@ class LiveScreen(Screen):
         if gps_natif.etat == "refuse":
             self.en_cours_live = False
             self._maj_statut_live(
-                "Enregistrement impossible : permission de localisation refusée (à accorder dans les réglages Android de l'application).",
+                "Enregistrement impossible : permission de localisation refusée. Accordez la permission via le bouton Réglages affiché.",
                 (0.776, 0.157, 0.157, 1)  # #C62828
             )
+            self._popup_permission_refusee()
             return
         # Permission accordée entre-temps ? On retente le démarrage,
         # puis on reprogramme un contrôle si ce n'est pas encore actif.
         gps_natif.demarrer(self.file_points_live)
         Clock.schedule_once(self._verifier_demarrage_gps_natif, 4)
+
+    def _popup_permission_refusee(self):
+        """Popup affichée quand la permission de localisation a été
+        REFUSÉE : Android (11+, et MIUI/HyperOS dès le premier refus)
+        ne montrera plus jamais la popup système (« Ne plus demander »
+        implicite). Deux boutons :
+          - « Ouvrir les réglages » : page Permissions de l'appli
+            (gps_natif.ouvrir_reglages) — l'utilisateur y accorde
+            « Position », puis revient dans l'appli ;
+          - « Réessayer » : redémarre le suivi live — si la permission
+            vient d'être accordée, le GPS démarre normalement."""
+        contenu = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(12))
+        lbl = Label(
+            text=("La permission de localisation a été refusée.\n\n"
+                  "Android ne redemandera plus automatiquement.\n"
+                  "Accordez la permission « Position » dans les réglages,\n"
+                  "puis revenez et appuyez sur Réessayer."),
+            text_size=(dp(280), None), halign="left", valign="middle",
+            size_hint_y=None,
+        )
+        lbl.bind(texture_size=lambda w, v: setattr(w, "height", v[1]))
+        contenu.add_widget(lbl)
+
+        boutons = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        btn_reglages = Button(text="Ouvrir les réglages", background_color=(0.2, 0.6, 0.86, 1))
+        btn_reessayer = Button(text="Réessayer", background_color=(0.15, 0.68, 0.38, 1))
+        boutons.add_widget(btn_reglages)
+        boutons.add_widget(btn_reessayer)
+        contenu.add_widget(boutons)
+
+        popup = Popup(title="Permission de localisation", content=contenu,
+                      size_hint=(0.9, 0.5))
+        btn_reglages.bind(on_release=lambda *a: gps_natif.ouvrir_reglages())
+        btn_reessayer.bind(on_release=lambda *a: (popup.dismiss(), self._demarrer_nouveau_suivi_live()))
+        popup.open()
 
 
     def _texte_statut_live(self):
@@ -4427,7 +4460,6 @@ class LiveScreen(Screen):
         except Exception as e:
             details.append(f"échec de l'arrêt du GPS natif : {e}")
         return True, True, " / ".join(details)
-
 
     def _reinitialiser_onglet7_vierge(self):
         """Remet l'onglet Live dans son état initial "vierge", identique
