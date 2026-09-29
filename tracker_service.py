@@ -1,31 +1,31 @@
 # -*- coding: utf-8 -*-
 """
 ============================================================================
- SERVICE DE SUIVI GPS EN PREMIER PLAN (foreground service) Ã¢ÂÂ tracker_service.py
+ SERVICE DE SUIVI GPS EN PREMIER PLAN (foreground service) — tracker_service.py
 
- Processus SÃÂPARÃÂ de l'application : lancÃÂ© par buildozer via
+ Processus SÉPARÉ de l'application : lancé par buildozer via
      services = Tracker:tracker_service.py:foreground
- il continue d'enregistrer les points GPS quand l'ÃÂ©cran est ÃÂ©teint ou
- que l'application est fermÃÂ©e/reculÃÂ©e en arriÃÂ¨re-plan (c'est exactement
+ il continue d'enregistrer les points GPS quand l'écran est éteint ou
+ que l'application est fermée/reculée en arrière-plan (c'est exactement
  ce que faisait GPSLogger).
 
- Fonctionnement (volontairement sans Kivy, pour un dÃÂ©marrage rapide) :
+ Fonctionnement (volontairement sans Kivy, pour un démarrage rapide) :
    1. au lancement : notification de premier plan (obligatoire, sinon
-      Android 8+ tue le service) Ã¢ÂÂ avec le TYPE location sur Android 14+
+      Android 8+ tue le service) — avec le TYPE location sur Android 14+
       (startForeground(id, notif, FOREGROUND_SERVICE_TYPE_LOCATION)) ;
    2. requestLocationUpdates (gps, Looper principal) force
-      Android ÃÂ  calculer des positions ;
+      Android à calculer des positions ;
    3. un thread Python sonde getLastKnownLocation() chaque seconde
-      (mÃÂªme technique ÃÂ©prouvÃÂ©e que gps_natif.py v5 Ã¢ÂÂ aucun callback
+      (même technique éprouvée que gps_natif.py v5 — aucun callback
       Java->Python, qui ne fonctionne pas sous pyjnius) ;
-   4. chaque NOUVELLE position est ajoutÃÂ©e en fin du fichier JSON :
+   4. chaque NOUVELLE position est ajoutée en fin du fichier JSON :
       /storage/emulated/0/GPX_Files/Bubu_GPS_Files/live_service_points.json
       une ligne par point : {"lat":..., "lon":..., "ele":..., "time":iso, "source":...}
 
  L'application (main.py) lit ce fichier pendant le live et absorbe les
- points manquants (dÃÂ©doublonnÃÂ©s en aval par _ajouter_point_live).
+ points manquants (dédoublonnés en aval par _ajouter_point_live).
 
- ArrÃÂªt : main.py appelle ServiceTracker.stop() (jnius), ce qui arrÃÂªte
+ Arrêt : main.py appelle ServiceTracker.stop() (jnius), ce qui arrête
  le service Android et donc ce script.
 ============================================================================
 """
@@ -48,7 +48,7 @@ _etat = {"actif": False, "dernier": None, "erreurs": 0}
 
 
 def _service():
-    """Le Service Android courant (ÃÂ©quivalent de mActivity cÃÂ´tÃÂ© service)."""
+    """Le Service Android courant (équivalent de mActivity côté service)."""
     return autoclass("org.kivy.android.PythonService").mService
 
 
@@ -63,8 +63,8 @@ def _permission_ok(contexte):
 
 def _passer_premier_plan():
     """Notification de premier plan : SANS elle, Android tue le service
-    quelques secondes aprÃÂ¨s l'extinction de l'ÃÂ©cran. Sur Android 14+
-    (API 34, cible du Redmi), startForeground DOIT prÃÂ©ciser le type
+    quelques secondes après l'extinction de l'écran. Sur Android 14+
+    (API 34, cible du Redmi), startForeground DOIT préciser le type
     location, sinon ForegroundServiceTypeNotSpecifiedException."""
     service = _service()
     try:
@@ -80,7 +80,7 @@ def _passer_premier_plan():
             gestionnaire.createNotificationChannel(canal)
 
         builder = Notification.Builder(service, "suivi_gps")
-        builder.setContentTitle("Bubu GPS Ã¢ÂÂ enregistrement en cours")
+        builder.setContentTitle("Bubu GPS — enregistrement en cours")
         builder.setContentText("Le suivi GPS de la trace live est actif.")
         builder.setSmallIcon(service.getApplicationInfo().icon)
         notification = builder.build()
@@ -89,12 +89,12 @@ def _passer_premier_plan():
             # Android 14+ : type location (25) OBLIGATOIRE.
             service.startForeground(1, notification, 25)
         except Exception:
-            # Android plus anciens : variante ÃÂ  2 arguments.
+            # Android plus anciens : variante à 2 arguments.
             service.startForeground(1, notification)
     except Exception as e:
-        # On continue mÃÂªme si la notification ÃÂ©choue : l'enregistrement
-        # restera valable tant que l'appli est ÃÂ  l'ÃÂ©cran, et l'erreur est
-        # consignÃÂ©e dans le fichier de points (ligne "erreur").
+        # On continue même si la notification échoue : l'enregistrement
+        # restera valable tant que l'appli est à l'écran, et l'erreur est
+        # consignée dans le fichier de points (ligne "erreur").
         try:
             with open(CHEMIN_POINTS, "a", encoding="utf-8") as f:
                 f.write(json.dumps({"erreur": f"notification: {e}",
@@ -104,13 +104,13 @@ def _passer_premier_plan():
 
 
 def _boucle(contexte, gestionnaire):
-    """Thread de sondage : mÃÂªme logique que gps_natif.py v5."""
+    """Thread de sondage : même logique que gps_natif.py v5."""
     dernier = None
     tours = 0
     while _etat["actif"]:
-        # Battement de cÃÂur (une ligne toutes les 60 s) : permet de
-        # vÃÂ©rifier dans le fichier que le service a SURVÃÂCU ÃÂ  l'ÃÂ©cran
-        # ÃÂ©teint (l'appli ignore ces lignes, cf. _absorber_points_service).
+        # Battement de cœur (une ligne toutes les 60 s) : permet de
+        # vérifier dans le fichier que le service a SURVÉCU à l'écran
+        # éteint (l'appli ignore ces lignes, cf. _absorber_points_service).
         tours += 1
         if tours % 60 == 0:
             try:
@@ -131,9 +131,9 @@ def _boucle(contexte, gestionnaire):
                     continue
                 if meilleur is None or loc.getTime() > meilleur.getTime():
                     meilleur = loc
-            # Fournisseur "network" ignorÃÂ© : position de cache
-            # toujours identique (Redmi/MIUI), trÃÂ¨s ÃÂ©loignÃÂ©e de la
-            # trace rÃÂ©elle -> points parasites dans le GPX.
+            # Fournisseur "network" ignoré : position de cache
+            # toujours identique (Redmi/MIUI), très éloignée de la
+            # trace réelle -> points parasites dans le GPX.
             if meilleur is not None:
                 try:
                     if str(meilleur.getProvider() or "") == "network":
@@ -178,14 +178,14 @@ def main():
 
     if not _permission_ok(contexte):
         # Sans permission, le service ne peut rien enregistrer : il
-        # s'arrÃÂªte proprement (l'appli affichera l'erreur de permission).
+        # s'arrête proprement (l'appli affichera l'erreur de permission).
         return
 
     LocationManager = autoclass("android.location.LocationManager")
     Looper = autoclass("android.os.Looper")
     gestionnaire = contexte.getSystemService(service.LOCATION_SERVICE)
 
-    # Listener Java factice (le callback Python n'est jamais exÃÂ©cutÃÂ©,
+    # Listener Java factice (le callback Python n'est jamais exécuté,
     # cf. gps_natif.py) : on l'enregistre uniquement pour FORCER le
     # calcul de positions. Construit via PythonJavaClass.
     from jnius import PythonJavaClass, java_method
@@ -211,20 +211,20 @@ def main():
 
     listener = ListenerFactice()
     try:
-        # Seul le fournisseur GPS est enregistrÃÂ© : le fournisseur
-        # "network" renvoie une position de cache grossiÃÂ¨re et toujours
-        # identique sur ce tÃÂ©lÃÂ©phone (points parasites dans la trace).
+        # Seul le fournisseur GPS est enregistré : le fournisseur
+        # "network" renvoie une position de cache grossière et toujours
+        # identique sur ce téléphone (points parasites dans la trace).
         # Les fixes "fused" restent lus par le sondage (dernier fix
-        # calculÃÂ© par Google Play Services, rafraÃÂ®chi en continu).
-        # Mode ÃÂ« PAR DISTANCE ÃÂ» (5 m) : voir le commentaire dÃÂ©taillÃÂ© de
-        # gps_natif.py Ã¢ÂÂ comportement le plus propre pour la randonnÃÂ©e.
+        # calculé par Google Play Services, rafraîchi en continu).
+        # Mode « PAR DISTANCE » (5 m) : voir le commentaire détaillé de
+        # gps_natif.py — comportement le plus propre pour la randonnée.
         essai = LocationManager.GPS_PROVIDER
         if gestionnaire.isProviderEnabled(essai):
             gestionnaire.requestLocationUpdates(
                 essai, 1000, 5.0, listener, Looper.getMainLooper())
     except Exception:
-        # MÃªme si l'enregistrement Ã©choue (p.ex. GPS dÃ©sactivÃ© au
-        # dÃ©marrage), le service continue : le sondage getLastKnown-
+        # Même si l'enregistrement échoue (p.ex. GPS désactivé au
+        # démarrage), le service continue : le sondage getLastKnown-
         # Location reste la source principale des points.
         pass
 
@@ -234,7 +234,7 @@ def main():
     sondage = threading.Thread(target=_boucle, args=(contexte, gestionnaire), daemon=True)
     sondage.start()
     # Le thread principal du service attend : le service vit tant que
-    # l'appli ne l'arrÃÂªte pas (ServiceTracker.stop -> stopService).
+    # l'appli ne l'arrête pas (ServiceTracker.stop -> stopService).
     while _etat["actif"]:
         time.sleep(10.0)
 

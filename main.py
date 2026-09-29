@@ -3761,12 +3761,33 @@ class LiveScreen(Screen):
 
     def _texte_statut_live(self):
         """Texte du statut live : nombre de points, et nombre de
-        waypoints (photos) des qu'il y en a au moins un."""
+        waypoints (photos) des qu'il y en a au moins un.
+
+        Si des points du service (écran éteint) viennent d'être
+        absorbés (rattrapage), une mention distincte les comptabilise
+        séparément : sans elle, impossible de différencier le
+        rattrapage de l'affichage en direct des nouveaux points."""
         nb_points = len(self.points_trace_live)
         nb_waypoints = len(self.annotations_live)
+        texte = f"Live en cours... ({nb_points} points"
         if nb_waypoints:
-            return f"Live en cours... ({nb_points} points, {nb_waypoints} waypoint{'s' if nb_waypoints > 1 else ''})"
-        return f"Live en cours... ({nb_points} points)"
+            texte += f", {nb_waypoints} waypoint{'s' if nb_waypoints > 1 else ''}"
+        texte += ")"
+        if self._rattrapage_actif():
+            texte += (f" — dont {self._rattrapage_points} point(s) "
+                      f"rattrapé(s) pendant l'écran éteint")
+        return texte
+
+    def _rattrapage_actif(self):
+        """Vrai si des points du service viennent d'être absorbés
+        (rattrapage après écran éteint) il y a moins de 15 s : le statut
+        les affiche alors séparément, en bleu au lieu du vert, pour
+        distinguer clairement le rattrapage du flux live normal."""
+        nb = getattr(self, "_rattrapage_points", 0)
+        heure = getattr(self, "_rattrapage_heure", None)
+        if nb <= 0 or heure is None:
+            return False
+        return (datetime.now() - heure).total_seconds() < 15.0
 
     def _maj_statut_live(self, texte, couleur=(0.33, 0.33, 0.33, 1)):
         """Affiche un message à la fois dans la console et dans le label
@@ -4250,7 +4271,12 @@ class LiveScreen(Screen):
         dépose dans la file live : le pipeline habituel les affiche et
         les dédoublonne (_ajouter_point_live rejette une position déjà
         présente à 1e-6 près). Les lignes non-ponctuelles (début_session,
-        erreur) sont ignorées."""
+        erreur) sont ignorées.
+
+        Compte les points absorbés (self._rattrapage_points) : le statut
+        live les affiche alors en BLEU et séparément (« dont N point(s)
+        rattrapé(s) pendant l'écran éteint ») pour distinguer le
+        rattrapage du flux live normal."""
         chemin = self.CHEMIN_POINTS_SERVICE
         if not os.path.exists(chemin):
             return
@@ -4261,6 +4287,7 @@ class LiveScreen(Screen):
                 lignes = f.readlines()
         except OSError:
             return
+        nb_absorbes = 0
         for ligne in lignes[self._lignes_service_lues:]:
             self._lignes_service_lues += 1
             ligne = ligne.strip()
@@ -4284,6 +4311,23 @@ class LiveScreen(Screen):
                 "name": None,
                 "source": donnees.get("source", "service"),
             })
+            nb_absorbes += 1
+
+        # Compteur de rattrapage : cumule les points absorbés de la
+        # salve en cours ; une NOUVELLE salve (plus de 15 s après la
+        # précédente, ex. retour d'un nouvel écran éteint) repart de
+        # zéro pour n'afficher que les points du dernier rattrapage.
+        if nb_absorbes > 0:
+            ancienne_heure = getattr(self, "_rattrapage_heure", None)
+            if (ancienne_heure is None
+                    or (datetime.now() - ancienne_heure).total_seconds() >= 15.0):
+                self._rattrapage_points = nb_absorbes
+            else:
+                self._rattrapage_points = getattr(self, "_rattrapage_points", 0) + nb_absorbes
+            self._rattrapage_heure = datetime.now()
+            self._journaliser_evenement_live(
+                f"rattrapage : {nb_absorbes} point(s) absorbé(s) du service "
+                f"(salve : {self._rattrapage_points})")
 
     def _journaliser_evenement_live(self, texte):
         """Ajoute une ligne d'EVENEMENT au journal de post-mortem des
@@ -4356,9 +4400,17 @@ class LiveScreen(Screen):
         distances_km, distances_ele, altitudes, vitesses_kmh = self.profil_live
         self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
 
+        # Couleur du statut : BLEU pendant un rattrapage de points du
+        # service (écran éteint) — pour distinguer visuellement le
+        # rattrapage du vert du flux live normal.
+        if self._rattrapage_actif():
+            couleur_statut = (0.086, 0.396, 0.753, 1)  # #1665C0 (bleu)
+        else:
+            couleur_statut = (0.180, 0.490, 0.196, 1)  # #2E7D32 (vert)
+
         self._maj_statut_live(
             self._texte_statut_live(),
-            (0.180, 0.490, 0.196, 1)  # #2E7D32
+            couleur_statut
         )
 
         idx = len(self.points_trace_live) - 1
@@ -6070,7 +6122,7 @@ class OutilsTracesApp(App):
         barre.add_widget(Label(text="Bubu GPS", bold=True, color=(1, 1, 1, 1)))
 
         self.btn_quitter = Button(text="Quitter", size_hint_x=None, width=dp(110))
-        self.btn_quitter.bind(on_release=lambda inst: self.stop())
+        self.btn_quitter.bind(on_release=self._quitter_application)
         barre.add_widget(self.btn_quitter)
 
         from kivy.graphics import Color, Rectangle
@@ -6316,6 +6368,75 @@ class OutilsTracesApp(App):
             else:
                 btn.background_color = COULEUR_NORMAL
         self.dropdown.open(instance)
+
+    def _quitter_application(self, *args):
+        """Bouton « Quitter » : pendant un live, NE PAS quitter vraiment —
+        quitter l'appli (App.stop) tue AUSSI le service de suivi (le
+        processus de la tâche reçoit un SIGKILL, service p4a inclus),
+        et l'enregistrement s'arrête net (le point vert de localisation
+        s'éteint). On propose donc :
+          - « Continuer en arrière-plan » : moveTaskToBack — l'appli
+            passe derrière l'écran d'accueil, EXACTEMENT comme appuyer
+            sur Accueil ; le live et le service continuent (c'est le
+            mode éprouvé avec l'écran éteint) ;
+          - « Quitter quand même » : arrête réellement (l'enregistrement
+            sera interrompu, mais le marqueur de session permet de
+            reprendre les points déjà écrits par le service) ;
+          - « Annuler » : revient à l'appli sans rien changer.
+        Hors live : quitte directement, comme avant."""
+        live_actif = False
+        try:
+            if "Live" in self.sm.screen_names:
+                live_actif = bool(self.sm.get_screen("Live").en_cours_live)
+        except Exception:
+            live_actif = False
+
+        if not live_actif:
+            self.stop()
+            return
+
+        contenu = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(12))
+        lbl = Label(
+            text=("Un enregistrement live est en cours.\n\n"
+                  "Quitter l'application arrêterait aussi\n"
+                  "l'enregistrement GPS (service tué).\n\n"
+                  "Pour garder l'enregistrement actif,\n"
+                  "choisissez « Continuer en arrière-plan »."),
+            text_size=(dp(290), None), halign="left", valign="middle",
+        )
+        lbl.bind(texture_size=lambda w, v: setattr(w, "height", v[1]))
+        contenu.add_widget(lbl)
+
+        boutons = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+        btn_fond = Button(text="Continuer en arrière-plan",
+                          background_color=(0.15, 0.68, 0.38, 1))
+        btn_quit = Button(text="Quitter quand même",
+                          background_color=(0.776, 0.157, 0.157, 1))
+        btn_annul = Button(text="Annuler",
+                           background_color=(0.4, 0.4, 0.4, 1))
+        boutons.add_widget(btn_fond)
+        boutons.add_widget(btn_quit)
+        boutons.add_widget(btn_annul)
+        contenu.add_widget(boutons)
+
+        popup = Popup(title="Live en cours", content=contenu,
+                      size_hint=(0.92, 0.5))
+
+        def _arriere_plan(*_):
+            popup.dismiss()
+            try:
+                from jnius import autoclass
+                activite = autoclass("org.kivy.android.PythonActivity").mActivity
+                activite.moveTaskToBack(True)
+            except Exception:
+                # Hors Android (tests PC) : simple minimisation impossible,
+                # on ne fait rien (l'appli reste ouverte).
+                pass
+
+        btn_fond.bind(on_release=_arriere_plan)
+        btn_quit.bind(on_release=lambda *_: (popup.dismiss(), self.stop()))
+        btn_annul.bind(on_release=lambda *_: popup.dismiss())
+        popup.open()
 
     def _changer_ecran(self, nom_ecran):
         self.dropdown.dismiss()
