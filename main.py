@@ -3774,8 +3774,7 @@ class LiveScreen(Screen):
             texte += f", {nb_waypoints} waypoint{'s' if nb_waypoints > 1 else ''}"
         texte += ")"
         if self._rattrapage_actif():
-            texte += (f" — dont {self._rattrapage_points} point(s) "
-                      f"rattrapé(s) pendant l'écran éteint")
+            texte += f" — dont {self._rattrapage_points} point(s) rattrapé(s)"
         return texte
 
     def _rattrapage_actif(self):
@@ -4168,6 +4167,19 @@ class LiveScreen(Screen):
             except Exception:
                 pass
 
+            # BATTEMENT DE STATUT : pendant un live actif avec des
+            # points, le compteur se rafraîchit chaque seconde. Sans
+            # cela, le statut ne bougeait qu'à l'arrivée d'un NOUVEAU
+            # point (mode 5 m : rien si on ne bouge pas), et restait
+            # « figé » après « Terminer » → « Annuler ».
+            if (not self.pause_traitement_live and self.points_trace_live
+                    and (self.statut_live_text or "").startswith("Live en cours")):
+                if self._rattrapage_actif():
+                    couleur_battement = (0.086, 0.396, 0.753, 1)  # bleu
+                else:
+                    couleur_battement = (0.180, 0.490, 0.196, 1)  # vert
+                self._maj_statut_live(self._texte_statut_live(), couleur_battement)
+
     # -------------------------------------------------------------
     # Service de premier plan (foreground service "Tracker") : garde
     # l'enregistrement GPS actif écran éteint / appli fermée
@@ -4257,8 +4269,22 @@ class LiveScreen(Screen):
         self._clore_marqueur_session()
         try:
             from jnius import autoclass
+            activite = autoclass("org.kivy.android.PythonActivity").mActivity
+            # 1) Désactiver l'auto-redémarrage AVANT l'arrêt : sinon le
+            #    service se relance tout seul après sa destruction.
+            try:
+                autoclass("org.kivy.android.PythonService").mService.setAutoRestartService(False)
+            except Exception:
+                pass
+            # 2) stop() exige l'activité (Context) en argument dans p4a :
+            #    sans elle, l'appel échouait silencieusement (exception
+            #    attrapée) et le service continuait — le point vert de
+            #    localisation restait allumé après « Terminer ».
             service = autoclass("org.perso.outilstraces.ServiceTracker")
-            service.stop()
+            try:
+                service.stop(activite)
+            except Exception:
+                service.stop()
             print("[Live service] Service tracker arrêté.")
         except Exception as e:
             print(f"[Live service] Erreur à l'arrêt du service tracker : {e}")
@@ -4317,7 +4343,15 @@ class LiveScreen(Screen):
                 "name": None,
                 "source": donnees.get("source", "service"),
             })
-            nb_absorbes += 1
+            # RATTRAPAGE = seulement les points ANCIENS (> 20 s) : ceux
+            # enregistrés pendant une absence (écran éteint, arrière-
+            # plan, pause). Les points récents (< 20 s) sont des doublons
+            # normaux du service pendant que l'appli est ouverte : ils
+            # sont déposés (le dédoublonnage en aval les ignore) mais ne
+            # comptent PAS comme rattrapage — sinon le message « dont N
+            # rattrapés » s'afficherait même l'écran allumé.
+            if (datetime.now() - heure).total_seconds() > 20.0:
+                nb_absorbes += 1
 
         # Compteur de rattrapage : cumule les points absorbés de la
         # salve en cours ; une NOUVELLE salve (plus de 15 s après la
@@ -6427,10 +6461,14 @@ class OutilsTracesApp(App):
         lbl.bind(texture_size=lambda w, v: setattr(w, "height", v[1]))
         contenu.add_widget(lbl)
 
-        boutons = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
-        btn_fond = Button(text="Continuer en arrière-plan",
+        # Boutons empilés verticalement : côte à côte, les libellés
+        # longs (« Continuer en arrière-plan ») étaient tronqués et
+        # devenaient illisibles sur l'écran du téléphone.
+        boutons = BoxLayout(orientation="vertical",
+                            size_hint_y=None, height=dp(160), spacing=dp(8))
+        btn_fond = Button(text="Continuer en arriere-plan",
                           background_color=(0.15, 0.68, 0.38, 1))
-        btn_quit = Button(text="Quitter quand même",
+        btn_quit = Button(text="Quitter quand meme",
                           background_color=(0.776, 0.157, 0.157, 1))
         btn_annul = Button(text="Annuler",
                            background_color=(0.4, 0.4, 0.4, 1))
@@ -6440,7 +6478,7 @@ class OutilsTracesApp(App):
         contenu.add_widget(boutons)
 
         popup = Popup(title="Live en cours", content=contenu,
-                      size_hint=(0.92, 0.5))
+                      size_hint=(0.92, 0.62))
 
         def _arriere_plan(*_):
             popup.dismiss()
