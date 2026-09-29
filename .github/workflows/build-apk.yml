@@ -33,6 +33,12 @@ jobs:
       - name: Compiler l'APK
         run: yes | buildozer -v android debug
 
+      - name: Vérifier manifest APK
+        run: |
+          unzip -o bin/*.apk AndroidManifest.xml -d /tmp/apk_check
+          strings /tmp/apk_check/AndroidManifest.xml | grep -i foregroundServiceType \
+            || echo "ATTENTION: foregroundServiceType ABSENT du manifest !"
+
       - name: Mettre l'APK à disposition en téléchargement
         uses: actions/upload-artifact@v4
         with:
