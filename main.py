@@ -4157,10 +4157,16 @@ class LiveScreen(Screen):
         # Absorption des points du service de premier plan (écrits pendant
         # un écran éteint ou un arrière-plan prolongé) : le service tourne
         # dans son propre processus et dépose ses points dans un fichier.
-        try:
-            self._absorber_points_service()
-        except Exception:
-            pass
+        # UNIQUEMENT pendant un live actif : après « Terminer » (Oui ou
+        # Non), tout doit s'arrêter — si le service tarde à mourir ou
+        # redémarre (MIUI), ses derniers points ne doivent PAS revenir
+        # s'afficher ni être « à rattraper » : « Terminer » est le seul
+        # chemin qui purge et clôt la session.
+        if self.en_cours_live:
+            try:
+                self._absorber_points_service()
+            except Exception:
+                pass
 
     # -------------------------------------------------------------
     # Service de premier plan (foreground service "Tracker") : garde
@@ -4709,6 +4715,20 @@ class LiveScreen(Screen):
             details.append("service tracker arrêté")
         except Exception as e:
             details.append(f"échec de l'arrêt du service tracker : {e}")
+
+        # PURGE FINALE : vide la file des points en attente (les derniers
+        # points absorbés juste avant l'arrêt ne doivent PAS revenir
+        # s'afficher après la remise à zéro de l'onglet), et remet le
+        # compteur de rattrapage à zéro. « Terminer » (Oui ou Non) est le
+        # SEUL chemin qui purge tout : après lui, rien ne doit être « à
+        # rattraper ».
+        try:
+            while True:
+                self.file_points_live.get_nowait()
+        except Exception:
+            pass
+        self._rattrapage_points = 0
+        self._rattrapage_heure = None
         return True, True, " / ".join(details)
 
     def _reinitialiser_onglet7_vierge(self):
