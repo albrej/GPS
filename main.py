@@ -4234,6 +4234,47 @@ class LiveScreen(Screen):
                 self._lignes_service_lues = min(offset_session, nb_lignes)
                 print(f"[Live service] Session interrompue reprise : "
                       f"points depuis la ligne {self._lignes_service_lues}.")
+
+                # --- AVERTISSEMENT DE TROU : si le service a été tué
+                # pendant l'absence (force-stop, kill MIUI, swipe des
+                # tâches), les points de cette période n'existent pas.
+                # On le détecte en comparant l'horodatage du DERNIER
+                # point du fichier avec l'instant présent : un dernier
+                # point récent = le service vivait (rien à signaler) ;
+                # un dernier point ancien = trou dans la trace.
+                try:
+                    heure_dernier_point = None
+                    with open(self.CHEMIN_POINTS_SERVICE, "r", encoding="utf-8") as f:
+                        for ligne in f:
+                            try:
+                                d = json.loads(ligne)
+                            except ValueError:
+                                continue
+                            t = d.get("time")
+                            if t:
+                                heure_dernier_point = t
+                    if heure_dernier_point is not None:
+                        dernier = datetime.fromisoformat(heure_dernier_point)
+                        trou_minutes = (datetime.now() - dernier).total_seconds() / 60.0
+                        if trou_minutes > 2.0:
+                            message_trou = (
+                                f"Reprise de session : trou d'environ "
+                                f"{int(round(trou_minutes))} min dans la trace "
+                                f"(appli/service arrêté(s) entre-temps - points non enregistrés)."
+                            )
+                            print(f"[Live service] {message_trou}")
+                            self._journaliser_evenement_live(message_trou)
+                            # Affiché 8 s après le lancement (le temps que
+                            # le statut standard s'installe), en orange
+                            # d'avertissement, puis remplacé par le statut
+                            # normal au prochain point/battement.
+                            Clock.schedule_once(
+                                lambda dt: self._maj_statut_live(
+                                    message_trou, (0.937, 0.424, 0.0, 1)),  # #EF6C00
+                                8.0,
+                            )
+                except Exception:
+                    pass
             else:
                 # Nouvelle session : ignorer l'historique, noter le point.
                 self._lignes_service_lues = nb_lignes
