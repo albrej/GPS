@@ -30,6 +30,10 @@ jobs:
           python -m pip install --upgrade "pip<24.1" setuptools wheel
           pip install "Cython<3.0" virtualenv buildozer
 
+      - name: Vérifier la syntaxe Python
+        run: |
+          python -m py_compile main.py tracker_service.py
+
       - name: Compiler l'APK
         run: yes | buildozer -v android debug
 
