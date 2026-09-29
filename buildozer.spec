@@ -53,7 +53,7 @@ android.archs = arm64-v8a
 # Le nom avant les deux-points donne la classe Java générée
 # (org.perso.outilstraces.ServiceTracker) ; ":foreground" en fait un
 # service de premier plan avec notification, non tué par Android.
-services = Tracker:tracker_service.py:foreground
+services = Tracker:tracker_service.py:foreground:foregroundServiceType=location
 
 [buildozer]
 log_level = 2

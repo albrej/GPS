@@ -106,7 +106,20 @@ def _passer_premier_plan():
 def _boucle(contexte, gestionnaire):
     """Thread de sondage : même logique que gps_natif.py v5."""
     dernier = None
+    tours = 0
     while _etat["actif"]:
+        # Battement de cœur (une ligne toutes les 60 s) : permet de
+        # vérifier dans le fichier que le service a SURVÉCU à l'écran
+        # éteint (l'appli ignore ces lignes, cf. _absorber_points_service).
+        tours += 1
+        if tours % 60 == 0:
+            try:
+                with open(CHEMIN_POINTS, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(
+                        {"battement": tours // 60,
+                         "time": datetime.now().isoformat()}) + "\n")
+            except Exception:
+                pass
         try:
             meilleur = None
             for nom_fournisseur in ("fused", "gps", "network", "passive"):
