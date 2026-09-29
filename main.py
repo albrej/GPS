@@ -3670,6 +3670,11 @@ class LiveScreen(Screen):
         # recevait les points de GPSLogger n'est plus nécessaire.
         ok, message = gps_natif.demarrer(self.file_points_live)
         if ok:
+            # --- Service de premier plan (foreground service) : il garde
+            # l'enregistrement actif écran éteint / appli en arrière-plan
+            # (tracker_service.py). L'appli absorbe ses points via
+            # _absorber_points_service (fichier live_service_points.json).
+            self._demarrer_service_tracker()
             self._maj_statut_live(
                 self._texte_statut_live(),
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
@@ -4128,6 +4133,101 @@ class LiveScreen(Screen):
                          + gps_natif.heure_dernier_fix() + "), points en attente de traitement.")
             self._maj_statut_live(texte, (0.937, 0.424, 0.0, 1))  # #EF6C00
 
+        # Absorption des points du service de premier plan (écrits pendant
+        # un écran éteint ou un arrière-plan prolongé) : le service tourne
+        # dans son propre processus et dépose ses points dans un fichier.
+        try:
+            self._absorber_points_service()
+        except Exception:
+            pass
+
+    # -------------------------------------------------------------
+    # Service de premier plan (foreground service "Tracker") : garde
+    # l'enregistrement GPS actif écran éteint / appli fermée
+    # (tracker_service.py, déclaré dans buildozer.spec via
+    # services = Tracker:tracker_service.py:foreground). Il écrit les
+    # points dans live_service_points.json (une ligne JSON par point),
+    # que l'appli absorbe ici par simple lecture incrémentale.
+    # -------------------------------------------------------------
+    CHEMIN_POINTS_SERVICE = os.path.join(
+        DOSSIER_SORTIE, "live_service_points.json")
+
+    def _demarrer_service_tracker(self):
+        """Lance le service de premier plan (Android uniquement). Ne
+        lève jamais ; en cas d'échec, le live à l'écran continue de
+        fonctionner (gps_natif), seule la capture écran éteint manque."""
+        if platform != "android":
+            return
+        try:
+            from jnius import autoclass
+            # Nouvelle session : le compteur de lignes saute l'historique
+            # du fichier (points d'une éventuelle session précédente)
+            # et ne lira que ce que le service écrira à partir de maintenant.
+            try:
+                with open(self.CHEMIN_POINTS_SERVICE, "r", encoding="utf-8") as f:
+                    self._lignes_service_lues = sum(1 for _ in f)
+            except (OSError, AttributeError):
+                self._lignes_service_lues = 0
+            service = autoclass("org.perso.outilstraces.ServiceTracker")
+            activite = autoclass("org.kivy.android.PythonActivity").mActivity
+            service.start(activite, "")
+            print("[Live service] Service tracker lancé (premier plan).")
+        except Exception as e:
+            print(f"[Live service] Impossible de lancer le service tracker : {e}")
+
+    def _arreter_service_tracker(self):
+        """Arrête le service de premier plan. Ne lève jamais."""
+        if platform != "android":
+            return
+        try:
+            from jnius import autoclass
+            service = autoclass("org.perso.outilstraces.ServiceTracker")
+            service.stop()
+            print("[Live service] Service tracker arrêté.")
+        except Exception as e:
+            print(f"[Live service] Erreur à l'arrêt du service tracker : {e}")
+
+    def _absorber_points_service(self):
+        """Lit les NOUVELLES lignes de live_service_points.json (écrites
+        par le service pendant un écran éteint / un arrière-plan) et les
+        dépose dans la file live : le pipeline habituel les affiche et
+        les dédoublonne (_ajouter_point_live rejette une position déjà
+        présente à 1e-6 près). Les lignes non-ponctuelles (début_session,
+        erreur) sont ignorées."""
+        chemin = self.CHEMIN_POINTS_SERVICE
+        if not os.path.exists(chemin):
+            return
+        if not hasattr(self, "_lignes_service_lues"):
+            self._lignes_service_lues = 0
+        try:
+            with open(chemin, "r", encoding="utf-8") as f:
+                lignes = f.readlines()
+        except OSError:
+            return
+        for ligne in lignes[self._lignes_service_lues:]:
+            self._lignes_service_lues += 1
+            ligne = ligne.strip()
+            if not ligne:
+                continue
+            try:
+                donnees = json.loads(ligne)
+            except ValueError:
+                continue
+            if "lat" not in donnees or "lon" not in donnees:
+                continue  # ligne début_session / erreur : ignorée
+            try:
+                heure = datetime.fromisoformat(donnees["time"])
+            except Exception:
+                heure = datetime.now()
+            self.file_points_live.put({
+                "lat": float(donnees["lat"]),
+                "lon": float(donnees["lon"]),
+                "ele": donnees.get("ele"),
+                "time": heure,
+                "name": None,
+                "source": donnees.get("source", "service"),
+            })
+
     def _journaliser_evenement_live(self, texte):
         """Ajoute une ligne d'EVENEMENT au journal de post-mortem des
         points live (debug_points_*.txt, voir _arreter_gpslogger) :
@@ -4310,6 +4410,13 @@ class LiveScreen(Screen):
         # Les points du GPS natif arrivent directement dans la file :
         # rien à rattraper avant de figer la trace (l'ancienne
         # resynchronisation GPSLogger n'a plus d'objet).
+        # Dernière absorption des points du service de premier plan
+        # (écran éteint depuis le dernier cycle d'absorption) avant
+        # de figer la trace qui sera proposée à l'enregistrement.
+        try:
+            self._absorber_points_service()
+        except Exception:
+            pass
 
         self.pause_traitement_live = True
         self._maj_statut_live("Suivi en direct mis en pause...", (0.937, 0.424, 0.0, 1))  # #EF6C00
@@ -4477,10 +4584,22 @@ class LiveScreen(Screen):
 
         details = []
         try:
+            # Absorber les derniers points écrits par le service de premier
+            # plan (écran éteint...) AVANT l'arrêt, pour une trace complète.
+            self._absorber_points_service()
+        except Exception:
+            pass
+        try:
             gps_natif.arreter()
             details.append("GPS natif arrêté")
         except Exception as e:
             details.append(f"échec de l'arrêt du GPS natif : {e}")
+        # Arrêt du service de premier plan (écran éteint).
+        try:
+            self._arreter_service_tracker()
+            details.append("service tracker arrêté")
+        except Exception as e:
+            details.append(f"échec de l'arrêt du service tracker : {e}")
         return True, True, " / ".join(details)
 
     def _reinitialiser_onglet7_vierge(self):

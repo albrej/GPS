@@ -48,6 +48,13 @@ android.ndk = 25b
 android.ndk_api = 24
 android.archs = arm64-v8a
 
+# Service de premier plan "Tracker" : enregistre la trace écran éteint /
+# appli fermée (voir tracker_service.py, démarré par LiveScreen).
+# Le nom avant les deux-points donne la classe Java générée
+# (org.perso.outilstraces.ServiceTracker) ; ":foreground" en fait un
+# service de premier plan avec notification, non tué par Android.
+services = Tracker:tracker_service.py:foreground
+
 [buildozer]
 log_level = 2
 warn_on_root = 1
