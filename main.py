@@ -4151,34 +4151,83 @@ class LiveScreen(Screen):
     # -------------------------------------------------------------
     CHEMIN_POINTS_SERVICE = os.path.join(
         DOSSIER_SORTIE, "live_service_points.json")
+    # Marqueur de session live : contient le numéro de la ligne du
+    # fichier de points où a commencé la session. Écrit au clic "Live",
+    # supprimé à "Terminer". S'il est encore présent au démarrage
+    # suivant, c'est que l'appli a été quittée/tuée SANS Terminer :
+    # la session continue — ses points (y compris ceux enregistrés par
+    # le service pendant l'arrêt de l'appli) sont réabsorbés.
+    CHEMIN_MARQUEUR_SESSION = os.path.join(
+        DOSSIER_SORTIE, "live_session_en_cours.json")
 
     def _demarrer_service_tracker(self):
         """Lance le service de premier plan (Android uniquement). Ne
         lève jamais ; en cas d'échec, le live à l'écran continue de
-        fonctionner (gps_natif), seule la capture écran éteint manque."""
+        fonctionner (gps_natif), seule la capture écran éteint manque.
+
+        Gestion des sessions : si un marqueur de session survit (appli
+        quittée/tuée sans "Terminer"), on REPART DE LUI — tous les
+        points de la session interrompue seront réabsorbés. Sinon,
+        nouvelle session : le marqueur est créé au point courant du
+        fichier (l'historique des sessions précédentes est ignoré)."""
         if platform != "android":
             return
         try:
-            from jnius import autoclass
-            # Nouvelle session : le compteur de lignes saute l'historique
-            # du fichier (points d'une éventuelle session précédente)
-            # et ne lira que ce que le service écrira à partir de maintenant.
+            # Marqueur survivant = session interrompue : la reprendre.
+            offset_session = None
+            try:
+                with open(self.CHEMIN_MARQUEUR_SESSION, "r", encoding="utf-8") as f:
+                    donnees = json.load(f)
+                offset_session = int(donnees.get("offset", 0))
+            except Exception:
+                offset_session = None
+
             try:
                 with open(self.CHEMIN_POINTS_SERVICE, "r", encoding="utf-8") as f:
-                    self._lignes_service_lues = sum(1 for _ in f)
-            except (OSError, AttributeError):
-                self._lignes_service_lues = 0
+                    nb_lignes = sum(1 for _ in f)
+            except OSError:
+                nb_lignes = 0
+
+            if offset_session is not None:
+                # Session interrompue (quitter/kill) : on reprend ses
+                # points depuis le début de la session — y compris ceux
+                # écrits par le service pendant l'absence de l'appli.
+                self._lignes_service_lues = min(offset_session, nb_lignes)
+                print(f"[Live service] Session interrompue reprise : "
+                      f"points depuis la ligne {self._lignes_service_lues}.")
+            else:
+                # Nouvelle session : ignorer l'historique, noter le point.
+                self._lignes_service_lues = nb_lignes
+                try:
+                    with open(self.CHEMIN_MARQUEUR_SESSION, "w", encoding="utf-8") as f:
+                        json.dump({"offset": nb_lignes,
+                                   "debut": datetime.now().isoformat()}, f)
+                except OSError:
+                    pass
+
+            from jnius import autoclass
             service = autoclass("org.perso.outilstraces.ServiceTracker")
             activite = autoclass("org.kivy.android.PythonActivity").mActivity
             service.start(activite, "")
+            # Redémarrage automatique si Android/MIUI tue le service
+            # (doit continuer à enregistrer après un "Quitter").
+            try:
+                autoclass("org.kivy.android.PythonService").mService.setAutoRestartService(True)
+            except Exception:
+                pass
             print("[Live service] Service tracker lancé (premier plan).")
         except Exception as e:
             print(f"[Live service] Impossible de lancer le service tracker : {e}")
 
     def _arreter_service_tracker(self):
-        """Arrête le service de premier plan. Ne lève jamais."""
+        """Arrête le service de premier plan ET CLÔT la session (le
+        marqueur de session est supprimé : un futur "Live" repartira
+        d'une trace vierge). Ne lève jamais."""
         if platform != "android":
+            # Clôturer aussi la session hors Android (tests PC).
+            self._clore_marqueur_session()
             return
+        self._clore_marqueur_session()
         try:
             from jnius import autoclass
             service = autoclass("org.perso.outilstraces.ServiceTracker")
@@ -4186,6 +4235,14 @@ class LiveScreen(Screen):
             print("[Live service] Service tracker arrêté.")
         except Exception as e:
             print(f"[Live service] Erreur à l'arrêt du service tracker : {e}")
+
+    def _clore_marqueur_session(self):
+        """Supprime le marqueur de session (fin de session : "Terminer")."""
+        try:
+            if os.path.exists(self.CHEMIN_MARQUEUR_SESSION):
+                os.remove(self.CHEMIN_MARQUEUR_SESSION)
+        except OSError:
+            pass
 
     def _absorber_points_service(self):
         """Lit les NOUVELLES lignes de live_service_points.json (écrites
