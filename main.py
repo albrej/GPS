@@ -358,7 +358,7 @@ def ouvrir_photo_dans_galerie(chemin_ou_nom):
 # Installation : pip install kivy_garden.mapview
 # ----------------------------------------------------------------------
 try:
-    from kivy_garden.mapview import MapView, MapMarker, MapSource, MapLayer
+    from kivy_garden.mapview import MapView, MapMarker, MapSource, MapLayer, MarkerMapLayer
     CARTE_DISPONIBLE = True
 except Exception:
     CARTE_DISPONIBLE = False
@@ -641,6 +641,71 @@ if CARTE_DISPONIBLE:
         (jusqu'à 44 dp). Diamètre doublé par rapport à la première version
         (onglets Photos et Live)."""
         return dp(max(16, min(44, 16 + 3.5 * (zoom - 10))))
+
+    class MarqueurDisqueRouge(MapMarker):
+        """Marqueur 100 % dessiné : un disque rouge SANS image de fond.
+        Le MapMarker standard de kivy_garden.mapview pose à la
+        construction, DANS SON PROPRE canvas, une instruction Rectangle
+        avec la texture par défaut (carré blanc default_marker.png) :
+        dessiner dans canvas.before passait DESSOUS (le carré restait
+        visible), et vider « source » n'enlève pas une instruction déjà
+        créée — le Rectangle garde sa texture. La seule parade fiable :
+        EFFACER le canvas du marqueur juste après la construction, puis
+        dessiner le disque rouge à la place. La taille suit le zoom
+        comme MarqueurWaypoint (maj_taille), à MOITIE de celle des
+        waypoints pour les points aberrants (cote_dp=None), ou fixe
+        pour le curseur de sélection (cote_dp donné en dp)."""
+
+        def __init__(self, zoom=10, cote_dp=None, **kwargs):
+            super().__init__(**kwargs)
+            # 1. Retire l'instruction Rectangle blanche du MapMarker
+            #    (et toute autre instruction posée à la construction).
+            self.canvas.clear()
+            # 2. Dessine le disque rouge dans le canvas du marqueur.
+            from kivy.graphics import Color, Ellipse
+            with self.canvas:
+                Color(0.80, 0.10, 0.10, 1)
+                self._disque = Ellipse(pos=self.pos, size=self.size)
+            self.bind(pos=self._maj_disque, size=self._maj_disque)
+            # 3. Empêche tout retour de texture : mapview peut
+            #    recharger une source par défaut à divers moments du
+            #    cycle de vie (ajout à la carte, recyclage...).
+            self.bind(source=self._neutraliser_source)
+            self._cote = None
+            self._cote_dp = cote_dp
+            self.anchor_x = 0.5
+            self.anchor_y = 0.5
+            self.size_hint = (None, None)
+            self.maj_taille(zoom)
+
+        def _neutraliser_source(self, instance, valeur):
+            if valeur:
+                try:
+                    self.source = ""
+                except Exception:
+                    pass
+
+        def _maj_disque(self, *args):
+            try:
+                self._disque.pos = self.pos
+                self._disque.size = self.size
+            except Exception:
+                pass
+
+        def maj_taille(self, zoom):
+            if self._cote_dp is not None:
+                self._cote = dp(self._cote_dp)
+            else:
+                self._cote = max(dp(8), taille_marqueur_waypoint(zoom) / 2.0)
+            self._reappliquer_taille()
+
+        def _reappliquer_taille(self, *args):
+            if self._cote is None:
+                return
+            if tuple(self.size) != (self._cote, self._cote):
+                cx, cy = self.center
+                self.size = (self._cote, self._cote)
+                self.center = (cx, cy)
 
     class MarqueurWaypoint(MapMarker):
         """Petit curseur rond et bleu (images/blue_dot.png) posé sur un
@@ -2009,35 +2074,33 @@ KV = """
                             color: 0, 0, 0, 1
 
             Label:
-                text: "Points aberrants (segments à vitesse supérieure au seuil)"
+                text: "Vitesse (km/h) au-dessus de laquelle un point est considéré comme aberrant :"
                 size_hint_y: None
-                height: dp(24)
-                color: 0.8, 0.1, 0.1, 1
-                bold: True
-                font_size: "13sp"
-
-            BoxLayout:
-                id: zone_graphique
-                size_hint_y: None
-                height: dp(175)
-
-            Label:
-                text: "Seuil de détection (km/h) : vitesse au-dessus de laquelle un point est aberrant"
-                size_hint_y: None
-                height: dp(26)
+                height: dp(28)
                 color: 0, 0, 0, 1
                 bold: True
-                font_size: "13sp"
+                font_size: "15sp"
+                text_size: self.width, None
+                halign: "center"
 
+            # Les blocs suivants (zone de saisie + Détecter, compteur
+            # + Supprimer de la trace, Enregistrer) sont centrés
+            # horizontalement et bornés à dp(350).
             BoxLayout:
                 size_hint_y: None
                 height: dp(44)
+                size_hint_x: None
+                width: dp(350)
+                pos_hint: {"center_x": 0.5}
                 spacing: dp(8)
                 TextInput:
                     id: entree_seuil_nettoyage
                     hint_text: "Seuil en km/h (ex: 10)"
                     multiline: False
                     input_filter: "float"
+                    font_size: "18sp"
+                    halign: "center"
+                    padding: [dp(4), dp(8), dp(4), dp(8)]
                     text: root.seuil_text
                     on_text: root.changer_seuil(self.text)
                 Button:
@@ -2047,34 +2110,33 @@ KV = """
                     background_color: 0.15, 0.68, 0.38, 1
                     on_release: root.appliquer_detection()
 
-            Label:
-                text: "Points aberrants (numéros) :"
+            # Graphique visible uniquement une fois la trace chargée
+            # (comme le bloc compteur et le bouton Enregistrer).
+            BoxLayout:
+                id: zone_graphique
                 size_hint_y: None
-                height: dp(26)
-                color: 0, 0, 0, 1
-                bold: True
-                font_size: "13sp"
+                height: (dp(175) if root.trace_chargee else 0)
 
-            # Liste sélectionnable : un appui long permet de tout
-            # sélectionner puis copier les numéros (pour les coller
-            # dans l'onglet Numérotation, mode suppression de points).
             BoxLayout:
                 size_hint_y: None
-                height: max(dp(44), self.minimum_height)
-                spacing: dp(8)
-                TextInput:
-                    id: liste_aberrants_champ
-                    text: root.liste_aberrants_text
-                    readonly: True
-                    multiline: True
-                    size_hint_x: 0.72
-                    font_size: "13sp"
-                    foreground_color: 0.80, 0.10, 0.10, 1
-                    background_color: 0.97, 0.94, 0.94, 1
+                height: (dp(40) if root.trace_chargee else 0)
+                size_hint_x: None
+                width: dp(350)
+                pos_hint: {"center_x": 0.5}
+                opacity: (1 if root.trace_chargee else 0)
+                disabled: not root.trace_chargee
+                Label:
+                    text: root.compteur_aberrants_text
+                    size_hint_x: 1
+                    color: 0, 0, 0, 1
+                    bold: True
+                    font_size: "15sp"
+                    text_size: self.width, None
+                    valign: "middle"
                 Button:
-                    text: "Supprimer"
+                    text: "Supprimer de la trace"
                     size_hint_x: None
-                    width: dp(120)
+                    width: dp(160)
                     disabled: not root.aberrants_present
                     background_color: 0.776, 0.157, 0.157, 1
                     on_release: root.supprimer_aberrants()
@@ -2082,7 +2144,11 @@ KV = """
             Button:
                 text: "Enregistrer la trace nettoyée"
                 size_hint_y: None
-                height: dp(52)
+                height: (dp(52) if root.trace_chargee else 0)
+                size_hint_x: None
+                width: dp(350)
+                pos_hint: {"center_x": 0.5}
+                opacity: (1 if root.trace_chargee else 0)
                 disabled: not root.trace_nettoyee
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.enregistrer_trace_nettoyee()
@@ -2155,10 +2221,24 @@ KV = """
                 color: 0.4, 0.2, 0.5, 1
                 italic: True
 
+            Label:
+                text: root.status_text
+                size_hint_y: None
+                # Hauteur réduite à rien quand le statut est vide : ne
+                # pas laisser un espace vide entre le nom de la photo
+                # et le tableau (l'espace ne doit exister que pour un
+                # vrai message d'action).
+                height: (max(dp(30), self.texture_size[1] + dp(10)) if root.status_text else 0)
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                color: root.status_color
+
 # Ligne 1 : Date/Heure et Altitude
             BoxLayout:
                 size_hint_y: None
-                height: dp(60)
+                height: (dp(60) if root.photo_chargee else 0)
+                opacity: (1 if root.photo_chargee else 0)
                 spacing: dp(10)
 
                 BoxLayout:
@@ -2200,7 +2280,8 @@ KV = """
             # Ligne 2 : Latitude et Longitude
             BoxLayout:
                 size_hint_y: None
-                height: dp(60)
+                height: (dp(60) if root.photo_chargee else 0)
+                opacity: (1 if root.photo_chargee else 0)
                 spacing: dp(10)
 
                 BoxLayout:
@@ -2244,7 +2325,8 @@ KV = """
                 size_hint_x: 1
                 size_hint_y: None
                 # La hauteur s'adapte automatiquement à la largeur réelle du parent divisée par le ratio de l'image (4:3)
-                height: self.width / (photo_img.image_ratio if photo_img.image_ratio else (4/3))
+                height: (self.width / (photo_img.image_ratio if photo_img.image_ratio else (4/3))) if root.photo_chargee else 0
+                opacity: (1 if root.photo_chargee else 0)
                 
                 canvas.before:
                     Color:
@@ -2260,39 +2342,18 @@ KV = """
                     allow_stretch: True
                     keep_ratio: True
 
-            Button:
-                text: "Situer (Horodatage)"
-                size_hint_y: None
-                height: dp(48)
-                background_color: 0.16, 0.5, 0.73, 1
-                on_release: root.situer()
-
-            Button:
-                text: "Enregistrer EXIF"
-                size_hint_y: None
-                height: dp(48)
-                background_color: 0.90, 0.49, 0.13, 1
-                on_release: root.enregistrer_exif()
-
-            Label:
-                text: root.status_text
-                size_hint_y: None
-                height: max(dp(30), self.texture_size[1] + dp(10))
-                text_size: self.width, None
-                halign: "left"
-                valign: "top"
-                color: root.status_color
-
             Label:
                 text: root.titre_carte
                 size_hint_y: None
-                height: dp(26)
+                height: (dp(26) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
                 bold: True
                 color: root.titre_carte_color
 
             RelativeLayout:
                 size_hint_y: None
-                height: dp(220)
+                height: (dp(220) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
 
                 BoxLayout:
                     id: map_container
@@ -2336,6 +2397,24 @@ KV = """
                         Ellipse:
                             pos: self.pos
                             size: self.size
+
+            Button:
+                text: "Situer (Horodatage)"
+                size_hint_y: None
+                height: (dp(48) if (root.photo_chargee and root.trace_chargee) else 0)
+                opacity: (1 if (root.photo_chargee and root.trace_chargee) else 0)
+                disabled: not (root.photo_chargee and root.trace_chargee)
+                background_color: 0.16, 0.5, 0.73, 1
+                on_release: root.situer()
+
+            Button:
+                text: "Enregistrer EXIF"
+                size_hint_y: None
+                height: (dp(48) if (root.photo_chargee and root.trace_chargee) else 0)
+                opacity: (1 if (root.photo_chargee and root.trace_chargee) else 0)
+                disabled: not (root.photo_chargee and root.trace_chargee)
+                background_color: 0.90, 0.49, 0.13, 1
+                on_release: root.enregistrer_exif()
 
 <LiveScreen>:
     ScrollView:
@@ -5875,6 +5954,28 @@ class CarteScreen(Screen):
         self.graphe.set_donnees(*self.profil)
         self._afficher_trace_sur_carte(points, waypoints=vrais_wpts)
 
+    def _remonte_calque_marqueurs(self):
+        """Remonte le calque des marqueurs AU-DESSUS du calque de trace,
+        via l'API publique de MapView (remove_layer/add_layer). Voir la
+        version commentée identique dans NettoyageScreen. Nécessaire dès
+        qu'une trace est re-posée alors que le calque de marqueurs
+        existe déjà (re-chargement d'une trace dans l'onglet)."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        couche = getattr(self.map_view, "_marker_layer", None)
+        if couche is None:
+            for l in getattr(self.map_view, "_layers", []) or []:
+                if isinstance(l, MarkerMapLayer):
+                    couche = l
+                    break
+        if couche is None:
+            return
+        try:
+            self.map_view.remove_layer(couche)
+            self.map_view.add_layer(couche)
+        except Exception:
+            pass
+
     def _afficher_trace_sur_carte(self, points, waypoints=None):
         """Equivalent de afficher_trace_sur_carte() dans la version
         desktop : trace la polyligne, place les marqueurs D/A, centre
@@ -5901,12 +6002,16 @@ class CarteScreen(Screen):
             return
 
         liste_coords = [(p['lat'], p['lon']) for p in points]
-        # Le calque de la trace est posé APRÈS les marqueurs (D/A et
-        # waypoints) : ajouté en dernier, il s'affiche par-dessus eux,
-        # comme sur l'onglet Live (7). Sinon les curseurs bleus des
-        # waypoints passaient par-dessus la trace.
+        # Le calque de la trace est posé AVANT les marqueurs : dans
+        # mapview, les marqueurs vivent dans un calque distinct et tout
+        # calque ajouté après les recouvre TOUS. Posé en premier, le
+        # calque de trace passe sous les marqueurs — le disque rouge du
+        # curseur de sélection (et les curseurs de waypoints) s'affichent
+        # donc PAR-DESSUS la trace, comme demandé (même choix que
+        # l'onglet Nettoyage).
         self.trace_layer = TraceLayer()
         self.trace_layer.set_points(liste_coords)
+        self.map_view.add_layer(self.trace_layer)
 
         for wpt in (waypoints or []):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
@@ -5933,7 +6038,11 @@ class CarteScreen(Screen):
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
-        self.map_view.add_layer(self.trace_layer)
+        # REMONTÉE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE (même
+        # correction que l'onglet Nettoyage, via l'API publique
+        # remove_layer/add_layer de MapView — voir là-bas la méthode
+        # _remonte_calque_marqueurs pour l'explication complète).
+        self._remonte_calque_marqueurs()
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
@@ -6014,7 +6123,12 @@ class CarteScreen(Screen):
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.marqueur_curseur is not None:
                 self.map_view.remove_marker(self.marqueur_curseur)
-            self.marqueur_curseur = MapMarker(lat=p['lat'], lon=p['lon'])
+            # Même curseur que l'onglet Nettoyage : disque rouge
+            # dessiné, sans le carré blanc du MapMarker standard.
+            self.marqueur_curseur = MarqueurDisqueRouge(
+                zoom=self.map_view.zoom, cote_dp=14,
+                lat=p['lat'], lon=p['lon'],
+            )
             self.map_view.add_marker(self.marqueur_curseur)
             if recentrer_carte:
                 self.map_view.center_on(p['lat'], p['lon'])
@@ -6192,9 +6306,13 @@ class NettoyageScreen(Screen):
     # Seuil de détection (km/h) saisi par l'utilisateur : tout point
     # extrémité d'un segment plus rapide que ce seuil est aberrant.
     seuil_text = StringProperty("10")
-    # Liste des numéros (1-based, comme l'onglet Numérotation) des
-    # points aberrants détectés, affichée en rouge sous le seuil.
-    liste_aberrants_text = StringProperty("")
+    # Compteur des points aberrants affiché dans le titre « Points
+    # aberrants (N) : » (à la place de l'ancienne liste de numéros).
+    compteur_aberrants_text = StringProperty("Points aberrants (0) :")
+    # Vrai dès qu'une trace est chargée : le graphique, le bloc compteur
+    # et le bouton Enregistrer n'apparaissent qu'à partir de là (ils
+    # sont masqués via trace_chargee dans le KV).
+    trace_chargee = BooleanProperty(False)
     # Vrai si des points aberrants sont affichés (active « Supprimer »).
     aberrants_present = BooleanProperty(False)
     # Vrai si la trace a été nettoyée (active « Enregistrer »).
@@ -6301,7 +6419,7 @@ class NettoyageScreen(Screen):
 
         self.fichier_source = chemin
         self.points_courants = points
-        # Bloc d'infos du point sélectionné : vide au chargement.
+        self.trace_chargee = True
         self.info_point_text = ("Tape sur un graphique pour voir "
                                 "le detail d'un point.")
         self.info_point_num = ""
@@ -6356,8 +6474,7 @@ class NettoyageScreen(Screen):
 
         self.info_fichier = (
             f"Trace : {os.path.basename(self.fichier_source)}\n"
-            f"{len(points)} points; {nb_waypoints} waypoints.\n"
-            + detection["rapport"]
+            f"{len(points)} points; {nb_waypoints} waypoints."
         )
 
         # Nettoyage des marqueurs aberrants de la carte avant re-pose.
@@ -6368,18 +6485,19 @@ class NettoyageScreen(Screen):
 
         for idx in indices_dur:
             self._poser_marqueur_aberrant(points, idx)
+        # La remontée doit suivre la re-pose des disques (le « Supprimer »
+        # redessine la carte via _afficher_trace_sur_carte PUIS repose
+        # les marqueurs ici : sans ce rappel, ils repassaient sous la
+        # trace après une suppression).
+        self._remonte_calque_marqueurs()
         distances_km = self.profil[0]
         marqueurs_dur = [(distances_km[idx], (0.80, 0.10, 0.10, 1))
                          for idx in indices_dur if idx < len(distances_km)]
         self.graphe.set_marqueurs(marqueurs_dur)
 
-        # --- Liste des numéros des points aberrants (1-based, prêt à
-        # copier dans l'onglet Numérotation pour suppression) :
-        # format « 1, 2, 3, 87, 99 » ; vide si rien de détecté.
-        if indices_dur:
-            self.liste_aberrants_text = ", ".join(str(i + 1) for i in indices_dur)
-        else:
-            self.liste_aberrants_text = "aucun"
+        # --- Compteur des points aberrants (remplace l'ancienne liste
+        # de numéros) : « Points aberrants (N) : ».
+        self.compteur_aberrants_text = f"Points aberrants ({len(indices_dur)}) :"
         self.aberrants_present = bool(indices_dur)
         # Une nouvelle détection sur la trace COURANTE (déjà nettoyée ou
         # non) ne change pas le drapeau trace_nettoyee : il ne devient
@@ -6517,35 +6635,16 @@ class NettoyageScreen(Screen):
         dist = distances_km[idx]
 
         # 1. Curseur sur la carte : petit disque ROUGE sans fond blanc
-        # (le MapMarker standard embarque une image carrée à fond
-        # blanc : on dessine le disque à la place, même mécanisme que
-        # les marqueurs de points aberrants).
+        # (MarqueurDisqueRouge : texture du MapMarker neutralisée,
+        # disque dessiné dans canvas.before).
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.marqueur_curseur is not None:
                 self.map_view.remove_marker(self.marqueur_curseur)
                 self.marqueur_curseur = None
-            self.marqueur_curseur = MarqueurWaypoint(
-                zoom=self.map_view.zoom, lat=p['lat'], lon=p['lon'],
+            self.marqueur_curseur = MarqueurDisqueRouge(
+                zoom=self.map_view.zoom, cote_dp=14,
+                lat=p['lat'], lon=p['lon'],
             )
-            try:
-                if self.marqueur_curseur._cote:
-                    self.marqueur_curseur._cote = dp(14)
-                    self.marqueur_curseur._reappliquer_taille()
-            except Exception:
-                pass
-            try:
-                from kivy.graphics import Color, Ellipse
-                disque_c = Ellipse(pos=self.marqueur_curseur.pos,
-                                   size=self.marqueur_curseur.size)
-                with self.marqueur_curseur.canvas:
-                    Color(0.80, 0.10, 0.10, 1)
-                    self.marqueur_curseur.canvas.add(disque_c)
-                self.marqueur_curseur.bind(
-                    pos=lambda inst, val, d=disque_c: setattr(d, "pos", val),
-                    size=lambda inst, val, d=disque_c: setattr(d, "size", val))
-                self.marqueur_curseur.source = ""
-            except Exception:
-                pass
             self.map_view.add_marker(self.marqueur_curseur)
             self.map_view.center_on(p['lat'], p['lon'])
 
@@ -6567,43 +6666,52 @@ class NettoyageScreen(Screen):
         self.info_point_vit = f"Vitesse: {vit} km/h"
 
     def _poser_marqueur_aberrant(self, points, idx):
-        """Pose sur la carte le petit curseur ROUGE d'un point aberrant
-        (marquage dur) : même MarqueurWaypoint que les annotations/
-        waypoints, mais 2 fois plus petit et en rouge (la réduction est
-        faite dans _maj_taille_waypoints, commune aux deux familles de
-        curseurs)."""
+        """Pose sur la carte le petit disque ROUGE d'un point aberrant
+        (MarqueurDisqueRouge : canvas du MapMarker effacé, donc ni
+        carré blanc ni texture, disque dessiné à la place, demi-taille
+        gérée par la classe elle-même)."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         p = points[idx]
-        mw = MarqueurWaypoint(
+        mw = MarqueurDisqueRouge(
             zoom=self.map_view.zoom, lat=p['lat'], lon=p['lon'],
-            nom=f"Point aberrant n°{idx + 1}",
-            description=(f"Vitesse aberrante au point {idx + 1} "
-                         f"(au-dessus du seuil choisi) : fix GPS dégradé probable."),
         )
-        # Réduction de moitié par rapport aux curseurs de waypoints...
-        try:
-            if mw._cote:
-                mw._cote = mw._cote / 2.0
-                mw._reappliquer_taille()
-        except Exception:
-            pass
-        # ...et teinte ROUGE : on remplace l'image bleue par un disque
-        # rouge dessiné sur place (même mécanisme de secours que
-        # MarqueurWaypoint quand l'image est absente).
-        try:
-            from kivy.graphics import Color, Ellipse
-            disque = Ellipse(pos=mw.pos, size=mw.size)
-            with mw.canvas:
-                Color(0.80, 0.10, 0.10, 1)
-                mw.canvas.add(disque)
-            mw.bind(pos=lambda inst, val, d=disque: setattr(d, "pos", val),
-                    size=lambda inst, val, d=disque: setattr(d, "size", val))
-            mw.source = ""
-        except Exception:
-            pass
+        mw.nom = f"Point aberrant n°{idx + 1}"
+        mw.description = (f"Vitesse aberrante au point {idx + 1} "
+                          f"(au-dessus du seuil choisi) : fix GPS dégradé probable.")
         self.map_view.add_marker(mw)
         self.marqueurs_nettoyage.append(mw)
+
+    def _remonte_calque_marqueurs(self):
+        """Remonte le calque des marqueurs AU-DESSUS du calque de trace.
+        Au CHARGEMENT d'une trace, l'ordre est correct NATURELLEMENT : le
+        calque de marqueurs n'existe pas encore quand la trace est posée
+        (mapview ne le crée qu'au premier add_marker). Mais dès que la
+        carte est REDRESSÉE avec des marqueurs déjà posés (bouton
+        « Supprimer » : remove_layer puis add_layer de la trace alors que
+        le calque de marqueurs existe), la trace repasse au-dessus.
+        Solution : retirer puis re-poser le calque de marqueurs via
+        l'API PUBLIQUE de MapView (remove_layer/add_layer — la même qui
+        fonctionne pour la trace), ce qui le renvoie en fin de pile,
+        au-dessus de tout. À appeler après TOUTE pose de marqueurs
+        suivant un add_layer (chargement, détection, suppression)."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        # Référence au calque de marqueurs : attribut interne de mapview,
+        # sinon recherche dans la liste publique des calques.
+        couche = getattr(self.map_view, "_marker_layer", None)
+        if couche is None:
+            for l in getattr(self.map_view, "_layers", []) or []:
+                if isinstance(l, MarkerMapLayer):
+                    couche = l
+                    break
+        if couche is None:
+            return
+        try:
+            self.map_view.remove_layer(couche)
+            self.map_view.add_layer(couche)
+        except Exception:
+            pass
 
     def _afficher_trace_sur_carte(self, points, waypoints=None):
         """Trace + marqueurs D/A + waypoints + cadrage automatique —
@@ -6633,6 +6741,16 @@ class NettoyageScreen(Screen):
         liste_coords = [(p['lat'], p['lon']) for p in points]
         self.trace_layer = TraceLayer()
         self.trace_layer.set_points(liste_coords)
+        # Dans mapview, les marqueurs vivent dans un calque de marqueurs
+        # DISTINCT du calque de trace : tout calque ajouté après recouvre
+        # TOUS les marqueurs, peu importe leur ordre de pose. Pour que
+        # les disques rouges (points aberrants, curseur de sélection)
+        # passent PAR-DESSUS la trace — demande explicite de l'onglet
+        # Nettoyage — on inverse ici l'ordre des autres onglets : le
+        # calque de trace est posé EN PREMIER, avant tous les marqueurs.
+        # Conséquence acceptée : les curseurs de waypoints passent aussi
+        # au-dessus de la trace (au lieu de dessous comme ailleurs).
+        self.map_view.add_layer(self.trace_layer)
 
         for wpt in (waypoints or []):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
@@ -6659,7 +6777,16 @@ class NettoyageScreen(Screen):
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
-        self.map_view.add_layer(self.trace_layer)
+        # REMONTÉE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE :
+        # dans cette version de mapview, le calque des marqueurs est
+        # créé dès l'initialisation du MapView — donc TOUJOURS posé
+        # avant notre calque de trace, quel que soit l'ordre des
+        # add_layer/add_marker. Les marqueurs (dont les disques
+        # rouges) restaient ainsi sous la trace. On le remonte donc
+        # explicitement en fin de pile du Scatter interne de la carte
+        # (et on le refait après TOUTE pose ultérieure de marqueurs,
+        # voir _remonte_calque_marqueurs).
+        self._remonte_calque_marqueurs()
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
@@ -6674,8 +6801,9 @@ class NettoyageScreen(Screen):
 
     def _maj_taille_waypoints(self, instance, zoom):
         """Suit le zoom de la carte : les curseurs de waypoints gardent
-        leur taille habituelle ; ceux des points aberrants (déjà posés
-        à moitié taille) la gardent (on reapplique la taille réduite)."""
+        leur taille habituelle ; les disques rouges des points
+        aberrants gèrent eux-mêmes leur demi-taille (MarqueurDisqueRouge
+        .maj_taille : ne PAS rediviser ici, elle serait doublée)."""
         for mw in self.marqueurs_waypoints:
             try:
                 mw.maj_taille(zoom)
@@ -6684,9 +6812,6 @@ class NettoyageScreen(Screen):
         for mw in self.marqueurs_nettoyage:
             try:
                 mw.maj_taille(zoom)
-                if mw._cote:
-                    mw._cote = mw._cote / 2.0
-                    mw._reappliquer_taille()
             except Exception:
                 pass
 
@@ -6709,6 +6834,11 @@ class PhotosScreen(Screen):
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     titre_carte = StringProperty("Emplacement de la photo sur la trace")
     titre_carte_color = ListProperty([0, 0, 0, 1])
+    # Affichage progressif : le tableau n'apparaît qu'avec une photo,
+    # la carte qu'avec une trace, et les boutons Situer/EXIF exigent
+    # les DEUX (voir le KV de <PhotosScreen>).
+    photo_chargee = BooleanProperty(False)
+    trace_chargee = BooleanProperty(False)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -6799,6 +6929,7 @@ class PhotosScreen(Screen):
 
         self.points_trace = points
         self.info_trace = f"Trace : {os.path.basename(chemin)}."
+        self.trace_chargee = True
 
         # Waypoints de la trace : mêmes « vrais » waypoints que dans l'onglet
         # Statistiques (ni n° de points, ni waypoints superposés au
@@ -6826,6 +6957,7 @@ class PhotosScreen(Screen):
 
         self.fichier_photo = chemin
         self.info_photo = f"Photo : {os.path.basename(chemin)}"
+        self.photo_chargee = True
         self.status_text = ""
 
         exif_data = gps_logic.get_exif_data(chemin)
