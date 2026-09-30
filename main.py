@@ -4464,6 +4464,28 @@ class LiveScreen(Screen):
             if abs(p['lat'] - point['lat']) < 1e-6 and abs(p['lon'] - point['lon']) < 1e-6:
                 return  # Point déjà présent dans la trace (re-envoi post-reprise) : ignoré.
 
+        # --- GARDE CHRONOLOGIQUE : une trace est strictement croissante
+        # dans le temps. Pendant une mise en veille, DEUX sources
+        # enregistrent la même période : le thread de sondage gps_natif
+        # (file mémoire, alive même appli en veille) ET le service de
+        # premier plan (fichier live_service_points.json). Au réveil, la
+        # file se vide d'abord (chronologique), PUIS l'absorption du
+        # fichier rejoue les mêmes fixes : leurs coordonnées diffèrent
+        # de plus de 1e-6 des points de la file (déduplication à des
+        # seuils différents) et créaient un aller-retour visuel
+        # « arrivée -> milieu de trace -> arrivée ». On rejette donc
+        # tout point daté d'AVANT le dernier point accepté (tolérance
+        # 5 s pour les fixes quasi simultanés des deux sources).
+        heure_point = point.get('time')
+        if self.points_trace_live and isinstance(heure_point, datetime):
+            try:
+                heure_dernier = self.points_trace_live[-1].get('time')
+                if isinstance(heure_dernier, datetime):
+                    if (heure_dernier - heure_point).total_seconds() > 5.0:
+                        return  # Point plus ancien que la fin de trace : rejeu d'une source redondante.
+            except Exception:
+                pass
+
         self.points_trace_live.append(point)
 
         # Comptage silencieux par source de géolocalisation (gps/network/
