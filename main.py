@@ -4721,6 +4721,11 @@ class LiveScreen(Screen):
                     self._signaler_fichier_temp_conserve()
 
                 self._arreter_gpslogger()
+                # Remise à zéro de l'onglet, SYMÉTRIQUE de la branche
+                # « Non » : sans elle, points_trace_live gardait la trace
+                # enregistrée en mémoire et le « Live » suivant la
+                # RECHARGEAIT au lieu de repartir de 0 point.
+                self._reinitialiser_onglet7_vierge()
                 self._maj_statut_live("Aucun live en cours.", (0.937, 0.424, 0.0, 1)) # #EF6C00
 
             # Construction de la boîte de dialogue simple avec un TextInput pour le nom

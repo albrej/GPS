@@ -54,8 +54,8 @@ _intervalle_ms = 1000
 # ============================================================================
 #  Par défaut, un suivi « par temps » demanderait des fixes TOUS LES
 #  1000 ms SANS seuil de distance (_distance_min_m = 0). Pour des
-#  traces de RANDONNÉE, le
-#  comportement le PLUS PROPRE est le mode « PAR DISTANCE » : on n'enregistre
+#  traces de RANDONNÉE, le comportement le PLUS PROPRE est le mode
+#  « PAR DISTANCE » : on n'enregistre
 #  un NOUVEAU point QUE LORSQU'ON S'EST DÉPLACÉ D'AU MOINS 5 MÈTRES.
 #
 #  C'est très facile ici : il suffit de régler _distance_min_m CI-DESSOUS
