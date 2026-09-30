@@ -1446,7 +1446,6 @@ def decouper_trace(fichier_entree, points, point_coupure, dossier_sortie=None):
     exporter_vers_gpx(part2, chemin2)
     return chemin1, chemin2
 
-
 # ----------------------------------------------------------------------
 # ONGLET PHOTOS : lecture/écriture des tags EXIF (date/heure, GPS) et
 # recherche du point de trace le plus proche d'un horodatage. Logique
@@ -1580,3 +1579,94 @@ def enregistrer_exif_gps(chemin_photo, latitude, longitude, altitude=None, date_
 
     exif_bytes = piexif.dump(exif_dict)
     piexif.insert(exif_bytes, chemin_photo)
+
+
+# ============================================================================
+# ONGLET NETTOYAGE : détection des points aberrants d'une trace horodatée.
+# Règle métier validée avec l'utilisateur : en randonnée, toute vitesse
+# > 5 km/h est suspecte. Deux niveaux DISJOINTS, par segment :
+#   - DUR  : segment à > 10 km/h -> ses DEUX extrémités sont aberrantes
+#            (fix GPS « téléporté » : déplacement impossible en
+#            randonnée). V1 exigeait un pic franchi à l'aller ET au
+#            retour : un pic à un seul segment rapide (34 km/h isolé)
+#            passait à travers — corrigé en v2.
+#   - DOUX : segment ENTRE 5 et 10 km/h -> extrémités suspectes,
+#            possiblement légitimes (descente rapide, navette).
+#            Les points DUR n'apparaissent JAMAIS en doux.
+# Les indices renvoyés sont ceux de la liste `points` (0-based).
+# ============================================================================
+
+SEUIL_VITESSE_DOUX_KMH = 5.0   # au-dessus : suspect en randonnée
+SEUIL_VITESSE_DUR_KMH = 10.0   # au-dessus : aberration quasi certaine
+
+
+def _vitesses_segments_kmh(points):
+    """Vitesses (km/h) de chaque segment : v[i] = vitesse entre les
+    points i-1 et i (v[0] = 0). Segments sans horodatages exploitables
+    ou dt <= 0 : vitesse 0 (jamais aberrante)."""
+    n = len(points)
+    vitesses = [0.0] * n
+    for i in range(1, n):
+        p1, p2 = points[i - 1], points[i]
+        t1, t2 = p1.get('time'), p2.get('time')
+        if not t1 or not t2:
+            continue
+        if t1.tzinfo:
+            t1 = t1.replace(tzinfo=None)
+        if t2.tzinfo:
+            t2 = t2.replace(tzinfo=None)
+        dt = (t2 - t1).total_seconds()
+        if dt <= 0:
+            continue
+        d = calculer_distance_haversine(p1['lat'], p1['lon'], p2['lat'], p2['lon'])
+        vitesses[i] = (d / dt) * 3.6
+    return vitesses
+
+
+def detecter_points_aberrants(points,
+                              seuil_doux=SEUIL_VITESSE_DOUX_KMH,
+                              seuil_dur=SEUIL_VITESSE_DUR_KMH):
+    """Détecte les points aberrants d'une trace horodatée (voir l'en-tête
+    de section). Retourne un dict :
+      {"dur":  [indices 0-based des points aberrants certains],
+       "doux": [indices 0-based des points suspects],
+       "rapport": texte récapitulatif lisible}
+    Ne modifie jamais `points` ; ne lève jamais (trace sans horodatages
+    -> listes vides)."""
+    n = len(points)
+    vide = {"dur": [], "doux": [], "rapport": "Trace sans horodatages : detection impossible."}
+    if n < 2:
+        return vide
+
+    v = _vitesses_segments_kmh(points)
+
+    dur = set()
+    doux = set()
+
+    for i in range(1, n):
+        if v[i] > seuil_dur:
+            # Segment impossible en randonnée : ses deux extrémités
+            # sont aberrantes certaines.
+            dur.add(i - 1)
+            dur.add(i)
+        elif v[i] > seuil_doux:
+            # Segment suspect mais pas aberrant (5 a 10 km/h).
+            doux.add(i - 1)
+            doux.add(i)
+
+    # Les points DUR ne sont jamais répétés en DOUX.
+    doux -= dur
+
+    dur = sorted(dur)
+    doux = sorted(doux)
+
+    if not dur and not doux:
+        rapport = ("Aucun point aberrant detecte "
+                   f"(aucune vitesse > {seuil_doux} km/h).")
+    else:
+        rapport = (f"{len(dur)} point(s) aberrant(s) certain(s) "
+                   f"(segment > {seuil_dur} km/h), "
+                   f"{len(doux)} point(s) suspect(s) "
+                   f"(vitesse entre {seuil_doux} et {seuil_dur} km/h).")
+
+    return {"dur": dur, "doux": doux, "rapport": rapport}

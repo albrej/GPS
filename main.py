@@ -799,6 +799,11 @@ class GrapheProfil(Widget):
         self.altitudes_secondaire = []
         self.distance_selection = None
         self.callback_clic = None
+        # --- Marqueurs de points aberrants (onglet Nettoyage) : liste de
+        # tuples (distance_km, couleur) dessinés comme de petits ronds
+        # posés sur la courbe d'altitude — même graphisme que les
+        # curseurs de waypoints de la carte, mais 2 fois plus petits.
+        self.marqueurs_graphiques = []
         # Bloque toute interaction tactile (sélection de point) quand
         # True — même principe et même nom que sur MapViewMolette,
         # que le gel/dégel s'applique de la même façon partout. False
@@ -837,6 +842,32 @@ class GrapheProfil(Widget):
     def set_selection(self, distance_km):
         self.distance_selection = distance_km
         self._redessiner()
+
+    def set_marqueurs(self, marqueurs):
+        """Remplace la liste des marqueurs de points aberrants (onglet
+        Nettoyage) : marqueurs = liste de tuples (distance_km, couleur).
+        Vide / None : aucun marqueur (comportement des autres onglets)."""
+        self.marqueurs_graphiques = list(marqueurs or [])
+        self._redessiner()
+
+    def _altitude_a_la_distance(self, distance_km):
+        """Altitude de la courbe principale à une distance donnée, par
+        interpolation linéaire entre les points dotés d'une altitude.
+        Renvoie None si la courbe n'a pas d'altitudes."""
+        if not self.distances_ele or not self.altitudes:
+            return None
+        if distance_km <= self.distances_ele[0]:
+            return self.altitudes[0]
+        if distance_km >= self.distances_ele[-1]:
+            return self.altitudes[-1]
+        for i in range(1, len(self.distances_ele)):
+            d1, d2 = self.distances_ele[i - 1], self.distances_ele[i]
+            if d1 <= distance_km <= d2:
+                if d2 > d1:
+                    ratio = (distance_km - d1) / (d2 - d1)
+                    return self.altitudes[i - 1] + ratio * (self.altitudes[i] - self.altitudes[i - 1])
+                return self.altitudes[i]
+        return self.altitudes[-1]
 
     def _zone_graphique(self):
         # Marge interne pour ne pas coller aux bords du widget
@@ -967,6 +998,25 @@ class GrapheProfil(Widget):
                     points_ligne_sec.extend([x_ecran(d), y_alt(a)])
                 Color(*ROUGE)
                 KivyLine(points=points_ligne_sec, width=1.8)
+
+            # --- Marqueurs de points aberrants (onglet Nettoyage) :
+            # petits ronds posés sur la courbe d'altitude aux distances
+            # données par set_marqueurs(). Même graphisme que les
+            # curseurs de waypoints (bleu) de la carte, 2 fois plus
+            # petits : côté dp(8) contre dp(16) minimum sur la carte.
+            if self.marqueurs_graphiques:
+                from kivy.graphics import Ellipse
+                cote_m = dp(8)
+                for d_m, couleur_m in self.marqueurs_graphiques:
+                    x_m = x_ecran(d_m)
+                    if a_ele or a_ele_sec:
+                        a_m = self._altitude_a_la_distance(d_m)
+                        y_m = y_alt(a_m) if a_m is not None else zy + zh / 2.0
+                    else:
+                        y_m = zy + zh / 2.0
+                    Color(*couleur_m)
+                    Ellipse(pos=(x_m - cote_m / 2.0, y_m - cote_m / 2.0),
+                            size=(cote_m, cote_m))
 
             if a_ele or a_ele_sec:
                 if a_vit:
@@ -1787,6 +1837,255 @@ KV = """
                 orientation: "vertical"
                 size_hint_y: None
                 height: self.minimum_height
+
+<NettoyageScreen>:
+    ScrollView:
+        do_scroll_x: False
+        BoxLayout:
+            orientation: "vertical"
+            size_hint_y: None
+            height: self.minimum_height
+            padding: dp(16)
+            spacing: dp(8)
+
+            Label:
+                text: "Nettoyage"
+                font_size: "20sp"
+                bold: True
+                size_hint_y: None
+                height: dp(36)
+                color: 0, 0, 0, 1
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(48)
+                spacing: dp(6)
+                Button:
+                    text: "Charger une trace"
+                    background_color: 0.2, 0.6, 0.86, 1
+                    on_release: root.ouvrir_selecteur_fichier()
+                Button:
+                    id: btn_layer
+                    size_hint_x: None
+                    width: dp(48)
+                    padding: 0, 0
+                    on_release: root.ouvrir_menu_fonds(self)
+                    Image:
+                        source: app.CHEMIN_ICONE_LAYER
+                        size_hint: None, None
+                        size: dp(48), dp(48)
+                        center_x: self.parent.center_x
+                        center_y: self.parent.center_y
+                        allow_stretch: True
+                        keep_ratio: True
+
+            Label:
+                text: root.info_fichier
+                size_hint_y: None
+                height: max(dp(30), self.texture_size[1] + dp(8))
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                color: 0.2, 0.5, 0.2, 1
+                italic: True
+
+            RelativeLayout:
+                size_hint_y: None
+                height: dp(220)
+
+                BoxLayout:
+                    id: map_container
+                    pos_hint: {"x": 0, "y": 0}
+                    size_hint: 1, 1
+
+                Button:
+                    text: "-"
+                    font_size: "24sp"
+                    bold: True
+                    color: 0, 0, 0, 1
+                    size_hint: None, None
+                    size: dp(36), dp(36)
+                    pos_hint: {"x": 0.03, "top": 0.95}
+                    background_normal: ""
+                    background_color: 0, 0, 0, 0
+                    on_release: root.dezoomer_carte()
+
+                    canvas.before:
+                        Color:
+                            rgba: 1, 1, 1, 1
+                        Ellipse:
+                            pos: self.pos
+                            size: self.size
+
+                Button:
+                    text: "+"
+                    font_size: "24sp"
+                    bold: True
+                    color: 0, 0, 0, 1
+                    size_hint: None, None
+                    size: dp(36), dp(36)
+                    pos_hint: {"right": 0.97, "top": 0.95}
+                    background_normal: ""
+                    background_color: 0, 0, 0, 0
+                    on_release: root.zoomer_carte()
+
+                    canvas.before:
+                        Color:
+                            rgba: 1, 1, 1, 1
+                        Ellipse:
+                            pos: self.pos
+                            size: self.size
+
+            Label:
+                text: root.info_point_text
+                size_hint_y: None
+                height: (max(dp(20), self.texture_size[1] + dp(4)) if root.info_point_text else 0)
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                font_size: "12sp"
+                color: 0, 0, 0, 1
+
+            AnchorLayout:
+                anchor_x: "center"
+                size_hint_y: None
+                height: ligne_info_point_nettoyage.height
+
+                BoxLayout:
+                    id: ligne_info_point_nettoyage
+                    orientation: "horizontal"
+                    size_hint: None, None
+                    size: self.minimum_size
+                    spacing: dp(16)
+
+                    BoxLayout:
+                        orientation: "vertical"
+                        size_hint: None, None
+                        size: self.minimum_size
+                        spacing: dp(2)
+
+                        Label:
+                            text: root.info_point_num
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+                        Label:
+                            text: root.info_point_dist
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+                        Label:
+                            text: root.info_point_heure
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+
+                    BoxLayout:
+                        orientation: "vertical"
+                        size_hint: None, None
+                        size: self.minimum_size
+                        spacing: dp(2)
+
+                        Label:
+                            text: root.info_point_gps
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+                        Label:
+                            text: root.info_point_alt
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+                        Label:
+                            text: root.info_point_vit
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+
+            Label:
+                text: "Points aberrants (segments à vitesse supérieure au seuil)"
+                size_hint_y: None
+                height: dp(24)
+                color: 0.8, 0.1, 0.1, 1
+                bold: True
+                font_size: "13sp"
+
+            BoxLayout:
+                id: zone_graphique
+                size_hint_y: None
+                height: dp(175)
+
+            Label:
+                text: "Seuil de détection (km/h) : vitesse au-dessus de laquelle un point est aberrant"
+                size_hint_y: None
+                height: dp(26)
+                color: 0, 0, 0, 1
+                bold: True
+                font_size: "13sp"
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(44)
+                spacing: dp(8)
+                TextInput:
+                    id: entree_seuil_nettoyage
+                    hint_text: "Seuil en km/h (ex: 10)"
+                    multiline: False
+                    input_filter: "float"
+                    text: root.seuil_text
+                    on_text: root.changer_seuil(self.text)
+                Button:
+                    text: "Détecter"
+                    size_hint_x: None
+                    width: dp(110)
+                    background_color: 0.15, 0.68, 0.38, 1
+                    on_release: root.appliquer_detection()
+
+            Label:
+                text: "Points aberrants (numéros) :"
+                size_hint_y: None
+                height: dp(26)
+                color: 0, 0, 0, 1
+                bold: True
+                font_size: "13sp"
+
+            # Liste sélectionnable : un appui long permet de tout
+            # sélectionner puis copier les numéros (pour les coller
+            # dans l'onglet Numérotation, mode suppression de points).
+            BoxLayout:
+                size_hint_y: None
+                height: max(dp(44), self.minimum_height)
+                spacing: dp(8)
+                TextInput:
+                    id: liste_aberrants_champ
+                    text: root.liste_aberrants_text
+                    readonly: True
+                    multiline: True
+                    size_hint_x: 0.72
+                    font_size: "13sp"
+                    foreground_color: 0.80, 0.10, 0.10, 1
+                    background_color: 0.97, 0.94, 0.94, 1
+                Button:
+                    text: "Supprimer"
+                    size_hint_x: None
+                    width: dp(120)
+                    disabled: not root.aberrants_present
+                    background_color: 0.776, 0.157, 0.157, 1
+                    on_release: root.supprimer_aberrants()
+
+            Button:
+                text: "Enregistrer la trace nettoyée"
+                size_hint_y: None
+                height: dp(52)
+                disabled: not root.trace_nettoyee
+                background_color: 0.15, 0.68, 0.38, 1
+                on_release: root.enregistrer_trace_nettoyee()
 
 <PhotosScreen>:
     ScrollView:
@@ -5875,6 +6174,523 @@ class StatistiquesScreen(Screen):
             conteneur.add_widget(ligne)
 
 
+class NettoyageScreen(Screen):
+    """Onglet Nettoyage : charge une trace GPX horodatée, l'affiche sur
+    la carte et sur le graphique d'altitude (comme les autres onglets),
+    et y marque les points aberrants détectés par
+    gps_logic.detecter_points_aberrants avec le SEUIL (km/h) saisi par
+    l'utilisateur : tout point extrémité d'un segment plus rapide que
+    le seuil est aberrant (règle randonnée : > 5 km/h suspect, 10 km/h
+    par défaut). Les marqueurs reprennent le curseur rond des
+    annotations/waypoints (MarqueurWaypoint), en DEUX FOIS PLUS PETIT.
+    Lecture uniquement : cet onglet ne supprime rien (le nettoyage
+    efficace se fait ensuite dans l'onglet Numérotation, qui sait
+    supprimer des points par indices)."""
+
+    fichier_source = StringProperty("")
+    info_fichier = StringProperty("Aucune trace chargée.")
+    # Seuil de détection (km/h) saisi par l'utilisateur : tout point
+    # extrémité d'un segment plus rapide que ce seuil est aberrant.
+    seuil_text = StringProperty("10")
+    # Liste des numéros (1-based, comme l'onglet Numérotation) des
+    # points aberrants détectés, affichée en rouge sous le seuil.
+    liste_aberrants_text = StringProperty("")
+    # Vrai si des points aberrants sont affichés (active « Supprimer »).
+    aberrants_present = BooleanProperty(False)
+    # Vrai si la trace a été nettoyée (active « Enregistrer »).
+    trace_nettoyee = BooleanProperty(False)
+    # Bloc « Informations du point sélectionné » (même gabarit que
+    # l'onglet Carte/Découpe : grille 3 lignes x 2 colonnes).
+    info_point_text = StringProperty("")
+    info_point_num = StringProperty("")
+    info_point_gps = StringProperty("")
+    info_point_dist = StringProperty("")
+    info_point_alt = StringProperty("")
+    info_point_heure = StringProperty("")
+    info_point_vit = StringProperty("")
+
+    def dezoomer_carte(self):
+        """Réduit le zoom de la carte (même garde-fou que CarteScreen)."""
+        mapview = getattr(self, "map_view", None)
+        if mapview and hasattr(mapview, "zoom"):
+            min_z = getattr(getattr(mapview, "map_source", None), "min_zoom", 0)
+            if mapview.zoom > min_z:
+                mapview.zoom -= 1
+                mapview.center_on(mapview.lat, mapview.lon)
+
+    def zoomer_carte(self):
+        """Augmente le zoom de la carte (même garde-fou que CarteScreen)."""
+        mapview = getattr(self, "map_view", None)
+        if mapview and hasattr(mapview, "zoom"):
+            max_z = getattr(getattr(mapview, "map_source", None), "max_zoom", 19)
+            if mapview.zoom < max_z:
+                mapview.zoom += 1
+                mapview.center_on(mapview.lat, mapview.lon)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.points_courants = []
+        self.profil = ([], [], [], [])
+        self.marqueurs_actifs = []        # D / A
+        self.marqueurs_waypoints = []     # curseurs bleus des waypoints
+        self.marqueurs_nettoyage = []     # curseurs rouges (2x plus petits) des points aberrants DURS
+        self.marqueur_curseur = None      # curseur de sélection (tap graphique), comme l'onglet Carte
+        self.trace_layer = None
+        self.map_view = None
+
+        self.graphe = GrapheProfil()
+        self.graphe.callback_clic = self._sur_clic_graphique
+        self.ids.zone_graphique.add_widget(self.graphe)
+
+        if CARTE_DISPONIBLE:
+            self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
+            self.ids.map_container.add_widget(self.map_view)
+            # La taille des curseurs (waypoints ET points aberrants)
+            # suit le zoom de la carte.
+            self.map_view.bind(zoom=self._maj_taille_waypoints)
+        else:
+            self.ids.map_container.add_widget(Label(
+                text="Carte indisponible : le module kivy_garden.mapview\nn'est pas installe.",
+                color=(0.6, 0.1, 0.1, 1), halign="center"))
+
+    def changer_vue_carte(self, valeur):
+        """Change le fond de carte (satellite ou plan) — même logique
+        que CarteScreen.changer_vue_carte."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        self.map_view.map_source = SOURCES_FONDS_CARTES[valeur]
+        self.map_view.trigger_update(True)
+
+    def ouvrir_menu_fonds(self, bouton):
+        """Ouvre le menu déroulant des fonds de carte sous le bouton
+        Layer — même logique que CarteScreen.ouvrir_menu_fonds."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        menu = _construire_menu_fonds_carte(self)
+        menu.open(bouton)
+
+    def ouvrir_selecteur_fichier(self):
+        contenu = _construire_selecteur_fichier(self._fichier_choisi)
+        if contenu is not None:
+            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
+            self._popup.open()
+
+    def _fichier_choisi(self, chemin):
+        if hasattr(self, '_popup'):
+            self._popup.dismiss()
+        if not chemin:
+            return
+        try:
+            points = gps_logic.lire_fichier_pour_conversion(chemin)
+            waypoints_bruts = gps_logic.lire_waypoints_source(chemin, heure_locale=False)
+        except Exception as e:
+            self.info_fichier = f"Erreur de lecture : {e}"
+            return
+
+        if not points:
+            self.info_fichier = "Aucun point GPS trouvé dans ce fichier."
+            return
+
+        try:
+            waypoints = gps_logic.vrais_waypoints(
+                waypoints_bruts,
+                [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])],
+            )
+        except Exception:
+            waypoints = []
+
+        self.fichier_source = chemin
+        self.points_courants = points
+        # Bloc d'infos du point sélectionné : vide au chargement.
+        self.info_point_text = ("Tape sur un graphique pour voir "
+                                "le detail d'un point.")
+        self.info_point_num = ""
+        self.info_point_gps = ""
+        self.info_point_dist = ""
+        self.info_point_alt = ""
+        self.info_point_heure = ""
+        self.info_point_vit = ""
+
+        # --- Carte et graphique : profil de la trace, comme d'habitude.
+        self.profil = gps_logic.calculer_profil(points)
+        self.graphe.set_donnees(*self.profil)
+        self._afficher_trace_sur_carte(points, waypoints=waypoints)
+
+        # --- Détection avec le seuil courant de l'utilisateur.
+        self.appliquer_detection()
+
+    def changer_seuil(self, texte):
+        """Appelé à chaque frappe dans la zone de saisie du seuil :
+        mémorise le texte (le retour KV affiche root.seuil_text)."""
+        self.seuil_text = texte
+
+    def appliquer_detection(self):
+        """Relance la détection des points aberrants sur la trace
+        chargée avec le seuil courant (km/h), et met à jour : marqueurs
+        rouges sur la carte, marqueurs sur le graphique, rapport dans
+        l'info de fichier. Sans effet si aucune trace n'est chargée."""
+        points = self.points_courants
+        if not points:
+            return
+
+        # Seuil : la saisie en cours, sinon 10 km/h par défaut.
+        try:
+            seuil = float(self.seuil_text.replace(",", "."))
+        except (ValueError, AttributeError):
+            seuil = 10.0
+        if seuil <= 0:
+            seuil = 10.0
+
+        detection = gps_logic.detecter_points_aberrants(
+            points, seuil_doux=seuil, seuil_dur=seuil)
+        indices_dur = detection["dur"]
+
+        try:
+            waypoints = gps_logic.vrais_waypoints(
+                gps_logic.lire_waypoints_source(self.fichier_source, heure_locale=False),
+                [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])],
+            )
+            nb_waypoints = len(waypoints)
+        except Exception:
+            nb_waypoints = 0
+
+        self.info_fichier = (
+            f"Trace : {os.path.basename(self.fichier_source)}\n"
+            f"{len(points)} points; {nb_waypoints} waypoints.\n"
+            + detection["rapport"]
+        )
+
+        # Nettoyage des marqueurs aberrants de la carte avant re-pose.
+        if CARTE_DISPONIBLE and self.map_view is not None:
+            for mw in self.marqueurs_nettoyage:
+                self.map_view.remove_marker(mw)
+            self.marqueurs_nettoyage = []
+
+        for idx in indices_dur:
+            self._poser_marqueur_aberrant(points, idx)
+        distances_km = self.profil[0]
+        marqueurs_dur = [(distances_km[idx], (0.80, 0.10, 0.10, 1))
+                         for idx in indices_dur if idx < len(distances_km)]
+        self.graphe.set_marqueurs(marqueurs_dur)
+
+        # --- Liste des numéros des points aberrants (1-based, prêt à
+        # copier dans l'onglet Numérotation pour suppression) :
+        # format « 1, 2, 3, 87, 99 » ; vide si rien de détecté.
+        if indices_dur:
+            self.liste_aberrants_text = ", ".join(str(i + 1) for i in indices_dur)
+        else:
+            self.liste_aberrants_text = "aucun"
+        self.aberrants_present = bool(indices_dur)
+        # Une nouvelle détection sur la trace COURANTE (déjà nettoyée ou
+        # non) ne change pas le drapeau trace_nettoyee : il ne devient
+        # vrai qu'après un « Supprimer » effectif.
+        self._indices_aberrants = list(indices_dur)
+
+    def supprimer_aberrants(self):
+        """Supprime TOTALEMENT de la trace chargée les points aberrants
+        affichés (ceux de la dernière détection) : la trace affichée,
+        le graphique, la carte et les marqueurs sont refaits sans eux.
+        Ne touche à aucun fichier — l'écriture passe par
+        « Enregistrer la trace nettoyée ». Confirmation par popup."""
+        points = self.points_courants
+        indices = getattr(self, "_indices_aberrants", [])
+        if not points or not indices:
+            return
+        a_suppr = set(indices)
+
+        contenu = _construire_confirmation_oui_non_annuler(
+            (f"Supprimer définitivement {len(a_suppr)} point(s) aberrant(s) "
+             f"de la trace affichée ?\n(le fichier source n'est pas modifié ; "
+             f"utilisez « Enregistrer » ensuite pour écrire la trace nettoyée)"),
+            self._reponse_suppression_aberrants,
+        )
+        self._popup_suppression = Popup(title="Supprimer les points aberrants",
+                                        content=contenu, size_hint=(0.9, 0.45))
+        self._popup_suppression.open()
+
+    def _reponse_suppression_aberrants(self, reponse):
+        """Suite de la confirmation : True = supprime, sinon rien."""
+        if hasattr(self, "_popup_suppression"):
+            self._popup_suppression.dismiss()
+        if not reponse:
+            return
+        points = self.points_courants
+        a_suppr = set(getattr(self, "_indices_aberrants", []))
+        if not points or not a_suppr:
+            return
+
+        self.points_courants = [p for i, p in enumerate(points) if i not in a_suppr]
+        self.trace_nettoyee = True
+
+        # Rafraîchit tout l'affichage avec la trace nettoyée, puis
+        # relance la détection au seuil courant (de nouveaux points
+        # peuvent devenir aberrants une fois les pics retirés : les
+        # segments fusionnés redeviennent mesurables).
+        points_nettoyes = self.points_courants
+        self.profil = gps_logic.calculer_profil(points_nettoyes)
+        self.graphe.set_donnees(*self.profil)
+        self.graphe.set_marqueurs([])
+        try:
+            waypoints = gps_logic.vrais_waypoints(
+                gps_logic.lire_waypoints_source(self.fichier_source, heure_locale=False),
+                [(points_nettoyes[0]['lat'], points_nettoyes[0]['lon']),
+                 (points_nettoyes[-1]['lat'], points_nettoyes[-1]['lon'])],
+            )
+        except Exception:
+            waypoints = []
+        self._afficher_trace_sur_carte(points_nettoyes, waypoints=waypoints)
+        self.appliquer_detection()
+
+    def enregistrer_trace_nettoyee(self):
+        """Écrit la trace nettoyée dans un nouveau fichier GPX nommé
+        <nom_source>_vit<seuil>.gpx dans le même dossier que le fichier
+        source (ex: rando.gpx + seuil 10 -> rando_vit10.gpx).
+        Enregistrement validé par popup Oui/Non/Annuler."""
+        if not self.points_courants or not self.fichier_source:
+            return
+        try:
+            seuil = float(self.seuil_text.replace(",", "."))
+        except (ValueError, AttributeError):
+            seuil = 10.0
+
+        base = os.path.splitext(os.path.basename(self.fichier_source))[0]
+        # Seuil sans décimale inutile (10.0 -> "10", 7.5 -> "7.5").
+        seuil_txt = f"{seuil:g}"
+        nom_sortie = f"{base}_vit{seuil_txt}.gpx"
+        dossier = os.path.dirname(self.fichier_source) or DOSSIER_SORTIE
+
+        contenu = _construire_confirmation_oui_non_annuler(
+            (f"Enregistrer la trace nettoyée ({len(self.points_courants)} points) "
+             f"dans le fichier :\n{nom_sortie} ?"),
+            self._reponse_enregistrement_nettoyage,
+        )
+        self._popup_enregistrement = Popup(title="Enregistrer la trace nettoyée",
+                                           content=contenu, size_hint=(0.9, 0.45))
+        self._popup_enregistrement.open()
+
+    def _reponse_enregistrement_nettoyage(self, reponse):
+        if hasattr(self, "_popup_enregistrement"):
+            self._popup_enregistrement.dismiss()
+        if not reponse:
+            return
+        try:
+            base = os.path.splitext(os.path.basename(self.fichier_source))[0]
+            seuil_txt = self.seuil_text.replace(",", ".").strip() or "10"
+            try:
+                seuil_txt = f"{float(seuil_txt):g}"
+            except ValueError:
+                seuil_txt = "10"
+            dossier = os.path.dirname(self.fichier_source) or DOSSIER_SORTIE
+            os.makedirs(dossier, exist_ok=True)
+            chemin_sortie = os.path.join(dossier, f"{base}_vit{seuil_txt}.gpx")
+
+            # Waypoints du fichier source, conservés tels quels (les
+            # points aberrants supprimés sont des <trkpt>, jamais des
+            # waypoints ; on conserve donc l'intégralité des <wpt>).
+            try:
+                waypoints = gps_logic.lire_waypoints_source(
+                    self.fichier_source, heure_locale=False)
+            except Exception:
+                waypoints = []
+            gps_logic.exporter_vers_gpx(
+                self.points_courants, chemin_sortie, garder_temps=True,
+                waypoints=waypoints,
+            )
+            self.info_fichier = (
+                f"Trace : {os.path.basename(self.fichier_source)}\n"
+                f"{len(self.points_courants)} points; {len(waypoints)} waypoints.\n"
+                f"Trace nettoyée enregistrée : {os.path.basename(chemin_sortie)}"
+            )
+        except Exception as e:
+            self.info_fichier = f"Erreur à l'enregistrement : {e}"
+
+    def _sur_clic_graphique(self, distance_km):
+        """Appelé au tap sur l'UN OU L'AUTRE graphique : sélectionne le
+        point de distance cumulée la plus proche et synchronise le
+        curseur partout — marqueur sur la carte (comme l'onglet
+        Carte/Découpe), ligne pointillée des DEUX graphiques."""
+        distances_km = self.profil[0]
+        if not distances_km:
+            return
+        idx = min(range(len(distances_km)), key=lambda i: abs(distances_km[i] - distance_km))
+        p = self.points_courants[idx]
+        dist = distances_km[idx]
+
+        # 1. Curseur sur la carte : petit disque ROUGE sans fond blanc
+        # (le MapMarker standard embarque une image carrée à fond
+        # blanc : on dessine le disque à la place, même mécanisme que
+        # les marqueurs de points aberrants).
+        if CARTE_DISPONIBLE and self.map_view is not None:
+            if self.marqueur_curseur is not None:
+                self.map_view.remove_marker(self.marqueur_curseur)
+                self.marqueur_curseur = None
+            self.marqueur_curseur = MarqueurWaypoint(
+                zoom=self.map_view.zoom, lat=p['lat'], lon=p['lon'],
+            )
+            try:
+                if self.marqueur_curseur._cote:
+                    self.marqueur_curseur._cote = dp(14)
+                    self.marqueur_curseur._reappliquer_taille()
+            except Exception:
+                pass
+            try:
+                from kivy.graphics import Color, Ellipse
+                disque_c = Ellipse(pos=self.marqueur_curseur.pos,
+                                   size=self.marqueur_curseur.size)
+                with self.marqueur_curseur.canvas:
+                    Color(0.80, 0.10, 0.10, 1)
+                    self.marqueur_curseur.canvas.add(disque_c)
+                self.marqueur_curseur.bind(
+                    pos=lambda inst, val, d=disque_c: setattr(d, "pos", val),
+                    size=lambda inst, val, d=disque_c: setattr(d, "size", val))
+                self.marqueur_curseur.source = ""
+            except Exception:
+                pass
+            self.map_view.add_marker(self.marqueur_curseur)
+            self.map_view.center_on(p['lat'], p['lon'])
+
+        # 2. Ligne de sélection sur le graphique.
+        self.graphe.set_selection(dist)
+
+        # 3. Bloc « Informations du point sélectionné » (même gabarit
+        # que l'onglet Carte/Découpe).
+        _, _, _, vitesses_kmh = self.profil
+        vit = vitesses_kmh[idx] if idx < len(vitesses_kmh) else 0.0
+        heure = p['time'].strftime("%H:%M:%S") if p.get('time') else "-"
+        ele_txt = f"{p['ele']} m" if p.get('ele') is not None else "-"
+        self.info_point_text = ""
+        self.info_point_num = f"Point {idx + 1}/{len(self.points_courants)}"
+        self.info_point_gps = f"GPS: {p['lat']:.5f}, {p['lon']:.5f}"
+        self.info_point_dist = f"Distance: {dist:.2f} km"
+        self.info_point_alt = f"Altitude: {ele_txt}"
+        self.info_point_heure = f"Heure: {heure}"
+        self.info_point_vit = f"Vitesse: {vit} km/h"
+
+    def _poser_marqueur_aberrant(self, points, idx):
+        """Pose sur la carte le petit curseur ROUGE d'un point aberrant
+        (marquage dur) : même MarqueurWaypoint que les annotations/
+        waypoints, mais 2 fois plus petit et en rouge (la réduction est
+        faite dans _maj_taille_waypoints, commune aux deux familles de
+        curseurs)."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        p = points[idx]
+        mw = MarqueurWaypoint(
+            zoom=self.map_view.zoom, lat=p['lat'], lon=p['lon'],
+            nom=f"Point aberrant n°{idx + 1}",
+            description=(f"Vitesse aberrante au point {idx + 1} "
+                         f"(au-dessus du seuil choisi) : fix GPS dégradé probable."),
+        )
+        # Réduction de moitié par rapport aux curseurs de waypoints...
+        try:
+            if mw._cote:
+                mw._cote = mw._cote / 2.0
+                mw._reappliquer_taille()
+        except Exception:
+            pass
+        # ...et teinte ROUGE : on remplace l'image bleue par un disque
+        # rouge dessiné sur place (même mécanisme de secours que
+        # MarqueurWaypoint quand l'image est absente).
+        try:
+            from kivy.graphics import Color, Ellipse
+            disque = Ellipse(pos=mw.pos, size=mw.size)
+            with mw.canvas:
+                Color(0.80, 0.10, 0.10, 1)
+                mw.canvas.add(disque)
+            mw.bind(pos=lambda inst, val, d=disque: setattr(d, "pos", val),
+                    size=lambda inst, val, d=disque: setattr(d, "size", val))
+            mw.source = ""
+        except Exception:
+            pass
+        self.map_view.add_marker(mw)
+        self.marqueurs_nettoyage.append(mw)
+
+    def _afficher_trace_sur_carte(self, points, waypoints=None):
+        """Trace + marqueurs D/A + waypoints + cadrage automatique —
+        même logique que CarteScreen._afficher_trace_sur_carte."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+
+        if self.trace_layer is not None:
+            self.map_view.remove_layer(self.trace_layer)
+            self.trace_layer = None
+        for m in self.marqueurs_actifs:
+            self.map_view.remove_marker(m)
+        self.marqueurs_actifs = []
+        for mw in self.marqueurs_waypoints:
+            self.map_view.remove_marker(mw)
+        self.marqueurs_waypoints = []
+        for mw in self.marqueurs_nettoyage:
+            self.map_view.remove_marker(mw)
+        self.marqueurs_nettoyage = []
+        if self.marqueur_curseur is not None:
+            self.map_view.remove_marker(self.marqueur_curseur)
+            self.marqueur_curseur = None
+
+        if not points:
+            return
+
+        liste_coords = [(p['lat'], p['lon']) for p in points]
+        self.trace_layer = TraceLayer()
+        self.trace_layer.set_points(liste_coords)
+
+        for wpt in (waypoints or []):
+            lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
+            if lat_w is None or lon_w is None:
+                continue
+            mw = MarqueurWaypoint(
+                zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
+                nom=wpt.get('name'), description=wpt.get('description'),
+            )
+            self.map_view.add_marker(mw)
+            self.marqueurs_waypoints.append(mw)
+
+        dist_dep_arr = gps_logic.calculer_distance_haversine(
+            points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
+        )
+        if dist_dep_arr <= 20.0:
+            m_unique = MarqueurTexte(texte="D/A", lat=points[0]['lat'], lon=points[0]['lon'])
+            self.map_view.add_marker(m_unique)
+            self.marqueurs_actifs.append(m_unique)
+        else:
+            m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
+            m_arrivee = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
+            self.map_view.add_marker(m_depart)
+            self.map_view.add_marker(m_arrivee)
+            self.marqueurs_actifs.extend([m_depart, m_arrivee])
+
+        self.map_view.add_layer(self.trace_layer)
+
+        lats = [c[0] for c in liste_coords]
+        lons = [c[1] for c in liste_coords]
+        min_lat, max_lat = min(lats), max(lats)
+        min_lon, max_lon = min(lons), max(lons)
+
+        self.map_view.center_on((min_lat + max_lat) / 2, (min_lon + max_lon) / 2)
+        max_delta = max(max_lat - min_lat, max_lon - min_lon)
+        if max_delta > 0:
+            zoom = int(12 - math.log2(max_delta * 10))
+            self.map_view.zoom = max(2, min(zoom, 18))
+
+    def _maj_taille_waypoints(self, instance, zoom):
+        """Suit le zoom de la carte : les curseurs de waypoints gardent
+        leur taille habituelle ; ceux des points aberrants (déjà posés
+        à moitié taille) la gardent (on reapplique la taille réduite)."""
+        for mw in self.marqueurs_waypoints:
+            try:
+                mw.maj_taille(zoom)
+            except Exception:
+                pass
+        for mw in self.marqueurs_nettoyage:
+            try:
+                mw.maj_taille(zoom)
+                if mw._cote:
+                    mw._cote = mw._cote / 2.0
+                    mw._reappliquer_taille()
+            except Exception:
+                pass
+
+
 class PhotosScreen(Screen):
     """Onglet Photos : associe une photo JPEG à un point de la trace en
     se basant sur son horodatage EXIF, puis permet d'écrire/corriger les
@@ -6221,6 +7037,7 @@ class OutilsTracesApp(App):
         self.sm.add_widget(FusionScreen(name="fusion"))
         self.sm.add_widget(CarteScreen(name="carte"))
         self.sm.add_widget(StatistiquesScreen(name="statistiques"))
+        self.sm.add_widget(NettoyageScreen(name="nettoyage"))
         self.sm.add_widget(PhotosScreen(name="photos"))
         self.sm.add_widget(LiveScreen(name="Live"))
 
@@ -6228,7 +7045,7 @@ class OutilsTracesApp(App):
         barre = BoxLayout(size_hint_y=None, height=dp(60), padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
-        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Carte / Découpe"), ("statistiques", "Statistiques"), ("photos", "Photos"), ("Live", "Live")]
+        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Carte / Découpe"), ("statistiques", "Statistiques"), ("nettoyage", "Nettoyage"), ("photos", "Photos"), ("Live", "Live")]
         self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
         self._boutons_menu = {}
         for nom_ecran, libelle in self._ecrans_menu:
