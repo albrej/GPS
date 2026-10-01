@@ -630,10 +630,110 @@ if CARTE_DISPONIBLE:
             self._label.center_x = self.center_x
             self._label.center_y = self.center_y + dp(6)
 
-    # Curseur rond et bleu des waypoints (onglet Photos). L'image est cherchée
-    # à côté de main.py : images/blue_dot.png.
-    CHEMIN_BLUE_DOT = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "images", "blue_dot.png")
+    # Couleurs des flags départ/arrivée.
+    COULEUR_FLAG_DEPART = (0.13, 0.60, 0.22, 1)     # vert
+    COULEUR_FLAG_ARRIVEE = (0.80, 0.20, 0.15, 1)    # rouge
+    COULEUR_FLAG_FERMETURE = (0.95, 0.55, 0.05, 1)  # orange (boucle fermée)
+
+    class MarqueurFlag(MapMarker):
+        """Triangle 100 % dessiné pour marquer le départ et l'arrivée
+        d'une trace : triangle plein pointant vers le HAUT, centré sur
+        le point GPS (les flags d'origine ont été remplacés par des
+        triangles, mêmes conditions et couleurs). Construit comme
+        MarqueurDisqueRouge : canvas du MapMarker effacé (plus de carré
+        blanc), Triangle dessiné à la place, source neutralisée.
+        Taille fixe, indépendante du zoom. couleur : remplissage du
+        triangle (vert départ, rouge arrivée, orange boucle fermée)."""
+
+        def __init__(self, couleur=None, **kwargs):
+            super().__init__(**kwargs)
+            self.canvas.clear()
+            from kivy.graphics import Color, Triangle
+            self._couleur_flag = couleur if couleur is not None else COULEUR_FLAG_DEPART
+            with self.canvas:
+                Color(*self._couleur_flag)
+                self._triangle = Triangle(points=[0, 0, 0, 0, 0, 0])
+            self.bind(pos=self._maj_flag, size=self._maj_flag)
+            self.bind(source=self._neutraliser_source)
+            # Le CENTRE du triangle tombe sur le point GPS.
+            self.anchor_x = 0.5
+            self.anchor_y = 0.5
+            self.size_hint = (None, None)
+            # Triangle équilatéral ~20 dp de côté, hauteur ~18 dp
+            # (taille redescendue à la moitié des flags doublés).
+            self.size = (dp(20), dp(18))
+            self._maj_flag()
+
+        def _neutraliser_source(self, instance, valeur):
+            if valeur:
+                try:
+                    self.source = ""
+                except Exception:
+                    pass
+
+        def maj_taille(self, zoom):
+            """Taille FIXE, indépendante du zoom : méthode présente
+            pour que le changement de zoom des cartes (qui appelle
+            maj_taille sur tous les marqueurs de waypoints, y compris
+            les triangles « Point de passage 1/2 » rangés dans la même
+            liste) ne lève pas d'AttributeError. Ne fait rien."""
+            pass
+
+        def _maj_flag(self, *args):
+            try:
+                # Sommet au milieu-haut, base en bas : pointe vers le
+                # haut, centré sur le marqueur (donc sur le point GPS).
+                x, y = self.pos
+                w, h = self.size
+                self._triangle.points = [
+                    x + w / 2, y + h,          # sommet
+                    x + w, y,                  # coin bas-droit
+                    x, y,                      # coin bas-gauche
+                ]
+            except Exception:
+                pass
+
+    def _poser_triangles_points_passage(ecran, waypoints):
+        """Sur les traces chargées, les annotations « Point de passage 1 »
+        et « Point de passage 2 » sont à considérer comme les points de
+        DÉPART et d'ARRIVÉE : on leur applique les triangles (mêmes
+        conditions et couleurs que les flags D/A) — vert pour le point
+        de passage 1 (départ), rouge pour le point de passage 2
+        (arrivée), et un SEUL triangle orange posé sur l'arrivée si les
+        deux points sont à moins de 20 m l'un de l'autre (boucle
+        fermée). Les autres waypoints restent des disques jaunes."""
+        wpt_dep = wpt_arr = None
+        for wpt in (waypoints or []):
+            nom = (wpt.get('name') or '').strip()
+            if nom == "Point de passage 1":
+                wpt_dep = wpt
+            elif nom == "Point de passage 2":
+                wpt_arr = wpt
+        if wpt_dep is None and wpt_arr is None:
+            return
+
+        def _poser(wpt, couleur):
+            m = MarqueurFlag(couleur=couleur, lat=wpt['lat'], lon=wpt['lon'])
+            ecran.map_view.add_marker(m)
+            ecran.marqueurs_waypoints.append(m)
+
+        # Condition « boucle fermée » : un seul triangle orange, sur le
+        # DÉPART (point de passage 1).
+        if wpt_dep is not None and wpt_arr is not None:
+            dist = gps_logic.calculer_distance_haversine(
+                wpt_dep['lat'], wpt_dep['lon'], wpt_arr['lat'], wpt_arr['lon']
+            )
+            if dist <= 20.0:
+                _poser(wpt_dep, COULEUR_FLAG_FERMETURE)
+                return
+        if wpt_dep is not None:
+            _poser(wpt_dep, COULEUR_FLAG_DEPART)
+        if wpt_arr is not None:
+            _poser(wpt_arr, COULEUR_FLAG_ARRIVEE)
+
+    # (L'ancien CHEMIN_BLUE_DOT / images/blue_dot.png n'est plus
+    # utilisé : les waypoints sont des disques jaunes dessinés, voir
+    # MarqueurWaypoint.)
 
     def taille_marqueur_waypoint(zoom):
         """Côté (en pixels) du curseur des waypoints selon le zoom de la
@@ -642,8 +742,15 @@ if CARTE_DISPONIBLE:
         (onglets Photos et Live)."""
         return dp(max(16, min(44, 16 + 3.5 * (zoom - 10))))
 
+    # Couleurs des disques dessinés sur les cartes :
+    # - bleu du curseur mobile = BLEU de la courbe d'altitude du
+    #   graphique (GrapheAltitude), pour un raccouci visuel direct ;
+    # - jaune des waypoints/annotations photos.
+    COULEUR_BLEU_CURSEUR = (0.12, 0.53, 0.90, 1)
+    COULEUR_JAUNE_WAYPOINT = (1.0, 0.84, 0.05, 1)
+
     class MarqueurDisqueRouge(MapMarker):
-        """Marqueur 100 % dessiné : un disque rouge SANS image de fond.
+        """Marqueur 100 % dessiné : un disque SANS image de fond.
         Le MapMarker standard de kivy_garden.mapview pose à la
         construction, DANS SON PROPRE canvas, une instruction Rectangle
         avec la texture par défaut (carré blanc default_marker.png) :
@@ -651,20 +758,24 @@ if CARTE_DISPONIBLE:
         visible), et vider « source » n'enlève pas une instruction déjà
         créée — le Rectangle garde sa texture. La seule parade fiable :
         EFFACER le canvas du marqueur juste après la construction, puis
-        dessiner le disque rouge à la place. La taille suit le zoom
+        dessiner le disque à la place. La taille suit le zoom
         comme MarqueurWaypoint (maj_taille), à MOITIE de celle des
         waypoints pour les points aberrants (cote_dp=None), ou fixe
-        pour le curseur de sélection (cote_dp donné en dp)."""
+        pour le curseur de sélection (cote_dp donné en dp).
+        La couleur est paramétrable : rouge par défaut (points
+        aberrants), bleu pour le curseur mobile (couleur=...),
+        jaune pour les waypoints (voir MarqueurWaypointJaune)."""
 
-        def __init__(self, zoom=10, cote_dp=None, **kwargs):
+        def __init__(self, zoom=10, cote_dp=None, couleur=None, **kwargs):
             super().__init__(**kwargs)
             # 1. Retire l'instruction Rectangle blanche du MapMarker
             #    (et toute autre instruction posée à la construction).
             self.canvas.clear()
-            # 2. Dessine le disque rouge dans le canvas du marqueur.
+            # 2. Dessine le disque dans le canvas du marqueur.
             from kivy.graphics import Color, Ellipse
+            self._couleur = couleur if couleur is not None else (0.80, 0.10, 0.10, 1)
             with self.canvas:
-                Color(0.80, 0.10, 0.10, 1)
+                Color(*self._couleur)
                 self._disque = Ellipse(pos=self.pos, size=self.size)
             self.bind(pos=self._maj_disque, size=self._maj_disque)
             # 3. Empêche tout retour de texture : mapview peut
@@ -708,14 +819,16 @@ if CARTE_DISPONIBLE:
                 self.center = (cx, cy)
 
     class MarqueurWaypoint(MapMarker):
-        """Petit curseur rond et bleu (images/blue_dot.png) posé sur un
-        waypoint. Centré sur le point ; sa taille est redimensionnée par
-        maj_taille(zoom) chaque fois que le zoom de la carte change.
+        """Curseur des waypoints/annotations photos : un disque JAUNE
+        dessiné, 100 % identique au disque rouge des points aberrants
+        (MarqueurDisqueRouge) — même construction (canvas du MapMarker
+        effacé, Ellipse dessinée, source neutralisée), même suivi du
+        zoom via maj_taille(zoom) — seule la couleur change (l'ancien
+        images/blue_dot.png n'est plus utilisé). Centré sur le point.
         Un tap dessus ouvre un popup avec son nom (<name>) et sa
         description (<desc>)."""
 
         def __init__(self, zoom=10, nom=None, description=None, **kwargs):
-            kwargs.setdefault("source", CHEMIN_BLUE_DOT)
             super().__init__(**kwargs)
             self.nom = nom
             self.description = description
@@ -723,27 +836,39 @@ if CARTE_DISPONIBLE:
             self.anchor_x = 0.5
             self.anchor_y = 0.5
             self.size_hint = (None, None)
-            try:
-                self.allow_stretch = True   # permet d'agrandir l'image
-            except Exception:
-                pass
-            # Image absente : on dessine un disque bleu à la place.
-            if not os.path.exists(str(self.source)):
-                from kivy.graphics import Ellipse
-                with self.canvas:
-                    Color(0.12, 0.53, 0.90, 1)
-                    self._disque = Ellipse(pos=self.pos, size=self.size)
-                self.bind(pos=self._maj_disque, size=self._maj_disque)
-            # La taille suit le zoom, pas la taille native de l'image.
-            self.bind(texture_size=self._reappliquer_taille)
+            # Disque jaune dessiné, comme MarqueurDisqueRouge :
+            # efface le carré blanc posé par le MapMarker standard.
+            self.canvas.clear()
+            from kivy.graphics import Color, Ellipse
+            with self.canvas:
+                Color(*COULEUR_JAUNE_WAYPOINT)
+                self._disque = Ellipse(pos=self.pos, size=self.size)
+            self.bind(pos=self._maj_disque, size=self._maj_disque)
+            # Empêche tout retour de la texture par défaut.
+            self.bind(source=self._neutraliser_source)
+            # La taille suit le zoom, pas la taille native d'une image.
             self.maj_taille(zoom)
 
+        def _neutraliser_source(self, instance, valeur):
+            if valeur:
+                try:
+                    self.source = ""
+                except Exception:
+                    pass
+
         def _maj_disque(self, *args):
-            self._disque.pos = self.pos
-            self._disque.size = self.size
+            try:
+                self._disque.pos = self.pos
+                self._disque.size = self.size
+            except Exception:
+                pass
 
         def maj_taille(self, zoom):
-            self._cote = taille_marqueur_waypoint(zoom)
+            # Disque 100 % identique au point rouge (MarqueurDisqueRouge)
+            # : diamètre à MOITIÉ de la taille des anciens curseurs
+            # # waypoint (la taille entière donnait un disque trop
+            # grand par rapport au blue_dot d'origine).
+            self._cote = max(dp(8), taille_marqueur_waypoint(zoom) / 2.0)
             self._reappliquer_taille()
 
         def _reappliquer_taille(self, *args):
@@ -1800,10 +1925,13 @@ KV = """
                 size_hint_y: None
                 height: dp(175)
 
+            # Bloc découpe : n'apparaît qu'une fois la trace chargée
+            # (même comportement que le graphique ci-dessus).
             Label:
                 text: "Decoupe de trace"
                 size_hint_y: None
-                height: dp(26)
+                height: (dp(26) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
                 color: 0, 0, 0, 1
                 bold: True
 
@@ -1813,7 +1941,8 @@ KV = """
                 multiline: False
                 input_filter: "int"
                 size_hint_y: None
-                height: dp(44)
+                height: (dp(44) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
                 disabled: not root.trace_chargee
                 text: root.point_coupure_text
                 on_text: root.point_coupure_text = self.text
@@ -1821,7 +1950,7 @@ KV = """
             Label:
                 text: root.status_text
                 size_hint_y: None
-                height: max(dp(30), self.texture_size[1] + dp(10))
+                height: (max(dp(30), self.texture_size[1] + dp(10)) if root.status_text else 0)
                 color: root.status_color
                 text_size: self.width, None
                 halign: "left"
@@ -1830,7 +1959,8 @@ KV = """
             Button:
                 text: "Couper ici"
                 size_hint_y: None
-                height: dp(56)
+                height: (dp(56) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
                 disabled: not root.trace_chargee or root.en_cours
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer_decoupe()
@@ -2076,7 +2206,8 @@ KV = """
             Label:
                 text: "Vitesse (km/h) au-dessus de laquelle un point est considéré comme aberrant :"
                 size_hint_y: None
-                height: dp(28)
+                height: (dp(28) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
                 color: 0, 0, 0, 1
                 bold: True
                 font_size: "15sp"
@@ -2088,7 +2219,8 @@ KV = """
             # horizontalement et bornés à dp(350).
             BoxLayout:
                 size_hint_y: None
-                height: dp(44)
+                height: (dp(44) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
                 size_hint_x: None
                 width: dp(350)
                 pos_hint: {"center_x": 0.5}
@@ -3451,7 +3583,7 @@ class LiveScreen(Screen):
     info_fichier = StringProperty("Aucune trace à suivre chargée.")
     # Icone du bouton "Cam" (ouverture de l'appareil photo). L'image est
     # cherchee a cote de main.py : images/Camera.png (meme principe que
-    # CHEMIN_BLUE_DOT, fonctionnel sur PC comme dans l'APK).
+    # les anciennes icones, fonctionnel sur PC comme dans l'APK).
     CHEMIN_ICONE_CAM = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "images", "Camera.png")
     info_point_text = StringProperty("")
@@ -3593,6 +3725,11 @@ class LiveScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
+        # Le curseur mobile (disque bleu) suit aussi le zoom depuis
+        # qu'il est passé sur la même formule de taille que les
+        # disques jaunes/rouges (plus de cote_dp fixe).
+        if getattr(self, "marqueur_curseur", None) is not None:
+            self.marqueur_curseur.maj_taille(zoom)
 
     def dezoomer_carte(self):
         if not CARTE_DISPONIBLE or self.map_view is None:
@@ -3705,21 +3842,27 @@ class LiveScreen(Screen):
             points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
         )
         if dist_dep_arr <= 20.0:
-            m_unique = MarqueurTexte(texte="D/A", lat=points[0]['lat'], lon=points[0]['lon'])
+            m_unique = MarqueurFlag(couleur=COULEUR_FLAG_FERMETURE, lat=points[0]['lat'], lon=points[0]['lon'])
             self.map_view.add_marker(m_unique)
             self.marqueurs_actifs.append(m_unique)
         else:
-            m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
-            m_arrivee = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
+            m_depart = MarqueurFlag(couleur=COULEUR_FLAG_DEPART, lat=points[0]['lat'], lon=points[0]['lon'])
+            m_arrivee = MarqueurFlag(couleur=COULEUR_FLAG_ARRIVEE, lat=points[-1]['lat'], lon=points[-1]['lon'])
             self.map_view.add_marker(m_depart)
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
-        # Waypoints : petit curseur rond et bleu (images/blue_dot.png),
-        # comme dans l'onglet Photos ; sa taille suit le zoom de la carte.
+        # Waypoints : disque jaune dessiné (MarqueurWaypoint), comme
+        # dans l'onglet Photos ; sa taille suit le zoom de la carte.
         for wpt in (waypoints or []):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
+                continue
+            # « Point de passage 1/2 » : ce sont le départ et l'arrivée,
+            # traités à part (triangles) juste après la boucle — pas
+            # de disque jaune pour eux.
+            nom_w = (wpt.get('name') or '').strip()
+            if nom_w in ("Point de passage 1", "Point de passage 2"):
                 continue
             mw = MarqueurWaypoint(
                 zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
@@ -3727,6 +3870,10 @@ class LiveScreen(Screen):
             )
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
+
+        # Triangles départ/arrivée pour « Point de passage 1/2 »
+        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
+        _poser_triangles_points_passage(self, waypoints)
 
         # Ajout du calque de trace EN DERNIER (après tous les
         # marqueurs) pour qu'il s'affiche par-dessus les curseurs
@@ -4789,17 +4936,12 @@ class LiveScreen(Screen):
                 f"(salve : {self._rattrapage_points})")
 
     def _journaliser_evenement_live(self, texte):
-        """Ajoute une ligne d'EVENEMENT au journal de post-mortem des
-        points live (debug_points_*.txt, voir _arreter_gpslogger) :
-        clic "Live" avec l'état détecté, chemin de reprise emprunté,
-        nombre de points lus au rechargement, etc. Permet de
-        reconstituer une reprise problématique (ex. compteur reparti
-        de zéro alors que le fichier GPX contenait déjà des points)."""
-        try:
-            self._journal_points_live.append(
-                ("EVENT", datetime.now().strftime("%H:%M:%S.%f")[:-3], texte))
-        except Exception:
-            pass
+        """Anciennement, ajoutait une ligne d'EVENEMENT au journal de
+        post-mortem écrit dans debug_points_*.txt à l'arrêt du Live.
+        Ce fichier n'est plus produit (choix utilisateur) : la
+        méthode ne fait plus rien, conservée pour ne pas toucher les
+        nombreux appelants silencieux."""
+        pass
 
     def _ajouter_point_live(self, point):
         """Ajoute un nouveau point reçu en direct à la trace de cet
@@ -4807,19 +4949,9 @@ class LiveScreen(Screen):
         d'altitude sur le graphique (rouge, superposée à celle de la
         trace chargée en bleu — voir set_donnees_secondaires), et met à
         jour le bloc d'informations avec ce dernier point."""
-        # Journal de post-mortem (silencieux) : chaque point recu en
-        # direct, accepte OU rejete, avec son horodatage de RECEPTION.
-        # Ecrit dans debug_points_*.txt a l'arret du live (voir
-        # _arreter_gpslogger) : permet de reconstituer exactement ce
-        # qui s'est passe lors d'une reprise problematique (ordre
-        # d'arrivee des points apres un reveil d'ecran, etc.).
-        try:
-            self._journal_points_live.append(
-                (datetime.now().strftime("%H:%M:%S.%f")[:-3],
-                 point['lat'], point['lon'], point.get('ele'),
-                 point.get('source', 'inconnue')))
-        except Exception:
-            pass
+        # (Le journal de post-mortem en mémoire a été retiré en même
+        # temps que le fichier debug_points_*.txt : il n'était écrit
+        # nulle part ailleurs et n'était jamais relu.)
 
         if self.points_trace_live:
             dernier = self.points_trace_live[-1]
@@ -4922,12 +5054,12 @@ class LiveScreen(Screen):
 
         # Marqueur de position actuelle / départ
         if len(points) > 0:
-            m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
+            m_depart = MarqueurFlag(couleur=COULEUR_FLAG_DEPART, lat=points[0]['lat'], lon=points[0]['lon'])
             self.map_view.add_marker(m_depart)
             self.marqueurs_actifs_live.append(m_depart)
             
         if len(points) > 1:
-            m_actuel = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
+            m_actuel = MarqueurFlag(couleur=COULEUR_FLAG_ARRIVEE, lat=points[-1]['lat'], lon=points[-1]['lon'])
             self.map_view.add_marker(m_actuel)
             self.marqueurs_actifs_live.append(m_actuel)
 
@@ -5155,22 +5287,11 @@ class LiveScreen(Screen):
         try:
             dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
             os.makedirs(dossier_cible, exist_ok=True)
-            nom_log = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            chemin_log = os.path.join(dossier_cible, nom_log)
-            with open(chemin_log, "w", encoding="utf-8") as f:
-                for source, nb in sorted(self.compteur_sources_live.items()):
-                    f.write(f"{source} : {nb}\n")
-
-            if self._journal_points_live:
-                nom_debug = f"debug_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                chemin_debug = os.path.join(dossier_cible, nom_debug)
-                with open(chemin_debug, "w", encoding="utf-8") as f:
-                    f.write("TYPE;HEURE;LAT/TEXTE;LON;ELE;SOURCE\n")
-                    for entree in self._journal_points_live:
-                        if entree and entree[0] == "EVENT":
-                            f.write(f"EVENT;{entree[1]};{entree[2]}\n")
-                        else:
-                            f.write("POINT;" + ";".join(str(v) for v in entree) + "\n")
+            # PLUS DE FICHIERS log_*.txt NI debug_points_*.txt : ces
+            # deux fichiers informatifs (jamais relus par l'appli)
+            # n'étaient écrits qu'ici, à l'arrêt du Live. Ils ne sont
+            # plus demandés — la sortie ne contient que la trace GPX
+            # et le fichier temporaire des annotations (live_temp_*).
         except Exception:
             pass
         finally:
@@ -6017,6 +6138,12 @@ class CarteScreen(Screen):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
                 continue
+            # « Point de passage 1/2 » : ce sont le départ et l'arrivée,
+            # traités à part (triangles) juste après la boucle — pas
+            # de disque jaune pour eux.
+            nom_w = (wpt.get('name') or '').strip()
+            if nom_w in ("Point de passage 1", "Point de passage 2"):
+                continue
             mw = MarqueurWaypoint(
                 zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
                 nom=wpt.get('name'), description=wpt.get('description'),
@@ -6024,16 +6151,20 @@ class CarteScreen(Screen):
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
 
+        # Triangles départ/arrivée pour « Point de passage 1/2 »
+        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
+        _poser_triangles_points_passage(self, waypoints)
+
         dist_dep_arr = gps_logic.calculer_distance_haversine(
             points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
         )
         if dist_dep_arr <= 20.0:
-            m_unique = MarqueurTexte(texte="D/A", lat=points[0]['lat'], lon=points[0]['lon'])
+            m_unique = MarqueurFlag(couleur=COULEUR_FLAG_FERMETURE, lat=points[0]['lat'], lon=points[0]['lon'])
             self.map_view.add_marker(m_unique)
             self.marqueurs_actifs.append(m_unique)
         else:
-            m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
-            m_arrivee = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
+            m_depart = MarqueurFlag(couleur=COULEUR_FLAG_DEPART, lat=points[0]['lat'], lon=points[0]['lon'])
+            m_arrivee = MarqueurFlag(couleur=COULEUR_FLAG_ARRIVEE, lat=points[-1]['lat'], lon=points[-1]['lon'])
             self.map_view.add_marker(m_depart)
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
@@ -6058,6 +6189,11 @@ class CarteScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
+        # Le curseur mobile (disque bleu) suit aussi le zoom depuis
+        # qu'il est passé sur la même formule de taille que les
+        # disques jaunes/rouges (plus de cote_dp fixe).
+        if getattr(self, "marqueur_curseur", None) is not None:
+            self.marqueur_curseur.maj_taille(zoom)
 
     def _debut_touch_carte(self, window, touch):
         """Mémorise la position de l'appui si le toucher démarre sur la
@@ -6123,10 +6259,12 @@ class CarteScreen(Screen):
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.marqueur_curseur is not None:
                 self.map_view.remove_marker(self.marqueur_curseur)
-            # Même curseur que l'onglet Nettoyage : disque rouge
-            # dessiné, sans le carré blanc du MapMarker standard.
+            # Même curseur que l'onglet Nettoyage : disque BLEU (couleur
+            # de la courbe d'altitude) dessiné, sans le carré blanc du
+            # MapMarker standard.
             self.marqueur_curseur = MarqueurDisqueRouge(
-                zoom=self.map_view.zoom, cote_dp=14,
+                zoom=self.map_view.zoom,
+                couleur=COULEUR_BLEU_CURSEUR,
                 lat=p['lat'], lon=p['lon'],
             )
             self.map_view.add_marker(self.marqueur_curseur)
@@ -6634,15 +6772,16 @@ class NettoyageScreen(Screen):
         p = self.points_courants[idx]
         dist = distances_km[idx]
 
-        # 1. Curseur sur la carte : petit disque ROUGE sans fond blanc
-        # (MarqueurDisqueRouge : texture du MapMarker neutralisée,
-        # disque dessiné dans canvas.before).
+        # 1. Curseur sur la carte : petit disque BLEU (couleur de la
+        # courbe d'altitude) sans fond blanc (MarqueurDisqueRouge :
+        # texture du MapMarker neutralisée, disque dessiné).
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.marqueur_curseur is not None:
                 self.map_view.remove_marker(self.marqueur_curseur)
                 self.marqueur_curseur = None
             self.marqueur_curseur = MarqueurDisqueRouge(
-                zoom=self.map_view.zoom, cote_dp=14,
+                zoom=self.map_view.zoom,
+                couleur=COULEUR_BLEU_CURSEUR,
                 lat=p['lat'], lon=p['lon'],
             )
             self.map_view.add_marker(self.marqueur_curseur)
@@ -6756,6 +6895,12 @@ class NettoyageScreen(Screen):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
                 continue
+            # « Point de passage 1/2 » : ce sont le départ et l'arrivée,
+            # traités à part (triangles) juste après la boucle — pas
+            # de disque jaune pour eux.
+            nom_w = (wpt.get('name') or '').strip()
+            if nom_w in ("Point de passage 1", "Point de passage 2"):
+                continue
             mw = MarqueurWaypoint(
                 zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
                 nom=wpt.get('name'), description=wpt.get('description'),
@@ -6763,16 +6908,20 @@ class NettoyageScreen(Screen):
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
 
+        # Triangles départ/arrivée pour « Point de passage 1/2 »
+        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
+        _poser_triangles_points_passage(self, waypoints)
+
         dist_dep_arr = gps_logic.calculer_distance_haversine(
             points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
         )
         if dist_dep_arr <= 20.0:
-            m_unique = MarqueurTexte(texte="D/A", lat=points[0]['lat'], lon=points[0]['lon'])
+            m_unique = MarqueurFlag(couleur=COULEUR_FLAG_FERMETURE, lat=points[0]['lat'], lon=points[0]['lon'])
             self.map_view.add_marker(m_unique)
             self.marqueurs_actifs.append(m_unique)
         else:
-            m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
-            m_arrivee = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
+            m_depart = MarqueurFlag(couleur=COULEUR_FLAG_DEPART, lat=points[0]['lat'], lon=points[0]['lon'])
+            m_arrivee = MarqueurFlag(couleur=COULEUR_FLAG_ARRIVEE, lat=points[-1]['lat'], lon=points[-1]['lon'])
             self.map_view.add_marker(m_depart)
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
@@ -6809,12 +6958,21 @@ class NettoyageScreen(Screen):
                 mw.maj_taille(zoom)
             except Exception:
                 pass
+                
+        # Le curseur mobile (disque bleu) suit aussi le zoom depuis
+        # qu'il est passé sur la même formule de taille que les
+        # disques jaunes/rouges (plus de cote_dp fixe).
+        if getattr(self, "marqueur_curseur", None) is not None:
+            try:
+                self.marqueur_curseur.maj_taille(zoom)
+            except Exception:
+                pass
+                
         for mw in self.marqueurs_nettoyage:
             try:
                 mw.maj_taille(zoom)
             except Exception:
                 pass
-
 
 class PhotosScreen(Screen):
     """Onglet Photos : associe une photo JPEG à un point de la trace en
@@ -6869,6 +7027,11 @@ class PhotosScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
+        # Le curseur mobile (disque bleu) suit aussi le zoom depuis
+        # qu'il est passé sur la même formule de taille que les
+        # disques jaunes/rouges (plus de cote_dp fixe).
+        if getattr(self, "marqueur_curseur", None) is not None:
+            self.marqueur_curseur.maj_taille(zoom)
 
     def dezoomer_carte(self):
         """Réduit le niveau de zoom de la carte (bouton "-", même
@@ -6959,6 +7122,11 @@ class PhotosScreen(Screen):
         self.info_photo = f"Photo : {os.path.basename(chemin)}"
         self.photo_chargee = True
         self.status_text = ""
+        # Réinitialise le titre de la carte : il ne doit pas garder
+        # l'état (« Position non trouvée... » ou localisation) de la
+        # photo précédemment testée.
+        self.titre_carte = "Emplacement de la photo sur la trace"
+        self.titre_carte_color = [0, 0, 0, 1]
 
         exif_data = gps_logic.get_exif_data(chemin)
         self.champ_date = exif_data["datetime"] or ""
@@ -6977,8 +7145,17 @@ class PhotosScreen(Screen):
         EXIF saisie et pré-remplit latitude/longitude/altitude,
         équivalent de situer_exif_edite() dans la version desktop."""
         if not self.champ_date.strip():
-            self.status_text = "Renseigne une date/heure pour la photo."
+            # Photo sans EXIF (tableau vide au chargement) : même
+            # message que la recherche infructueuse. On remet aussi le
+            # titre de la carte à zéro, sinon il gardait l'état de la
+            # photo précédente (non réactif).
+            self.status_text = "Position non trouvée sur la trace"
             self.status_color = [0.8, 0.1, 0.1, 1]
+            self.titre_carte = "Position non trouvée sur la trace"
+            self.titre_carte_color = [0.8, 0.1, 0.1, 1]
+            if CARTE_DISPONIBLE and self.map_view is not None and self.marqueur_photo is not None:
+                self.map_view.remove_marker(self.marqueur_photo)
+                self.marqueur_photo = None
             return
         if not self.points_trace:
             self.status_text = "Charge d'abord une trace pour y chercher l'horodatage."
@@ -7068,12 +7245,22 @@ class PhotosScreen(Screen):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
                 continue
+            # « Point de passage 1/2 » : ce sont le départ et l'arrivée,
+            # traités à part (triangles) juste après la boucle — pas
+            # de disque jaune pour eux.
+            nom_w = (wpt.get('name') or '').strip()
+            if nom_w in ("Point de passage 1", "Point de passage 2"):
+                continue
             mw = MarqueurWaypoint(
                 zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
                 nom=wpt.get('name'), description=wpt.get('description'),
             )
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
+
+        # Triangles départ/arrivée pour « Point de passage 1/2 »
+        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
+        _poser_triangles_points_passage(self, waypoints)
 
         self.map_view.add_layer(self.trace_layer)
 
