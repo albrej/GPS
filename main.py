@@ -910,13 +910,33 @@ if CARTE_DISPONIBLE:
                 label_desc.bind(texture_size=lambda w, val: setattr(w, "height", val[1]))
                 contenu.add_widget(label_desc)
             
-            texte_nom = escape_markup(self.nom) if self.nom else "Waypoint"
-            nom_est_image = bool(self.nom) and est_nom_image(self.nom)
-            if nom_est_image:
-                # Couleur "bleu Kivy", comme le libellé "Supprimer les
-                # waypoints" : signale que le nom est cliquable.
-                texte_nom = f"[ref=photo][u][color=2fa7d4ff]{texte_nom}[/color][/u][/ref]"
-            
+            # Une annotation peut contenir PLUSIEURS photos : le <name>
+            # GPX les liste séparées par des virgules
+            # (« photo1.jpg,photo2.jpg,photo3.jpg »). On découpe le nom
+            # en photos individuelles et on rend CHACUNE cliquable avec
+            # son propre lien [ref=photoN] — un lien unique sur le nom
+            # fusionné ne pouvait pas ouvrir la galerie.
+            parties_nom = ([p.strip() for p in self.nom.split(",") if p.strip()]
+                           if self.nom else [])
+            if not parties_nom:
+                texte_nom = "Waypoint"
+                photos_du_waypoint = []
+            else:
+                photos_du_waypoint = [p for p in parties_nom if est_nom_image(p)]
+                morceaux = []
+                for p in parties_nom:
+                    if est_nom_image(p) and p in photos_du_waypoint:
+                        idx = photos_du_waypoint.index(p)
+                        morceaux.append(
+                            f"[ref=photo{idx}][u][color=2fa7d4ff]"
+                            f"{escape_markup(p)}[/color][/u][/ref]"
+                        )
+                    else:
+                        morceaux.append(escape_markup(p))
+                texte_nom = ", ".join(morceaux)
+            # Couleur « bleu Kivy » des liens, comme le libellé
+            # « Supprimer les waypoints » : nom(s) cliquable(s).
+
             label_nom = Label(
                 text=texte_nom,
                 markup=True,
@@ -940,13 +960,20 @@ if CARTE_DISPONIBLE:
             popup = Popup(title="", separator_height=0, content=exterieur, size_hint=(0.85, 0.4))
             btn_fermer.bind(on_release=popup.dismiss)
 
-            # --- ENSUITE ON BIND LE CLIC DE LA PHOTO EN CONNAISSANCE DE CAUSE ---
-            if nom_est_image:
+            # --- ENSUITE ON BIND LE CLIC DES PHOTOS EN CONNAISSANT LE
+            # POPUP : le ref pressé (« photoN ») donne l'index de la
+            # photo cliquée dans photos_du_waypoint. ---
+            if photos_du_waypoint:
                 def _clic_photo(instance, ref):
-                    print(f"DEBUG: Tentative d'ouverture de la photo -> {self.nom}")
+                    try:
+                        idx = int(str(ref).replace("photo", ""))
+                        nom_photo = photos_du_waypoint[idx]
+                    except (ValueError, IndexError):
+                        nom_photo = photos_du_waypoint[0]
+                    print(f"DEBUG: Tentative d'ouverture de la photo -> {nom_photo}")
                     popup.dismiss()
                     try:
-                        ouvrir_photo_dans_galerie(self.nom)
+                        ouvrir_photo_dans_galerie(nom_photo)
                     except Exception as e:
                         print(f"ERREUR lors de l'ouverture de la galerie: {e}")
                 label_nom.bind(on_ref_press=_clic_photo)
@@ -6958,7 +6985,7 @@ class NettoyageScreen(Screen):
                 mw.maj_taille(zoom)
             except Exception:
                 pass
-                
+
         # Le curseur mobile (disque bleu) suit aussi le zoom depuis
         # qu'il est passé sur la même formule de taille que les
         # disques jaunes/rouges (plus de cote_dp fixe).
@@ -6967,12 +6994,13 @@ class NettoyageScreen(Screen):
                 self.marqueur_curseur.maj_taille(zoom)
             except Exception:
                 pass
-                
+
         for mw in self.marqueurs_nettoyage:
             try:
                 mw.maj_taille(zoom)
             except Exception:
                 pass
+
 
 class PhotosScreen(Screen):
     """Onglet Photos : associe une photo JPEG à un point de la trace en
