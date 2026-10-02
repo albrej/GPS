@@ -743,10 +743,9 @@ if CARTE_DISPONIBLE:
         return dp(max(16, min(44, 16 + 3.5 * (zoom - 10))))
 
     # Couleurs des disques dessinés sur les cartes :
-    # - bleu du curseur mobile = BLEU de la courbe d'altitude du
-    #   graphique (GrapheAltitude), pour un raccouci visuel direct ;
+    # - rose du curseur mobile de sélection sur les traces ;
     # - jaune des waypoints/annotations photos.
-    COULEUR_BLEU_CURSEUR = (0.12, 0.53, 0.90, 1)
+    COULEUR_ROSE_CURSEUR = (0.95, 0.40, 0.65, 1)
     COULEUR_JAUNE_WAYPOINT = (1.0, 0.84, 0.05, 1)
 
     class MarqueurDisqueRouge(MapMarker):
@@ -933,17 +932,22 @@ if CARTE_DISPONIBLE:
                         )
                     else:
                         morceaux.append(escape_markup(p))
-                texte_nom = ", ".join(morceaux)
+                # Une photo par ligne (retour à la ligne), pas de
+                # virgule de séparation.
+                texte_nom = "\n".join(morceaux)
             # Couleur « bleu Kivy » des liens, comme le libellé
             # « Supprimer les waypoints » : nom(s) cliquable(s).
 
+            # Hauteur adaptative : une ligne par photo (30 dp chacune)
+            # pour que la liste verticale ne soit pas tronquée.
+            nb_lignes_nom = max(1, len(parties_nom))
             label_nom = Label(
                 text=texte_nom,
                 markup=True,
                 halign="center",
                 valign="middle",
                 size_hint_y=None,
-                height=dp(30),
+                height=dp(30 * nb_lignes_nom),
             )
             label_nom.bind(width=lambda w, val: setattr(w, "text_size", (val, None)))
             contenu.add_widget(label_nom)
@@ -3752,7 +3756,7 @@ class LiveScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
-        # Le curseur mobile (disque bleu) suit aussi le zoom depuis
+        # Le curseur mobile (disque rose) suit aussi le zoom depuis
         # qu'il est passé sur la même formule de taille que les
         # disques jaunes/rouges (plus de cote_dp fixe).
         if getattr(self, "marqueur_curseur", None) is not None:
@@ -6216,7 +6220,7 @@ class CarteScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
-        # Le curseur mobile (disque bleu) suit aussi le zoom depuis
+        # Le curseur mobile (disque rose) suit aussi le zoom depuis
         # qu'il est passé sur la même formule de taille que les
         # disques jaunes/rouges (plus de cote_dp fixe).
         if getattr(self, "marqueur_curseur", None) is not None:
@@ -6286,12 +6290,11 @@ class CarteScreen(Screen):
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.marqueur_curseur is not None:
                 self.map_view.remove_marker(self.marqueur_curseur)
-            # Même curseur que l'onglet Nettoyage : disque BLEU (couleur
-            # de la courbe d'altitude) dessiné, sans le carré blanc du
-            # MapMarker standard.
+            # Même curseur que l'onglet Nettoyage : disque ROSE dessiné,
+            # sans le carré blanc du MapMarker standard.
             self.marqueur_curseur = MarqueurDisqueRouge(
                 zoom=self.map_view.zoom,
-                couleur=COULEUR_BLEU_CURSEUR,
+                couleur=COULEUR_ROSE_CURSEUR,
                 lat=p['lat'], lon=p['lon'],
             )
             self.map_view.add_marker(self.marqueur_curseur)
@@ -6799,16 +6802,16 @@ class NettoyageScreen(Screen):
         p = self.points_courants[idx]
         dist = distances_km[idx]
 
-        # 1. Curseur sur la carte : petit disque BLEU (couleur de la
-        # courbe d'altitude) sans fond blanc (MarqueurDisqueRouge :
-        # texture du MapMarker neutralisée, disque dessiné).
+        # 1. Curseur sur la carte : petit disque ROSE sans fond blanc
+        # (MarqueurDisqueRouge : texture du MapMarker neutralisée,
+        # disque dessiné).
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.marqueur_curseur is not None:
                 self.map_view.remove_marker(self.marqueur_curseur)
                 self.marqueur_curseur = None
             self.marqueur_curseur = MarqueurDisqueRouge(
                 zoom=self.map_view.zoom,
-                couleur=COULEUR_BLEU_CURSEUR,
+                couleur=COULEUR_ROSE_CURSEUR,
                 lat=p['lat'], lon=p['lon'],
             )
             self.map_view.add_marker(self.marqueur_curseur)
@@ -6986,7 +6989,7 @@ class NettoyageScreen(Screen):
             except Exception:
                 pass
 
-        # Le curseur mobile (disque bleu) suit aussi le zoom depuis
+        # Le curseur mobile (disque rose) suit aussi le zoom depuis
         # qu'il est passé sur la même formule de taille que les
         # disques jaunes/rouges (plus de cote_dp fixe).
         if getattr(self, "marqueur_curseur", None) is not None:
@@ -7055,7 +7058,7 @@ class PhotosScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
-        # Le curseur mobile (disque bleu) suit aussi le zoom depuis
+        # Le curseur mobile (disque rose) suit aussi le zoom depuis
         # qu'il est passé sur la même formule de taille que les
         # disques jaunes/rouges (plus de cote_dp fixe).
         if getattr(self, "marqueur_curseur", None) is not None:
