@@ -358,7 +358,7 @@ def ouvrir_photo_dans_galerie(chemin_ou_nom):
 # Installation : pip install kivy_garden.mapview
 # ----------------------------------------------------------------------
 try:
-    from kivy_garden.mapview import MapView, MapMarker, MapSource, MapLayer, MarkerMapLayer
+    from kivy_garden.mapview import MapView, MapMarker, MapSource, MapLayer
     CARTE_DISPONIBLE = True
 except Exception:
     CARTE_DISPONIBLE = False
@@ -630,110 +630,10 @@ if CARTE_DISPONIBLE:
             self._label.center_x = self.center_x
             self._label.center_y = self.center_y + dp(6)
 
-    # Couleurs des flags départ/arrivée.
-    COULEUR_FLAG_DEPART = (0.13, 0.60, 0.22, 1)     # vert
-    COULEUR_FLAG_ARRIVEE = (0.80, 0.20, 0.15, 1)    # rouge
-    COULEUR_FLAG_FERMETURE = (0.95, 0.55, 0.05, 1)  # orange (boucle fermée)
-
-    class MarqueurFlag(MapMarker):
-        """Triangle 100 % dessiné pour marquer le départ et l'arrivée
-        d'une trace : triangle plein pointant vers le HAUT, centré sur
-        le point GPS (les flags d'origine ont été remplacés par des
-        triangles, mêmes conditions et couleurs). Construit comme
-        MarqueurDisqueRouge : canvas du MapMarker effacé (plus de carré
-        blanc), Triangle dessiné à la place, source neutralisée.
-        Taille fixe, indépendante du zoom. couleur : remplissage du
-        triangle (vert départ, rouge arrivée, orange boucle fermée)."""
-
-        def __init__(self, couleur=None, **kwargs):
-            super().__init__(**kwargs)
-            self.canvas.clear()
-            from kivy.graphics import Color, Triangle
-            self._couleur_flag = couleur if couleur is not None else COULEUR_FLAG_DEPART
-            with self.canvas:
-                Color(*self._couleur_flag)
-                self._triangle = Triangle(points=[0, 0, 0, 0, 0, 0])
-            self.bind(pos=self._maj_flag, size=self._maj_flag)
-            self.bind(source=self._neutraliser_source)
-            # Le CENTRE du triangle tombe sur le point GPS.
-            self.anchor_x = 0.5
-            self.anchor_y = 0.5
-            self.size_hint = (None, None)
-            # Triangle équilatéral ~20 dp de côté, hauteur ~18 dp
-            # (taille redescendue à la moitié des flags doublés).
-            self.size = (dp(20), dp(18))
-            self._maj_flag()
-
-        def _neutraliser_source(self, instance, valeur):
-            if valeur:
-                try:
-                    self.source = ""
-                except Exception:
-                    pass
-
-        def maj_taille(self, zoom):
-            """Taille FIXE, indépendante du zoom : méthode présente
-            pour que le changement de zoom des cartes (qui appelle
-            maj_taille sur tous les marqueurs de waypoints, y compris
-            les triangles « Point de passage 1/2 » rangés dans la même
-            liste) ne lève pas d'AttributeError. Ne fait rien."""
-            pass
-
-        def _maj_flag(self, *args):
-            try:
-                # Sommet au milieu-haut, base en bas : pointe vers le
-                # haut, centré sur le marqueur (donc sur le point GPS).
-                x, y = self.pos
-                w, h = self.size
-                self._triangle.points = [
-                    x + w / 2, y + h,          # sommet
-                    x + w, y,                  # coin bas-droit
-                    x, y,                      # coin bas-gauche
-                ]
-            except Exception:
-                pass
-
-    def _poser_triangles_points_passage(ecran, waypoints):
-        """Sur les traces chargées, les annotations « Point de passage 1 »
-        et « Point de passage 2 » sont à considérer comme les points de
-        DÉPART et d'ARRIVÉE : on leur applique les triangles (mêmes
-        conditions et couleurs que les flags D/A) — vert pour le point
-        de passage 1 (départ), rouge pour le point de passage 2
-        (arrivée), et un SEUL triangle orange posé sur l'arrivée si les
-        deux points sont à moins de 20 m l'un de l'autre (boucle
-        fermée). Les autres waypoints restent des disques jaunes."""
-        wpt_dep = wpt_arr = None
-        for wpt in (waypoints or []):
-            nom = (wpt.get('name') or '').strip()
-            if nom == "Point de passage 1":
-                wpt_dep = wpt
-            elif nom == "Point de passage 2":
-                wpt_arr = wpt
-        if wpt_dep is None and wpt_arr is None:
-            return
-
-        def _poser(wpt, couleur):
-            m = MarqueurFlag(couleur=couleur, lat=wpt['lat'], lon=wpt['lon'])
-            ecran.map_view.add_marker(m)
-            ecran.marqueurs_waypoints.append(m)
-
-        # Condition « boucle fermée » : un seul triangle orange, sur le
-        # DÉPART (point de passage 1).
-        if wpt_dep is not None and wpt_arr is not None:
-            dist = gps_logic.calculer_distance_haversine(
-                wpt_dep['lat'], wpt_dep['lon'], wpt_arr['lat'], wpt_arr['lon']
-            )
-            if dist <= 20.0:
-                _poser(wpt_dep, COULEUR_FLAG_FERMETURE)
-                return
-        if wpt_dep is not None:
-            _poser(wpt_dep, COULEUR_FLAG_DEPART)
-        if wpt_arr is not None:
-            _poser(wpt_arr, COULEUR_FLAG_ARRIVEE)
-
-    # (L'ancien CHEMIN_BLUE_DOT / images/blue_dot.png n'est plus
-    # utilisé : les waypoints sont des disques jaunes dessinés, voir
-    # MarqueurWaypoint.)
+    # Curseur rond et bleu des waypoints (onglet Photos). L'image est cherchée
+    # à côté de main.py : images/blue_dot.png.
+    CHEMIN_BLUE_DOT = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "images", "blue_dot.png")
 
     def taille_marqueur_waypoint(zoom):
         """Côté (en pixels) du curseur des waypoints selon le zoom de la
@@ -742,92 +642,15 @@ if CARTE_DISPONIBLE:
         (onglets Photos et Live)."""
         return dp(max(16, min(44, 16 + 3.5 * (zoom - 10))))
 
-    # Couleurs des disques dessinés sur les cartes :
-    # - rose du curseur mobile de sélection sur les traces ;
-    # - jaune des waypoints/annotations photos.
-    COULEUR_ROSE_CURSEUR = (0.95, 0.40, 0.65, 1)
-    COULEUR_JAUNE_WAYPOINT = (1.0, 0.84, 0.05, 1)
-
-    class MarqueurDisqueRouge(MapMarker):
-        """Marqueur 100 % dessiné : un disque SANS image de fond.
-        Le MapMarker standard de kivy_garden.mapview pose à la
-        construction, DANS SON PROPRE canvas, une instruction Rectangle
-        avec la texture par défaut (carré blanc default_marker.png) :
-        dessiner dans canvas.before passait DESSOUS (le carré restait
-        visible), et vider « source » n'enlève pas une instruction déjà
-        créée — le Rectangle garde sa texture. La seule parade fiable :
-        EFFACER le canvas du marqueur juste après la construction, puis
-        dessiner le disque à la place. La taille suit le zoom
-        comme MarqueurWaypoint (maj_taille), à MOITIE de celle des
-        waypoints pour les points aberrants (cote_dp=None), ou fixe
-        pour le curseur de sélection (cote_dp donné en dp).
-        La couleur est paramétrable : rouge par défaut (points
-        aberrants), bleu pour le curseur mobile (couleur=...),
-        jaune pour les waypoints (voir MarqueurWaypointJaune)."""
-
-        def __init__(self, zoom=10, cote_dp=None, couleur=None, **kwargs):
-            super().__init__(**kwargs)
-            # 1. Retire l'instruction Rectangle blanche du MapMarker
-            #    (et toute autre instruction posée à la construction).
-            self.canvas.clear()
-            # 2. Dessine le disque dans le canvas du marqueur.
-            from kivy.graphics import Color, Ellipse
-            self._couleur = couleur if couleur is not None else (0.80, 0.10, 0.10, 1)
-            with self.canvas:
-                Color(*self._couleur)
-                self._disque = Ellipse(pos=self.pos, size=self.size)
-            self.bind(pos=self._maj_disque, size=self._maj_disque)
-            # 3. Empêche tout retour de texture : mapview peut
-            #    recharger une source par défaut à divers moments du
-            #    cycle de vie (ajout à la carte, recyclage...).
-            self.bind(source=self._neutraliser_source)
-            self._cote = None
-            self._cote_dp = cote_dp
-            self.anchor_x = 0.5
-            self.anchor_y = 0.5
-            self.size_hint = (None, None)
-            self.maj_taille(zoom)
-
-        def _neutraliser_source(self, instance, valeur):
-            if valeur:
-                try:
-                    self.source = ""
-                except Exception:
-                    pass
-
-        def _maj_disque(self, *args):
-            try:
-                self._disque.pos = self.pos
-                self._disque.size = self.size
-            except Exception:
-                pass
-
-        def maj_taille(self, zoom):
-            if self._cote_dp is not None:
-                self._cote = dp(self._cote_dp)
-            else:
-                self._cote = max(dp(8), taille_marqueur_waypoint(zoom) / 2.0)
-            self._reappliquer_taille()
-
-        def _reappliquer_taille(self, *args):
-            if self._cote is None:
-                return
-            if tuple(self.size) != (self._cote, self._cote):
-                cx, cy = self.center
-                self.size = (self._cote, self._cote)
-                self.center = (cx, cy)
-
     class MarqueurWaypoint(MapMarker):
-        """Curseur des waypoints/annotations photos : un disque JAUNE
-        dessiné, 100 % identique au disque rouge des points aberrants
-        (MarqueurDisqueRouge) — même construction (canvas du MapMarker
-        effacé, Ellipse dessinée, source neutralisée), même suivi du
-        zoom via maj_taille(zoom) — seule la couleur change (l'ancien
-        images/blue_dot.png n'est plus utilisé). Centré sur le point.
+        """Petit curseur rond et bleu (images/blue_dot.png) posé sur un
+        waypoint. Centré sur le point ; sa taille est redimensionnée par
+        maj_taille(zoom) chaque fois que le zoom de la carte change.
         Un tap dessus ouvre un popup avec son nom (<name>) et sa
         description (<desc>)."""
 
         def __init__(self, zoom=10, nom=None, description=None, **kwargs):
+            kwargs.setdefault("source", CHEMIN_BLUE_DOT)
             super().__init__(**kwargs)
             self.nom = nom
             self.description = description
@@ -835,39 +658,27 @@ if CARTE_DISPONIBLE:
             self.anchor_x = 0.5
             self.anchor_y = 0.5
             self.size_hint = (None, None)
-            # Disque jaune dessiné, comme MarqueurDisqueRouge :
-            # efface le carré blanc posé par le MapMarker standard.
-            self.canvas.clear()
-            from kivy.graphics import Color, Ellipse
-            with self.canvas:
-                Color(*COULEUR_JAUNE_WAYPOINT)
-                self._disque = Ellipse(pos=self.pos, size=self.size)
-            self.bind(pos=self._maj_disque, size=self._maj_disque)
-            # Empêche tout retour de la texture par défaut.
-            self.bind(source=self._neutraliser_source)
-            # La taille suit le zoom, pas la taille native d'une image.
-            self.maj_taille(zoom)
-
-        def _neutraliser_source(self, instance, valeur):
-            if valeur:
-                try:
-                    self.source = ""
-                except Exception:
-                    pass
-
-        def _maj_disque(self, *args):
             try:
-                self._disque.pos = self.pos
-                self._disque.size = self.size
+                self.allow_stretch = True   # permet d'agrandir l'image
             except Exception:
                 pass
+            # Image absente : on dessine un disque bleu à la place.
+            if not os.path.exists(str(self.source)):
+                from kivy.graphics import Ellipse
+                with self.canvas:
+                    Color(0.12, 0.53, 0.90, 1)
+                    self._disque = Ellipse(pos=self.pos, size=self.size)
+                self.bind(pos=self._maj_disque, size=self._maj_disque)
+            # La taille suit le zoom, pas la taille native de l'image.
+            self.bind(texture_size=self._reappliquer_taille)
+            self.maj_taille(zoom)
+
+        def _maj_disque(self, *args):
+            self._disque.pos = self.pos
+            self._disque.size = self.size
 
         def maj_taille(self, zoom):
-            # Disque 100 % identique au point rouge (MarqueurDisqueRouge)
-            # : diamètre à MOITIÉ de la taille des anciens curseurs
-            # # waypoint (la taille entière donnait un disque trop
-            # grand par rapport au blue_dot d'origine).
-            self._cote = max(dp(8), taille_marqueur_waypoint(zoom) / 2.0)
+            self._cote = taille_marqueur_waypoint(zoom)
             self._reappliquer_taille()
 
         def _reappliquer_taille(self, *args):
@@ -909,45 +720,20 @@ if CARTE_DISPONIBLE:
                 label_desc.bind(texture_size=lambda w, val: setattr(w, "height", val[1]))
                 contenu.add_widget(label_desc)
             
-            # Une annotation peut contenir PLUSIEURS photos : le <name>
-            # GPX les liste séparées par des virgules
-            # (« photo1.jpg,photo2.jpg,photo3.jpg »). On découpe le nom
-            # en photos individuelles et on rend CHACUNE cliquable avec
-            # son propre lien [ref=photoN] — un lien unique sur le nom
-            # fusionné ne pouvait pas ouvrir la galerie.
-            parties_nom = ([p.strip() for p in self.nom.split(",") if p.strip()]
-                           if self.nom else [])
-            if not parties_nom:
-                texte_nom = "Waypoint"
-                photos_du_waypoint = []
-            else:
-                photos_du_waypoint = [p for p in parties_nom if est_nom_image(p)]
-                morceaux = []
-                for p in parties_nom:
-                    if est_nom_image(p) and p in photos_du_waypoint:
-                        idx = photos_du_waypoint.index(p)
-                        morceaux.append(
-                            f"[ref=photo{idx}][u][color=2fa7d4ff]"
-                            f"{escape_markup(p)}[/color][/u][/ref]"
-                        )
-                    else:
-                        morceaux.append(escape_markup(p))
-                # Une photo par ligne (retour à la ligne), pas de
-                # virgule de séparation.
-                texte_nom = "\n".join(morceaux)
-            # Couleur « bleu Kivy » des liens, comme le libellé
-            # « Supprimer les waypoints » : nom(s) cliquable(s).
-
-            # Hauteur adaptative : une ligne par photo (30 dp chacune)
-            # pour que la liste verticale ne soit pas tronquée.
-            nb_lignes_nom = max(1, len(parties_nom))
+            texte_nom = escape_markup(self.nom) if self.nom else "Waypoint"
+            nom_est_image = bool(self.nom) and est_nom_image(self.nom)
+            if nom_est_image:
+                # Couleur "bleu Kivy", comme le libellé "Supprimer les
+                # waypoints" : signale que le nom est cliquable.
+                texte_nom = f"[ref=photo][u][color=2fa7d4ff]{texte_nom}[/color][/u][/ref]"
+            
             label_nom = Label(
                 text=texte_nom,
                 markup=True,
                 halign="center",
                 valign="middle",
                 size_hint_y=None,
-                height=dp(30 * nb_lignes_nom),
+                height=dp(30),
             )
             label_nom.bind(width=lambda w, val: setattr(w, "text_size", (val, None)))
             contenu.add_widget(label_nom)
@@ -964,20 +750,13 @@ if CARTE_DISPONIBLE:
             popup = Popup(title="", separator_height=0, content=exterieur, size_hint=(0.85, 0.4))
             btn_fermer.bind(on_release=popup.dismiss)
 
-            # --- ENSUITE ON BIND LE CLIC DES PHOTOS EN CONNAISSANT LE
-            # POPUP : le ref pressé (« photoN ») donne l'index de la
-            # photo cliquée dans photos_du_waypoint. ---
-            if photos_du_waypoint:
+            # --- ENSUITE ON BIND LE CLIC DE LA PHOTO EN CONNAISSANCE DE CAUSE ---
+            if nom_est_image:
                 def _clic_photo(instance, ref):
-                    try:
-                        idx = int(str(ref).replace("photo", ""))
-                        nom_photo = photos_du_waypoint[idx]
-                    except (ValueError, IndexError):
-                        nom_photo = photos_du_waypoint[0]
-                    print(f"DEBUG: Tentative d'ouverture de la photo -> {nom_photo}")
+                    print(f"DEBUG: Tentative d'ouverture de la photo -> {self.nom}")
                     popup.dismiss()
                     try:
-                        ouvrir_photo_dans_galerie(nom_photo)
+                        ouvrir_photo_dans_galerie(self.nom)
                     except Exception as e:
                         print(f"ERREUR lors de l'ouverture de la galerie: {e}")
                 label_nom.bind(on_ref_press=_clic_photo)
@@ -1020,11 +799,6 @@ class GrapheProfil(Widget):
         self.altitudes_secondaire = []
         self.distance_selection = None
         self.callback_clic = None
-        # --- Marqueurs de points aberrants (onglet Nettoyage) : liste de
-        # tuples (distance_km, couleur) dessinés comme de petits ronds
-        # posés sur la courbe d'altitude — même graphisme que les
-        # curseurs de waypoints de la carte, mais 2 fois plus petits.
-        self.marqueurs_graphiques = []
         # Bloque toute interaction tactile (sélection de point) quand
         # True — même principe et même nom que sur MapViewMolette,
         # que le gel/dégel s'applique de la même façon partout. False
@@ -1063,32 +837,6 @@ class GrapheProfil(Widget):
     def set_selection(self, distance_km):
         self.distance_selection = distance_km
         self._redessiner()
-
-    def set_marqueurs(self, marqueurs):
-        """Remplace la liste des marqueurs de points aberrants (onglet
-        Nettoyage) : marqueurs = liste de tuples (distance_km, couleur).
-        Vide / None : aucun marqueur (comportement des autres onglets)."""
-        self.marqueurs_graphiques = list(marqueurs or [])
-        self._redessiner()
-
-    def _altitude_a_la_distance(self, distance_km):
-        """Altitude de la courbe principale à une distance donnée, par
-        interpolation linéaire entre les points dotés d'une altitude.
-        Renvoie None si la courbe n'a pas d'altitudes."""
-        if not self.distances_ele or not self.altitudes:
-            return None
-        if distance_km <= self.distances_ele[0]:
-            return self.altitudes[0]
-        if distance_km >= self.distances_ele[-1]:
-            return self.altitudes[-1]
-        for i in range(1, len(self.distances_ele)):
-            d1, d2 = self.distances_ele[i - 1], self.distances_ele[i]
-            if d1 <= distance_km <= d2:
-                if d2 > d1:
-                    ratio = (distance_km - d1) / (d2 - d1)
-                    return self.altitudes[i - 1] + ratio * (self.altitudes[i] - self.altitudes[i - 1])
-                return self.altitudes[i]
-        return self.altitudes[-1]
 
     def _zone_graphique(self):
         # Marge interne pour ne pas coller aux bords du widget
@@ -1219,25 +967,6 @@ class GrapheProfil(Widget):
                     points_ligne_sec.extend([x_ecran(d), y_alt(a)])
                 Color(*ROUGE)
                 KivyLine(points=points_ligne_sec, width=1.8)
-
-            # --- Marqueurs de points aberrants (onglet Nettoyage) :
-            # petits ronds posés sur la courbe d'altitude aux distances
-            # données par set_marqueurs(). Même graphisme que les
-            # curseurs de waypoints (bleu) de la carte, 2 fois plus
-            # petits : côté dp(8) contre dp(16) minimum sur la carte.
-            if self.marqueurs_graphiques:
-                from kivy.graphics import Ellipse
-                cote_m = dp(8)
-                for d_m, couleur_m in self.marqueurs_graphiques:
-                    x_m = x_ecran(d_m)
-                    if a_ele or a_ele_sec:
-                        a_m = self._altitude_a_la_distance(d_m)
-                        y_m = y_alt(a_m) if a_m is not None else zy + zh / 2.0
-                    else:
-                        y_m = zy + zh / 2.0
-                    Color(*couleur_m)
-                    Ellipse(pos=(x_m - cote_m / 2.0, y_m - cote_m / 2.0),
-                            size=(cote_m, cote_m))
 
             if a_ele or a_ele_sec:
                 if a_vit:
@@ -1956,13 +1685,10 @@ KV = """
                 size_hint_y: None
                 height: dp(175)
 
-            # Bloc découpe : n'apparaît qu'une fois la trace chargée
-            # (même comportement que le graphique ci-dessus).
             Label:
                 text: "Decoupe de trace"
                 size_hint_y: None
-                height: (dp(26) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
+                height: dp(26)
                 color: 0, 0, 0, 1
                 bold: True
 
@@ -1972,8 +1698,7 @@ KV = """
                 multiline: False
                 input_filter: "int"
                 size_hint_y: None
-                height: (dp(44) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
+                height: dp(44)
                 disabled: not root.trace_chargee
                 text: root.point_coupure_text
                 on_text: root.point_coupure_text = self.text
@@ -1981,7 +1706,7 @@ KV = """
             Label:
                 text: root.status_text
                 size_hint_y: None
-                height: (max(dp(30), self.texture_size[1] + dp(10)) if root.status_text else 0)
+                height: max(dp(30), self.texture_size[1] + dp(10))
                 color: root.status_color
                 text_size: self.width, None
                 halign: "left"
@@ -1990,8 +1715,7 @@ KV = """
             Button:
                 text: "Couper ici"
                 size_hint_y: None
-                height: (dp(56) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
+                height: dp(56)
                 disabled: not root.trace_chargee or root.en_cours
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer_decoupe()
@@ -2064,258 +1788,6 @@ KV = """
                 size_hint_y: None
                 height: self.minimum_height
 
-<NettoyageScreen>:
-    ScrollView:
-        do_scroll_x: False
-        BoxLayout:
-            orientation: "vertical"
-            size_hint_y: None
-            height: self.minimum_height
-            padding: dp(16)
-            spacing: dp(8)
-
-            Label:
-                text: "Nettoyage"
-                font_size: "20sp"
-                bold: True
-                size_hint_y: None
-                height: dp(36)
-                color: 0, 0, 0, 1
-
-            BoxLayout:
-                size_hint_y: None
-                height: dp(48)
-                spacing: dp(6)
-                Button:
-                    text: "Charger une trace"
-                    background_color: 0.2, 0.6, 0.86, 1
-                    on_release: root.ouvrir_selecteur_fichier()
-                Button:
-                    id: btn_layer
-                    size_hint_x: None
-                    width: dp(48)
-                    padding: 0, 0
-                    on_release: root.ouvrir_menu_fonds(self)
-                    Image:
-                        source: app.CHEMIN_ICONE_LAYER
-                        size_hint: None, None
-                        size: dp(48), dp(48)
-                        center_x: self.parent.center_x
-                        center_y: self.parent.center_y
-                        allow_stretch: True
-                        keep_ratio: True
-
-            Label:
-                text: root.info_fichier
-                size_hint_y: None
-                height: max(dp(30), self.texture_size[1] + dp(8))
-                text_size: self.width, None
-                halign: "left"
-                valign: "top"
-                color: 0.2, 0.5, 0.2, 1
-                italic: True
-
-            RelativeLayout:
-                size_hint_y: None
-                height: dp(220)
-
-                BoxLayout:
-                    id: map_container
-                    pos_hint: {"x": 0, "y": 0}
-                    size_hint: 1, 1
-
-                Button:
-                    text: "-"
-                    font_size: "24sp"
-                    bold: True
-                    color: 0, 0, 0, 1
-                    size_hint: None, None
-                    size: dp(36), dp(36)
-                    pos_hint: {"x": 0.03, "top": 0.95}
-                    background_normal: ""
-                    background_color: 0, 0, 0, 0
-                    on_release: root.dezoomer_carte()
-
-                    canvas.before:
-                        Color:
-                            rgba: 1, 1, 1, 1
-                        Ellipse:
-                            pos: self.pos
-                            size: self.size
-
-                Button:
-                    text: "+"
-                    font_size: "24sp"
-                    bold: True
-                    color: 0, 0, 0, 1
-                    size_hint: None, None
-                    size: dp(36), dp(36)
-                    pos_hint: {"right": 0.97, "top": 0.95}
-                    background_normal: ""
-                    background_color: 0, 0, 0, 0
-                    on_release: root.zoomer_carte()
-
-                    canvas.before:
-                        Color:
-                            rgba: 1, 1, 1, 1
-                        Ellipse:
-                            pos: self.pos
-                            size: self.size
-
-            Label:
-                text: root.info_point_text
-                size_hint_y: None
-                height: (max(dp(20), self.texture_size[1] + dp(4)) if root.info_point_text else 0)
-                text_size: self.width, None
-                halign: "left"
-                valign: "top"
-                font_size: "12sp"
-                color: 0, 0, 0, 1
-
-            AnchorLayout:
-                anchor_x: "center"
-                size_hint_y: None
-                height: ligne_info_point_nettoyage.height
-
-                BoxLayout:
-                    id: ligne_info_point_nettoyage
-                    orientation: "horizontal"
-                    size_hint: None, None
-                    size: self.minimum_size
-                    spacing: dp(16)
-
-                    BoxLayout:
-                        orientation: "vertical"
-                        size_hint: None, None
-                        size: self.minimum_size
-                        spacing: dp(2)
-
-                        Label:
-                            text: root.info_point_num
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-                        Label:
-                            text: root.info_point_dist
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-                        Label:
-                            text: root.info_point_heure
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-
-                    BoxLayout:
-                        orientation: "vertical"
-                        size_hint: None, None
-                        size: self.minimum_size
-                        spacing: dp(2)
-
-                        Label:
-                            text: root.info_point_gps
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-                        Label:
-                            text: root.info_point_alt
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-                        Label:
-                            text: root.info_point_vit
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-
-            Label:
-                text: "Vitesse (km/h) au-dessus de laquelle un point est considéré comme aberrant :"
-                size_hint_y: None
-                height: (dp(28) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
-                color: 0, 0, 0, 1
-                bold: True
-                font_size: "15sp"
-                text_size: self.width, None
-                halign: "center"
-
-            # Les blocs suivants (zone de saisie + Détecter, compteur
-            # + Supprimer de la trace, Enregistrer) sont centrés
-            # horizontalement et bornés à dp(350).
-            BoxLayout:
-                size_hint_y: None
-                height: (dp(44) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
-                size_hint_x: None
-                width: dp(350)
-                pos_hint: {"center_x": 0.5}
-                spacing: dp(8)
-                TextInput:
-                    id: entree_seuil_nettoyage
-                    hint_text: "Seuil en km/h (ex: 10)"
-                    multiline: False
-                    input_filter: "float"
-                    font_size: "18sp"
-                    halign: "center"
-                    padding: [dp(4), dp(8), dp(4), dp(8)]
-                    text: root.seuil_text
-                    on_text: root.changer_seuil(self.text)
-                Button:
-                    text: "Détecter"
-                    size_hint_x: None
-                    width: dp(110)
-                    background_color: 0.15, 0.68, 0.38, 1
-                    on_release: root.appliquer_detection()
-
-            # Graphique visible uniquement une fois la trace chargée
-            # (comme le bloc compteur et le bouton Enregistrer).
-            BoxLayout:
-                id: zone_graphique
-                size_hint_y: None
-                height: (dp(175) if root.trace_chargee else 0)
-
-            BoxLayout:
-                size_hint_y: None
-                height: (dp(40) if root.trace_chargee else 0)
-                size_hint_x: None
-                width: dp(350)
-                pos_hint: {"center_x": 0.5}
-                opacity: (1 if root.trace_chargee else 0)
-                disabled: not root.trace_chargee
-                Label:
-                    text: root.compteur_aberrants_text
-                    size_hint_x: 1
-                    color: 0, 0, 0, 1
-                    bold: True
-                    font_size: "15sp"
-                    text_size: self.width, None
-                    valign: "middle"
-                Button:
-                    text: "Supprimer de la trace"
-                    size_hint_x: None
-                    width: dp(160)
-                    disabled: not root.aberrants_present
-                    background_color: 0.776, 0.157, 0.157, 1
-                    on_release: root.supprimer_aberrants()
-
-            Button:
-                text: "Enregistrer la trace nettoyée"
-                size_hint_y: None
-                height: (dp(52) if root.trace_chargee else 0)
-                size_hint_x: None
-                width: dp(350)
-                pos_hint: {"center_x": 0.5}
-                opacity: (1 if root.trace_chargee else 0)
-                disabled: not root.trace_nettoyee
-                background_color: 0.15, 0.68, 0.38, 1
-                on_release: root.enregistrer_trace_nettoyee()
-
 <PhotosScreen>:
     ScrollView:
         BoxLayout:
@@ -2384,24 +1856,10 @@ KV = """
                 color: 0.4, 0.2, 0.5, 1
                 italic: True
 
-            Label:
-                text: root.status_text
-                size_hint_y: None
-                # Hauteur réduite à rien quand le statut est vide : ne
-                # pas laisser un espace vide entre le nom de la photo
-                # et le tableau (l'espace ne doit exister que pour un
-                # vrai message d'action).
-                height: (max(dp(30), self.texture_size[1] + dp(10)) if root.status_text else 0)
-                text_size: self.width, None
-                halign: "left"
-                valign: "top"
-                color: root.status_color
-
 # Ligne 1 : Date/Heure et Altitude
             BoxLayout:
                 size_hint_y: None
-                height: (dp(60) if root.photo_chargee else 0)
-                opacity: (1 if root.photo_chargee else 0)
+                height: dp(60)
                 spacing: dp(10)
 
                 BoxLayout:
@@ -2443,8 +1901,7 @@ KV = """
             # Ligne 2 : Latitude et Longitude
             BoxLayout:
                 size_hint_y: None
-                height: (dp(60) if root.photo_chargee else 0)
-                opacity: (1 if root.photo_chargee else 0)
+                height: dp(60)
                 spacing: dp(10)
 
                 BoxLayout:
@@ -2488,8 +1945,7 @@ KV = """
                 size_hint_x: 1
                 size_hint_y: None
                 # La hauteur s'adapte automatiquement à la largeur réelle du parent divisée par le ratio de l'image (4:3)
-                height: (self.width / (photo_img.image_ratio if photo_img.image_ratio else (4/3))) if root.photo_chargee else 0
-                opacity: (1 if root.photo_chargee else 0)
+                height: self.width / (photo_img.image_ratio if photo_img.image_ratio else (4/3))
                 
                 canvas.before:
                     Color:
@@ -2505,18 +1961,39 @@ KV = """
                     allow_stretch: True
                     keep_ratio: True
 
+            Button:
+                text: "Situer (Horodatage)"
+                size_hint_y: None
+                height: dp(48)
+                background_color: 0.16, 0.5, 0.73, 1
+                on_release: root.situer()
+
+            Button:
+                text: "Enregistrer EXIF"
+                size_hint_y: None
+                height: dp(48)
+                background_color: 0.90, 0.49, 0.13, 1
+                on_release: root.enregistrer_exif()
+
+            Label:
+                text: root.status_text
+                size_hint_y: None
+                height: max(dp(30), self.texture_size[1] + dp(10))
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                color: root.status_color
+
             Label:
                 text: root.titre_carte
                 size_hint_y: None
-                height: (dp(26) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
+                height: dp(26)
                 bold: True
                 color: root.titre_carte_color
 
             RelativeLayout:
                 size_hint_y: None
-                height: (dp(220) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
+                height: dp(220)
 
                 BoxLayout:
                     id: map_container
@@ -2560,24 +2037,6 @@ KV = """
                         Ellipse:
                             pos: self.pos
                             size: self.size
-
-            Button:
-                text: "Situer (Horodatage)"
-                size_hint_y: None
-                height: (dp(48) if (root.photo_chargee and root.trace_chargee) else 0)
-                opacity: (1 if (root.photo_chargee and root.trace_chargee) else 0)
-                disabled: not (root.photo_chargee and root.trace_chargee)
-                background_color: 0.16, 0.5, 0.73, 1
-                on_release: root.situer()
-
-            Button:
-                text: "Enregistrer EXIF"
-                size_hint_y: None
-                height: (dp(48) if (root.photo_chargee and root.trace_chargee) else 0)
-                opacity: (1 if (root.photo_chargee and root.trace_chargee) else 0)
-                disabled: not (root.photo_chargee and root.trace_chargee)
-                background_color: 0.90, 0.49, 0.13, 1
-                on_release: root.enregistrer_exif()
 
 <LiveScreen>:
     ScrollView:
@@ -3614,7 +3073,7 @@ class LiveScreen(Screen):
     info_fichier = StringProperty("Aucune trace à suivre chargée.")
     # Icone du bouton "Cam" (ouverture de l'appareil photo). L'image est
     # cherchee a cote de main.py : images/Camera.png (meme principe que
-    # les anciennes icones, fonctionnel sur PC comme dans l'APK).
+    # CHEMIN_BLUE_DOT, fonctionnel sur PC comme dans l'APK).
     CHEMIN_ICONE_CAM = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "images", "Camera.png")
     info_point_text = StringProperty("")
@@ -3756,11 +3215,6 @@ class LiveScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
-        # Le curseur mobile (disque rose) suit aussi le zoom depuis
-        # qu'il est passé sur la même formule de taille que les
-        # disques jaunes/rouges (plus de cote_dp fixe).
-        if getattr(self, "marqueur_curseur", None) is not None:
-            self.marqueur_curseur.maj_taille(zoom)
 
     def dezoomer_carte(self):
         if not CARTE_DISPONIBLE or self.map_view is None:
@@ -3873,27 +3327,21 @@ class LiveScreen(Screen):
             points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
         )
         if dist_dep_arr <= 20.0:
-            m_unique = MarqueurFlag(couleur=COULEUR_FLAG_FERMETURE, lat=points[0]['lat'], lon=points[0]['lon'])
+            m_unique = MarqueurTexte(texte="D/A", lat=points[0]['lat'], lon=points[0]['lon'])
             self.map_view.add_marker(m_unique)
             self.marqueurs_actifs.append(m_unique)
         else:
-            m_depart = MarqueurFlag(couleur=COULEUR_FLAG_DEPART, lat=points[0]['lat'], lon=points[0]['lon'])
-            m_arrivee = MarqueurFlag(couleur=COULEUR_FLAG_ARRIVEE, lat=points[-1]['lat'], lon=points[-1]['lon'])
+            m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
+            m_arrivee = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
             self.map_view.add_marker(m_depart)
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
-        # Waypoints : disque jaune dessiné (MarqueurWaypoint), comme
-        # dans l'onglet Photos ; sa taille suit le zoom de la carte.
+        # Waypoints : petit curseur rond et bleu (images/blue_dot.png),
+        # comme dans l'onglet Photos ; sa taille suit le zoom de la carte.
         for wpt in (waypoints or []):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
-                continue
-            # « Point de passage 1/2 » : ce sont le départ et l'arrivée,
-            # traités à part (triangles) juste après la boucle — pas
-            # de disque jaune pour eux.
-            nom_w = (wpt.get('name') or '').strip()
-            if nom_w in ("Point de passage 1", "Point de passage 2"):
                 continue
             mw = MarqueurWaypoint(
                 zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
@@ -3901,10 +3349,6 @@ class LiveScreen(Screen):
             )
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
-
-        # Triangles départ/arrivée pour « Point de passage 1/2 »
-        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
-        _poser_triangles_points_passage(self, waypoints)
 
         # Ajout du calque de trace EN DERNIER (après tous les
         # marqueurs) pour qu'il s'affiche par-dessus les curseurs
@@ -4967,12 +4411,17 @@ class LiveScreen(Screen):
                 f"(salve : {self._rattrapage_points})")
 
     def _journaliser_evenement_live(self, texte):
-        """Anciennement, ajoutait une ligne d'EVENEMENT au journal de
-        post-mortem écrit dans debug_points_*.txt à l'arrêt du Live.
-        Ce fichier n'est plus produit (choix utilisateur) : la
-        méthode ne fait plus rien, conservée pour ne pas toucher les
-        nombreux appelants silencieux."""
-        pass
+        """Ajoute une ligne d'EVENEMENT au journal de post-mortem des
+        points live (debug_points_*.txt, voir _arreter_gpslogger) :
+        clic "Live" avec l'état détecté, chemin de reprise emprunté,
+        nombre de points lus au rechargement, etc. Permet de
+        reconstituer une reprise problématique (ex. compteur reparti
+        de zéro alors que le fichier GPX contenait déjà des points)."""
+        try:
+            self._journal_points_live.append(
+                ("EVENT", datetime.now().strftime("%H:%M:%S.%f")[:-3], texte))
+        except Exception:
+            pass
 
     def _ajouter_point_live(self, point):
         """Ajoute un nouveau point reçu en direct à la trace de cet
@@ -4980,9 +4429,19 @@ class LiveScreen(Screen):
         d'altitude sur le graphique (rouge, superposée à celle de la
         trace chargée en bleu — voir set_donnees_secondaires), et met à
         jour le bloc d'informations avec ce dernier point."""
-        # (Le journal de post-mortem en mémoire a été retiré en même
-        # temps que le fichier debug_points_*.txt : il n'était écrit
-        # nulle part ailleurs et n'était jamais relu.)
+        # Journal de post-mortem (silencieux) : chaque point recu en
+        # direct, accepte OU rejete, avec son horodatage de RECEPTION.
+        # Ecrit dans debug_points_*.txt a l'arret du live (voir
+        # _arreter_gpslogger) : permet de reconstituer exactement ce
+        # qui s'est passe lors d'une reprise problematique (ordre
+        # d'arrivee des points apres un reveil d'ecran, etc.).
+        try:
+            self._journal_points_live.append(
+                (datetime.now().strftime("%H:%M:%S.%f")[:-3],
+                 point['lat'], point['lon'], point.get('ele'),
+                 point.get('source', 'inconnue')))
+        except Exception:
+            pass
 
         if self.points_trace_live:
             dernier = self.points_trace_live[-1]
@@ -5085,12 +4544,12 @@ class LiveScreen(Screen):
 
         # Marqueur de position actuelle / départ
         if len(points) > 0:
-            m_depart = MarqueurFlag(couleur=COULEUR_FLAG_DEPART, lat=points[0]['lat'], lon=points[0]['lon'])
+            m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
             self.map_view.add_marker(m_depart)
             self.marqueurs_actifs_live.append(m_depart)
             
         if len(points) > 1:
-            m_actuel = MarqueurFlag(couleur=COULEUR_FLAG_ARRIVEE, lat=points[-1]['lat'], lon=points[-1]['lon'])
+            m_actuel = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
             self.map_view.add_marker(m_actuel)
             self.marqueurs_actifs_live.append(m_actuel)
 
@@ -5318,11 +4777,22 @@ class LiveScreen(Screen):
         try:
             dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
             os.makedirs(dossier_cible, exist_ok=True)
-            # PLUS DE FICHIERS log_*.txt NI debug_points_*.txt : ces
-            # deux fichiers informatifs (jamais relus par l'appli)
-            # n'étaient écrits qu'ici, à l'arrêt du Live. Ils ne sont
-            # plus demandés — la sortie ne contient que la trace GPX
-            # et le fichier temporaire des annotations (live_temp_*).
+            nom_log = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            chemin_log = os.path.join(dossier_cible, nom_log)
+            with open(chemin_log, "w", encoding="utf-8") as f:
+                for source, nb in sorted(self.compteur_sources_live.items()):
+                    f.write(f"{source} : {nb}\n")
+
+            if self._journal_points_live:
+                nom_debug = f"debug_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                chemin_debug = os.path.join(dossier_cible, nom_debug)
+                with open(chemin_debug, "w", encoding="utf-8") as f:
+                    f.write("TYPE;HEURE;LAT/TEXTE;LON;ELE;SOURCE\n")
+                    for entree in self._journal_points_live:
+                        if entree and entree[0] == "EVENT":
+                            f.write(f"EVENT;{entree[1]};{entree[2]}\n")
+                        else:
+                            f.write("POINT;" + ";".join(str(v) for v in entree) + "\n")
         except Exception:
             pass
         finally:
@@ -6106,28 +5576,6 @@ class CarteScreen(Screen):
         self.graphe.set_donnees(*self.profil)
         self._afficher_trace_sur_carte(points, waypoints=vrais_wpts)
 
-    def _remonte_calque_marqueurs(self):
-        """Remonte le calque des marqueurs AU-DESSUS du calque de trace,
-        via l'API publique de MapView (remove_layer/add_layer). Voir la
-        version commentée identique dans NettoyageScreen. Nécessaire dès
-        qu'une trace est re-posée alors que le calque de marqueurs
-        existe déjà (re-chargement d'une trace dans l'onglet)."""
-        if not CARTE_DISPONIBLE or self.map_view is None:
-            return
-        couche = getattr(self.map_view, "_marker_layer", None)
-        if couche is None:
-            for l in getattr(self.map_view, "_layers", []) or []:
-                if isinstance(l, MarkerMapLayer):
-                    couche = l
-                    break
-        if couche is None:
-            return
-        try:
-            self.map_view.remove_layer(couche)
-            self.map_view.add_layer(couche)
-        except Exception:
-            pass
-
     def _afficher_trace_sur_carte(self, points, waypoints=None):
         """Equivalent de afficher_trace_sur_carte() dans la version
         desktop : trace la polyligne, place les marqueurs D/A, centre
@@ -6154,26 +5602,16 @@ class CarteScreen(Screen):
             return
 
         liste_coords = [(p['lat'], p['lon']) for p in points]
-        # Le calque de la trace est posé AVANT les marqueurs : dans
-        # mapview, les marqueurs vivent dans un calque distinct et tout
-        # calque ajouté après les recouvre TOUS. Posé en premier, le
-        # calque de trace passe sous les marqueurs — le disque rouge du
-        # curseur de sélection (et les curseurs de waypoints) s'affichent
-        # donc PAR-DESSUS la trace, comme demandé (même choix que
-        # l'onglet Nettoyage).
+        # Le calque de la trace est posé APRÈS les marqueurs (D/A et
+        # waypoints) : ajouté en dernier, il s'affiche par-dessus eux,
+        # comme sur l'onglet Live (7). Sinon les curseurs bleus des
+        # waypoints passaient par-dessus la trace.
         self.trace_layer = TraceLayer()
         self.trace_layer.set_points(liste_coords)
-        self.map_view.add_layer(self.trace_layer)
 
         for wpt in (waypoints or []):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
-                continue
-            # « Point de passage 1/2 » : ce sont le départ et l'arrivée,
-            # traités à part (triangles) juste après la boucle — pas
-            # de disque jaune pour eux.
-            nom_w = (wpt.get('name') or '').strip()
-            if nom_w in ("Point de passage 1", "Point de passage 2"):
                 continue
             mw = MarqueurWaypoint(
                 zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
@@ -6182,29 +5620,21 @@ class CarteScreen(Screen):
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
 
-        # Triangles départ/arrivée pour « Point de passage 1/2 »
-        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
-        _poser_triangles_points_passage(self, waypoints)
-
         dist_dep_arr = gps_logic.calculer_distance_haversine(
             points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
         )
         if dist_dep_arr <= 20.0:
-            m_unique = MarqueurFlag(couleur=COULEUR_FLAG_FERMETURE, lat=points[0]['lat'], lon=points[0]['lon'])
+            m_unique = MarqueurTexte(texte="D/A", lat=points[0]['lat'], lon=points[0]['lon'])
             self.map_view.add_marker(m_unique)
             self.marqueurs_actifs.append(m_unique)
         else:
-            m_depart = MarqueurFlag(couleur=COULEUR_FLAG_DEPART, lat=points[0]['lat'], lon=points[0]['lon'])
-            m_arrivee = MarqueurFlag(couleur=COULEUR_FLAG_ARRIVEE, lat=points[-1]['lat'], lon=points[-1]['lon'])
+            m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
+            m_arrivee = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
             self.map_view.add_marker(m_depart)
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
-        # REMONTÉE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE (même
-        # correction que l'onglet Nettoyage, via l'API publique
-        # remove_layer/add_layer de MapView — voir là-bas la méthode
-        # _remonte_calque_marqueurs pour l'explication complète).
-        self._remonte_calque_marqueurs()
+        self.map_view.add_layer(self.trace_layer)
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
@@ -6220,11 +5650,6 @@ class CarteScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
-        # Le curseur mobile (disque rose) suit aussi le zoom depuis
-        # qu'il est passé sur la même formule de taille que les
-        # disques jaunes/rouges (plus de cote_dp fixe).
-        if getattr(self, "marqueur_curseur", None) is not None:
-            self.marqueur_curseur.maj_taille(zoom)
 
     def _debut_touch_carte(self, window, touch):
         """Mémorise la position de l'appui si le toucher démarre sur la
@@ -6290,13 +5715,7 @@ class CarteScreen(Screen):
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.marqueur_curseur is not None:
                 self.map_view.remove_marker(self.marqueur_curseur)
-            # Même curseur que l'onglet Nettoyage : disque ROSE dessiné,
-            # sans le carré blanc du MapMarker standard.
-            self.marqueur_curseur = MarqueurDisqueRouge(
-                zoom=self.map_view.zoom,
-                couleur=COULEUR_ROSE_CURSEUR,
-                lat=p['lat'], lon=p['lon'],
-            )
+            self.marqueur_curseur = MapMarker(lat=p['lat'], lon=p['lon'])
             self.map_view.add_marker(self.marqueur_curseur)
             if recentrer_carte:
                 self.map_view.center_on(p['lat'], p['lon'])
@@ -6456,555 +5875,6 @@ class StatistiquesScreen(Screen):
             conteneur.add_widget(ligne)
 
 
-class NettoyageScreen(Screen):
-    """Onglet Nettoyage : charge une trace GPX horodatée, l'affiche sur
-    la carte et sur le graphique d'altitude (comme les autres onglets),
-    et y marque les points aberrants détectés par
-    gps_logic.detecter_points_aberrants avec le SEUIL (km/h) saisi par
-    l'utilisateur : tout point extrémité d'un segment plus rapide que
-    le seuil est aberrant (règle randonnée : > 5 km/h suspect, 10 km/h
-    par défaut). Les marqueurs reprennent le curseur rond des
-    annotations/waypoints (MarqueurWaypoint), en DEUX FOIS PLUS PETIT.
-    Lecture uniquement : cet onglet ne supprime rien (le nettoyage
-    efficace se fait ensuite dans l'onglet Numérotation, qui sait
-    supprimer des points par indices)."""
-
-    fichier_source = StringProperty("")
-    info_fichier = StringProperty("Aucune trace chargée.")
-    # Seuil de détection (km/h) saisi par l'utilisateur : tout point
-    # extrémité d'un segment plus rapide que ce seuil est aberrant.
-    seuil_text = StringProperty("10")
-    # Compteur des points aberrants affiché dans le titre « Points
-    # aberrants (N) : » (à la place de l'ancienne liste de numéros).
-    compteur_aberrants_text = StringProperty("Points aberrants (0) :")
-    # Vrai dès qu'une trace est chargée : le graphique, le bloc compteur
-    # et le bouton Enregistrer n'apparaissent qu'à partir de là (ils
-    # sont masqués via trace_chargee dans le KV).
-    trace_chargee = BooleanProperty(False)
-    # Vrai si des points aberrants sont affichés (active « Supprimer »).
-    aberrants_present = BooleanProperty(False)
-    # Vrai si la trace a été nettoyée (active « Enregistrer »).
-    trace_nettoyee = BooleanProperty(False)
-    # Bloc « Informations du point sélectionné » (même gabarit que
-    # l'onglet Carte/Découpe : grille 3 lignes x 2 colonnes).
-    info_point_text = StringProperty("")
-    info_point_num = StringProperty("")
-    info_point_gps = StringProperty("")
-    info_point_dist = StringProperty("")
-    info_point_alt = StringProperty("")
-    info_point_heure = StringProperty("")
-    info_point_vit = StringProperty("")
-
-    def dezoomer_carte(self):
-        """Réduit le zoom de la carte (même garde-fou que CarteScreen)."""
-        mapview = getattr(self, "map_view", None)
-        if mapview and hasattr(mapview, "zoom"):
-            min_z = getattr(getattr(mapview, "map_source", None), "min_zoom", 0)
-            if mapview.zoom > min_z:
-                mapview.zoom -= 1
-                mapview.center_on(mapview.lat, mapview.lon)
-
-    def zoomer_carte(self):
-        """Augmente le zoom de la carte (même garde-fou que CarteScreen)."""
-        mapview = getattr(self, "map_view", None)
-        if mapview and hasattr(mapview, "zoom"):
-            max_z = getattr(getattr(mapview, "map_source", None), "max_zoom", 19)
-            if mapview.zoom < max_z:
-                mapview.zoom += 1
-                mapview.center_on(mapview.lat, mapview.lon)
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.points_courants = []
-        self.profil = ([], [], [], [])
-        self.marqueurs_actifs = []        # D / A
-        self.marqueurs_waypoints = []     # curseurs bleus des waypoints
-        self.marqueurs_nettoyage = []     # curseurs rouges (2x plus petits) des points aberrants DURS
-        self.marqueur_curseur = None      # curseur de sélection (tap graphique), comme l'onglet Carte
-        self.trace_layer = None
-        self.map_view = None
-
-        self.graphe = GrapheProfil()
-        self.graphe.callback_clic = self._sur_clic_graphique
-        self.ids.zone_graphique.add_widget(self.graphe)
-
-        if CARTE_DISPONIBLE:
-            self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
-            self.ids.map_container.add_widget(self.map_view)
-            # La taille des curseurs (waypoints ET points aberrants)
-            # suit le zoom de la carte.
-            self.map_view.bind(zoom=self._maj_taille_waypoints)
-        else:
-            self.ids.map_container.add_widget(Label(
-                text="Carte indisponible : le module kivy_garden.mapview\nn'est pas installe.",
-                color=(0.6, 0.1, 0.1, 1), halign="center"))
-
-    def changer_vue_carte(self, valeur):
-        """Change le fond de carte (satellite ou plan) — même logique
-        que CarteScreen.changer_vue_carte."""
-        if not CARTE_DISPONIBLE or self.map_view is None:
-            return
-        self.map_view.map_source = SOURCES_FONDS_CARTES[valeur]
-        self.map_view.trigger_update(True)
-
-    def ouvrir_menu_fonds(self, bouton):
-        """Ouvre le menu déroulant des fonds de carte sous le bouton
-        Layer — même logique que CarteScreen.ouvrir_menu_fonds."""
-        if not CARTE_DISPONIBLE or self.map_view is None:
-            return
-        menu = _construire_menu_fonds_carte(self)
-        menu.open(bouton)
-
-    def ouvrir_selecteur_fichier(self):
-        contenu = _construire_selecteur_fichier(self._fichier_choisi)
-        if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
-
-    def _fichier_choisi(self, chemin):
-        if hasattr(self, '_popup'):
-            self._popup.dismiss()
-        if not chemin:
-            return
-        try:
-            points = gps_logic.lire_fichier_pour_conversion(chemin)
-            waypoints_bruts = gps_logic.lire_waypoints_source(chemin, heure_locale=False)
-        except Exception as e:
-            self.info_fichier = f"Erreur de lecture : {e}"
-            return
-
-        if not points:
-            self.info_fichier = "Aucun point GPS trouvé dans ce fichier."
-            return
-
-        try:
-            waypoints = gps_logic.vrais_waypoints(
-                waypoints_bruts,
-                [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])],
-            )
-        except Exception:
-            waypoints = []
-
-        self.fichier_source = chemin
-        self.points_courants = points
-        self.trace_chargee = True
-        self.info_point_text = ("Tape sur un graphique pour voir "
-                                "le detail d'un point.")
-        self.info_point_num = ""
-        self.info_point_gps = ""
-        self.info_point_dist = ""
-        self.info_point_alt = ""
-        self.info_point_heure = ""
-        self.info_point_vit = ""
-
-        # --- Carte et graphique : profil de la trace, comme d'habitude.
-        self.profil = gps_logic.calculer_profil(points)
-        self.graphe.set_donnees(*self.profil)
-        self._afficher_trace_sur_carte(points, waypoints=waypoints)
-
-        # --- Détection avec le seuil courant de l'utilisateur.
-        self.appliquer_detection()
-
-    def changer_seuil(self, texte):
-        """Appelé à chaque frappe dans la zone de saisie du seuil :
-        mémorise le texte (le retour KV affiche root.seuil_text)."""
-        self.seuil_text = texte
-
-    def appliquer_detection(self):
-        """Relance la détection des points aberrants sur la trace
-        chargée avec le seuil courant (km/h), et met à jour : marqueurs
-        rouges sur la carte, marqueurs sur le graphique, rapport dans
-        l'info de fichier. Sans effet si aucune trace n'est chargée."""
-        points = self.points_courants
-        if not points:
-            return
-
-        # Seuil : la saisie en cours, sinon 10 km/h par défaut.
-        try:
-            seuil = float(self.seuil_text.replace(",", "."))
-        except (ValueError, AttributeError):
-            seuil = 10.0
-        if seuil <= 0:
-            seuil = 10.0
-
-        detection = gps_logic.detecter_points_aberrants(
-            points, seuil_doux=seuil, seuil_dur=seuil)
-        indices_dur = detection["dur"]
-
-        try:
-            waypoints = gps_logic.vrais_waypoints(
-                gps_logic.lire_waypoints_source(self.fichier_source, heure_locale=False),
-                [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])],
-            )
-            nb_waypoints = len(waypoints)
-        except Exception:
-            nb_waypoints = 0
-
-        self.info_fichier = (
-            f"Trace : {os.path.basename(self.fichier_source)}\n"
-            f"{len(points)} points; {nb_waypoints} waypoints."
-        )
-
-        # Nettoyage des marqueurs aberrants de la carte avant re-pose.
-        if CARTE_DISPONIBLE and self.map_view is not None:
-            for mw in self.marqueurs_nettoyage:
-                self.map_view.remove_marker(mw)
-            self.marqueurs_nettoyage = []
-
-        for idx in indices_dur:
-            self._poser_marqueur_aberrant(points, idx)
-        # La remontée doit suivre la re-pose des disques (le « Supprimer »
-        # redessine la carte via _afficher_trace_sur_carte PUIS repose
-        # les marqueurs ici : sans ce rappel, ils repassaient sous la
-        # trace après une suppression).
-        self._remonte_calque_marqueurs()
-        distances_km = self.profil[0]
-        marqueurs_dur = [(distances_km[idx], (0.80, 0.10, 0.10, 1))
-                         for idx in indices_dur if idx < len(distances_km)]
-        self.graphe.set_marqueurs(marqueurs_dur)
-
-        # --- Compteur des points aberrants (remplace l'ancienne liste
-        # de numéros) : « Points aberrants (N) : ».
-        self.compteur_aberrants_text = f"Points aberrants ({len(indices_dur)}) :"
-        self.aberrants_present = bool(indices_dur)
-        # Une nouvelle détection sur la trace COURANTE (déjà nettoyée ou
-        # non) ne change pas le drapeau trace_nettoyee : il ne devient
-        # vrai qu'après un « Supprimer » effectif.
-        self._indices_aberrants = list(indices_dur)
-
-    def supprimer_aberrants(self):
-        """Supprime TOTALEMENT de la trace chargée les points aberrants
-        affichés (ceux de la dernière détection) : la trace affichée,
-        le graphique, la carte et les marqueurs sont refaits sans eux.
-        Ne touche à aucun fichier — l'écriture passe par
-        « Enregistrer la trace nettoyée ». Confirmation par popup."""
-        points = self.points_courants
-        indices = getattr(self, "_indices_aberrants", [])
-        if not points or not indices:
-            return
-        a_suppr = set(indices)
-
-        contenu = _construire_confirmation_oui_non_annuler(
-            (f"Supprimer définitivement {len(a_suppr)} point(s) aberrant(s) "
-             f"de la trace affichée ?\n(le fichier source n'est pas modifié ; "
-             f"utilisez « Enregistrer » ensuite pour écrire la trace nettoyée)"),
-            self._reponse_suppression_aberrants,
-        )
-        self._popup_suppression = Popup(title="Supprimer les points aberrants",
-                                        content=contenu, size_hint=(0.9, 0.45))
-        self._popup_suppression.open()
-
-    def _reponse_suppression_aberrants(self, reponse):
-        """Suite de la confirmation : True = supprime, sinon rien."""
-        if hasattr(self, "_popup_suppression"):
-            self._popup_suppression.dismiss()
-        if not reponse:
-            return
-        points = self.points_courants
-        a_suppr = set(getattr(self, "_indices_aberrants", []))
-        if not points or not a_suppr:
-            return
-
-        self.points_courants = [p for i, p in enumerate(points) if i not in a_suppr]
-        self.trace_nettoyee = True
-
-        # Rafraîchit tout l'affichage avec la trace nettoyée, puis
-        # relance la détection au seuil courant (de nouveaux points
-        # peuvent devenir aberrants une fois les pics retirés : les
-        # segments fusionnés redeviennent mesurables).
-        points_nettoyes = self.points_courants
-        self.profil = gps_logic.calculer_profil(points_nettoyes)
-        self.graphe.set_donnees(*self.profil)
-        self.graphe.set_marqueurs([])
-        try:
-            waypoints = gps_logic.vrais_waypoints(
-                gps_logic.lire_waypoints_source(self.fichier_source, heure_locale=False),
-                [(points_nettoyes[0]['lat'], points_nettoyes[0]['lon']),
-                 (points_nettoyes[-1]['lat'], points_nettoyes[-1]['lon'])],
-            )
-        except Exception:
-            waypoints = []
-        self._afficher_trace_sur_carte(points_nettoyes, waypoints=waypoints)
-        self.appliquer_detection()
-
-    def enregistrer_trace_nettoyee(self):
-        """Écrit la trace nettoyée dans un nouveau fichier GPX nommé
-        <nom_source>_vit<seuil>.gpx dans le même dossier que le fichier
-        source (ex: rando.gpx + seuil 10 -> rando_vit10.gpx).
-        Enregistrement validé par popup Oui/Non/Annuler."""
-        if not self.points_courants or not self.fichier_source:
-            return
-        try:
-            seuil = float(self.seuil_text.replace(",", "."))
-        except (ValueError, AttributeError):
-            seuil = 10.0
-
-        base = os.path.splitext(os.path.basename(self.fichier_source))[0]
-        # Seuil sans décimale inutile (10.0 -> "10", 7.5 -> "7.5").
-        seuil_txt = f"{seuil:g}"
-        nom_sortie = f"{base}_vit{seuil_txt}.gpx"
-        dossier = os.path.dirname(self.fichier_source) or DOSSIER_SORTIE
-
-        contenu = _construire_confirmation_oui_non_annuler(
-            (f"Enregistrer la trace nettoyée ({len(self.points_courants)} points) "
-             f"dans le fichier :\n{nom_sortie} ?"),
-            self._reponse_enregistrement_nettoyage,
-        )
-        self._popup_enregistrement = Popup(title="Enregistrer la trace nettoyée",
-                                           content=contenu, size_hint=(0.9, 0.45))
-        self._popup_enregistrement.open()
-
-    def _reponse_enregistrement_nettoyage(self, reponse):
-        if hasattr(self, "_popup_enregistrement"):
-            self._popup_enregistrement.dismiss()
-        if not reponse:
-            return
-        try:
-            base = os.path.splitext(os.path.basename(self.fichier_source))[0]
-            seuil_txt = self.seuil_text.replace(",", ".").strip() or "10"
-            try:
-                seuil_txt = f"{float(seuil_txt):g}"
-            except ValueError:
-                seuil_txt = "10"
-            dossier = os.path.dirname(self.fichier_source) or DOSSIER_SORTIE
-            os.makedirs(dossier, exist_ok=True)
-            chemin_sortie = os.path.join(dossier, f"{base}_vit{seuil_txt}.gpx")
-
-            # Waypoints du fichier source, conservés tels quels (les
-            # points aberrants supprimés sont des <trkpt>, jamais des
-            # waypoints ; on conserve donc l'intégralité des <wpt>).
-            try:
-                waypoints = gps_logic.lire_waypoints_source(
-                    self.fichier_source, heure_locale=False)
-            except Exception:
-                waypoints = []
-            gps_logic.exporter_vers_gpx(
-                self.points_courants, chemin_sortie, garder_temps=True,
-                waypoints=waypoints,
-            )
-            self.info_fichier = (
-                f"Trace : {os.path.basename(self.fichier_source)}\n"
-                f"{len(self.points_courants)} points; {len(waypoints)} waypoints.\n"
-                f"Trace nettoyée enregistrée : {os.path.basename(chemin_sortie)}"
-            )
-        except Exception as e:
-            self.info_fichier = f"Erreur à l'enregistrement : {e}"
-
-    def _sur_clic_graphique(self, distance_km):
-        """Appelé au tap sur l'UN OU L'AUTRE graphique : sélectionne le
-        point de distance cumulée la plus proche et synchronise le
-        curseur partout — marqueur sur la carte (comme l'onglet
-        Carte/Découpe), ligne pointillée des DEUX graphiques."""
-        distances_km = self.profil[0]
-        if not distances_km:
-            return
-        idx = min(range(len(distances_km)), key=lambda i: abs(distances_km[i] - distance_km))
-        p = self.points_courants[idx]
-        dist = distances_km[idx]
-
-        # 1. Curseur sur la carte : petit disque ROSE sans fond blanc
-        # (MarqueurDisqueRouge : texture du MapMarker neutralisée,
-        # disque dessiné).
-        if CARTE_DISPONIBLE and self.map_view is not None:
-            if self.marqueur_curseur is not None:
-                self.map_view.remove_marker(self.marqueur_curseur)
-                self.marqueur_curseur = None
-            self.marqueur_curseur = MarqueurDisqueRouge(
-                zoom=self.map_view.zoom,
-                couleur=COULEUR_ROSE_CURSEUR,
-                lat=p['lat'], lon=p['lon'],
-            )
-            self.map_view.add_marker(self.marqueur_curseur)
-            self.map_view.center_on(p['lat'], p['lon'])
-
-        # 2. Ligne de sélection sur le graphique.
-        self.graphe.set_selection(dist)
-
-        # 3. Bloc « Informations du point sélectionné » (même gabarit
-        # que l'onglet Carte/Découpe).
-        _, _, _, vitesses_kmh = self.profil
-        vit = vitesses_kmh[idx] if idx < len(vitesses_kmh) else 0.0
-        heure = p['time'].strftime("%H:%M:%S") if p.get('time') else "-"
-        ele_txt = f"{p['ele']} m" if p.get('ele') is not None else "-"
-        self.info_point_text = ""
-        self.info_point_num = f"Point {idx + 1}/{len(self.points_courants)}"
-        self.info_point_gps = f"GPS: {p['lat']:.5f}, {p['lon']:.5f}"
-        self.info_point_dist = f"Distance: {dist:.2f} km"
-        self.info_point_alt = f"Altitude: {ele_txt}"
-        self.info_point_heure = f"Heure: {heure}"
-        self.info_point_vit = f"Vitesse: {vit} km/h"
-
-    def _poser_marqueur_aberrant(self, points, idx):
-        """Pose sur la carte le petit disque ROUGE d'un point aberrant
-        (MarqueurDisqueRouge : canvas du MapMarker effacé, donc ni
-        carré blanc ni texture, disque dessiné à la place, demi-taille
-        gérée par la classe elle-même)."""
-        if not CARTE_DISPONIBLE or self.map_view is None:
-            return
-        p = points[idx]
-        mw = MarqueurDisqueRouge(
-            zoom=self.map_view.zoom, lat=p['lat'], lon=p['lon'],
-        )
-        mw.nom = f"Point aberrant n°{idx + 1}"
-        mw.description = (f"Vitesse aberrante au point {idx + 1} "
-                          f"(au-dessus du seuil choisi) : fix GPS dégradé probable.")
-        self.map_view.add_marker(mw)
-        self.marqueurs_nettoyage.append(mw)
-
-    def _remonte_calque_marqueurs(self):
-        """Remonte le calque des marqueurs AU-DESSUS du calque de trace.
-        Au CHARGEMENT d'une trace, l'ordre est correct NATURELLEMENT : le
-        calque de marqueurs n'existe pas encore quand la trace est posée
-        (mapview ne le crée qu'au premier add_marker). Mais dès que la
-        carte est REDRESSÉE avec des marqueurs déjà posés (bouton
-        « Supprimer » : remove_layer puis add_layer de la trace alors que
-        le calque de marqueurs existe), la trace repasse au-dessus.
-        Solution : retirer puis re-poser le calque de marqueurs via
-        l'API PUBLIQUE de MapView (remove_layer/add_layer — la même qui
-        fonctionne pour la trace), ce qui le renvoie en fin de pile,
-        au-dessus de tout. À appeler après TOUTE pose de marqueurs
-        suivant un add_layer (chargement, détection, suppression)."""
-        if not CARTE_DISPONIBLE or self.map_view is None:
-            return
-        # Référence au calque de marqueurs : attribut interne de mapview,
-        # sinon recherche dans la liste publique des calques.
-        couche = getattr(self.map_view, "_marker_layer", None)
-        if couche is None:
-            for l in getattr(self.map_view, "_layers", []) or []:
-                if isinstance(l, MarkerMapLayer):
-                    couche = l
-                    break
-        if couche is None:
-            return
-        try:
-            self.map_view.remove_layer(couche)
-            self.map_view.add_layer(couche)
-        except Exception:
-            pass
-
-    def _afficher_trace_sur_carte(self, points, waypoints=None):
-        """Trace + marqueurs D/A + waypoints + cadrage automatique —
-        même logique que CarteScreen._afficher_trace_sur_carte."""
-        if not CARTE_DISPONIBLE or self.map_view is None:
-            return
-
-        if self.trace_layer is not None:
-            self.map_view.remove_layer(self.trace_layer)
-            self.trace_layer = None
-        for m in self.marqueurs_actifs:
-            self.map_view.remove_marker(m)
-        self.marqueurs_actifs = []
-        for mw in self.marqueurs_waypoints:
-            self.map_view.remove_marker(mw)
-        self.marqueurs_waypoints = []
-        for mw in self.marqueurs_nettoyage:
-            self.map_view.remove_marker(mw)
-        self.marqueurs_nettoyage = []
-        if self.marqueur_curseur is not None:
-            self.map_view.remove_marker(self.marqueur_curseur)
-            self.marqueur_curseur = None
-
-        if not points:
-            return
-
-        liste_coords = [(p['lat'], p['lon']) for p in points]
-        self.trace_layer = TraceLayer()
-        self.trace_layer.set_points(liste_coords)
-        # Dans mapview, les marqueurs vivent dans un calque de marqueurs
-        # DISTINCT du calque de trace : tout calque ajouté après recouvre
-        # TOUS les marqueurs, peu importe leur ordre de pose. Pour que
-        # les disques rouges (points aberrants, curseur de sélection)
-        # passent PAR-DESSUS la trace — demande explicite de l'onglet
-        # Nettoyage — on inverse ici l'ordre des autres onglets : le
-        # calque de trace est posé EN PREMIER, avant tous les marqueurs.
-        # Conséquence acceptée : les curseurs de waypoints passent aussi
-        # au-dessus de la trace (au lieu de dessous comme ailleurs).
-        self.map_view.add_layer(self.trace_layer)
-
-        for wpt in (waypoints or []):
-            lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
-            if lat_w is None or lon_w is None:
-                continue
-            # « Point de passage 1/2 » : ce sont le départ et l'arrivée,
-            # traités à part (triangles) juste après la boucle — pas
-            # de disque jaune pour eux.
-            nom_w = (wpt.get('name') or '').strip()
-            if nom_w in ("Point de passage 1", "Point de passage 2"):
-                continue
-            mw = MarqueurWaypoint(
-                zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
-                nom=wpt.get('name'), description=wpt.get('description'),
-            )
-            self.map_view.add_marker(mw)
-            self.marqueurs_waypoints.append(mw)
-
-        # Triangles départ/arrivée pour « Point de passage 1/2 »
-        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
-        _poser_triangles_points_passage(self, waypoints)
-
-        dist_dep_arr = gps_logic.calculer_distance_haversine(
-            points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
-        )
-        if dist_dep_arr <= 20.0:
-            m_unique = MarqueurFlag(couleur=COULEUR_FLAG_FERMETURE, lat=points[0]['lat'], lon=points[0]['lon'])
-            self.map_view.add_marker(m_unique)
-            self.marqueurs_actifs.append(m_unique)
-        else:
-            m_depart = MarqueurFlag(couleur=COULEUR_FLAG_DEPART, lat=points[0]['lat'], lon=points[0]['lon'])
-            m_arrivee = MarqueurFlag(couleur=COULEUR_FLAG_ARRIVEE, lat=points[-1]['lat'], lon=points[-1]['lon'])
-            self.map_view.add_marker(m_depart)
-            self.map_view.add_marker(m_arrivee)
-            self.marqueurs_actifs.extend([m_depart, m_arrivee])
-
-        # REMONTÉE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE :
-        # dans cette version de mapview, le calque des marqueurs est
-        # créé dès l'initialisation du MapView — donc TOUJOURS posé
-        # avant notre calque de trace, quel que soit l'ordre des
-        # add_layer/add_marker. Les marqueurs (dont les disques
-        # rouges) restaient ainsi sous la trace. On le remonte donc
-        # explicitement en fin de pile du Scatter interne de la carte
-        # (et on le refait après TOUTE pose ultérieure de marqueurs,
-        # voir _remonte_calque_marqueurs).
-        self._remonte_calque_marqueurs()
-
-        lats = [c[0] for c in liste_coords]
-        lons = [c[1] for c in liste_coords]
-        min_lat, max_lat = min(lats), max(lats)
-        min_lon, max_lon = min(lons), max(lons)
-
-        self.map_view.center_on((min_lat + max_lat) / 2, (min_lon + max_lon) / 2)
-        max_delta = max(max_lat - min_lat, max_lon - min_lon)
-        if max_delta > 0:
-            zoom = int(12 - math.log2(max_delta * 10))
-            self.map_view.zoom = max(2, min(zoom, 18))
-
-    def _maj_taille_waypoints(self, instance, zoom):
-        """Suit le zoom de la carte : les curseurs de waypoints gardent
-        leur taille habituelle ; les disques rouges des points
-        aberrants gèrent eux-mêmes leur demi-taille (MarqueurDisqueRouge
-        .maj_taille : ne PAS rediviser ici, elle serait doublée)."""
-        for mw in self.marqueurs_waypoints:
-            try:
-                mw.maj_taille(zoom)
-            except Exception:
-                pass
-
-        # Le curseur mobile (disque rose) suit aussi le zoom depuis
-        # qu'il est passé sur la même formule de taille que les
-        # disques jaunes/rouges (plus de cote_dp fixe).
-        if getattr(self, "marqueur_curseur", None) is not None:
-            try:
-                self.marqueur_curseur.maj_taille(zoom)
-            except Exception:
-                pass
-
-        for mw in self.marqueurs_nettoyage:
-            try:
-                mw.maj_taille(zoom)
-            except Exception:
-                pass
-
-
 class PhotosScreen(Screen):
     """Onglet Photos : associe une photo JPEG à un point de la trace en
     se basant sur son horodatage EXIF, puis permet d'écrire/corriger les
@@ -7023,11 +5893,6 @@ class PhotosScreen(Screen):
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     titre_carte = StringProperty("Emplacement de la photo sur la trace")
     titre_carte_color = ListProperty([0, 0, 0, 1])
-    # Affichage progressif : le tableau n'apparaît qu'avec une photo,
-    # la carte qu'avec une trace, et les boutons Situer/EXIF exigent
-    # les DEUX (voir le KV de <PhotosScreen>).
-    photo_chargee = BooleanProperty(False)
-    trace_chargee = BooleanProperty(False)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -7058,11 +5923,6 @@ class PhotosScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
-        # Le curseur mobile (disque rose) suit aussi le zoom depuis
-        # qu'il est passé sur la même formule de taille que les
-        # disques jaunes/rouges (plus de cote_dp fixe).
-        if getattr(self, "marqueur_curseur", None) is not None:
-            self.marqueur_curseur.maj_taille(zoom)
 
     def dezoomer_carte(self):
         """Réduit le niveau de zoom de la carte (bouton "-", même
@@ -7123,7 +5983,6 @@ class PhotosScreen(Screen):
 
         self.points_trace = points
         self.info_trace = f"Trace : {os.path.basename(chemin)}."
-        self.trace_chargee = True
 
         # Waypoints de la trace : mêmes « vrais » waypoints que dans l'onglet
         # Statistiques (ni n° de points, ni waypoints superposés au
@@ -7151,13 +6010,7 @@ class PhotosScreen(Screen):
 
         self.fichier_photo = chemin
         self.info_photo = f"Photo : {os.path.basename(chemin)}"
-        self.photo_chargee = True
         self.status_text = ""
-        # Réinitialise le titre de la carte : il ne doit pas garder
-        # l'état (« Position non trouvée... » ou localisation) de la
-        # photo précédemment testée.
-        self.titre_carte = "Emplacement de la photo sur la trace"
-        self.titre_carte_color = [0, 0, 0, 1]
 
         exif_data = gps_logic.get_exif_data(chemin)
         self.champ_date = exif_data["datetime"] or ""
@@ -7176,17 +6029,8 @@ class PhotosScreen(Screen):
         EXIF saisie et pré-remplit latitude/longitude/altitude,
         équivalent de situer_exif_edite() dans la version desktop."""
         if not self.champ_date.strip():
-            # Photo sans EXIF (tableau vide au chargement) : même
-            # message que la recherche infructueuse. On remet aussi le
-            # titre de la carte à zéro, sinon il gardait l'état de la
-            # photo précédente (non réactif).
-            self.status_text = "Position non trouvée sur la trace"
+            self.status_text = "Renseigne une date/heure pour la photo."
             self.status_color = [0.8, 0.1, 0.1, 1]
-            self.titre_carte = "Position non trouvée sur la trace"
-            self.titre_carte_color = [0.8, 0.1, 0.1, 1]
-            if CARTE_DISPONIBLE and self.map_view is not None and self.marqueur_photo is not None:
-                self.map_view.remove_marker(self.marqueur_photo)
-                self.marqueur_photo = None
             return
         if not self.points_trace:
             self.status_text = "Charge d'abord une trace pour y chercher l'horodatage."
@@ -7276,22 +6120,12 @@ class PhotosScreen(Screen):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
                 continue
-            # « Point de passage 1/2 » : ce sont le départ et l'arrivée,
-            # traités à part (triangles) juste après la boucle — pas
-            # de disque jaune pour eux.
-            nom_w = (wpt.get('name') or '').strip()
-            if nom_w in ("Point de passage 1", "Point de passage 2"):
-                continue
             mw = MarqueurWaypoint(
                 zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
                 nom=wpt.get('name'), description=wpt.get('description'),
             )
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
-
-        # Triangles départ/arrivée pour « Point de passage 1/2 »
-        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
-        _poser_triangles_points_passage(self, waypoints)
 
         self.map_view.add_layer(self.trace_layer)
 
@@ -7387,7 +6221,6 @@ class OutilsTracesApp(App):
         self.sm.add_widget(FusionScreen(name="fusion"))
         self.sm.add_widget(CarteScreen(name="carte"))
         self.sm.add_widget(StatistiquesScreen(name="statistiques"))
-        self.sm.add_widget(NettoyageScreen(name="nettoyage"))
         self.sm.add_widget(PhotosScreen(name="photos"))
         self.sm.add_widget(LiveScreen(name="Live"))
 
@@ -7395,7 +6228,7 @@ class OutilsTracesApp(App):
         barre = BoxLayout(size_hint_y=None, height=dp(60), padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
-        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Carte / Découpe"), ("statistiques", "Statistiques"), ("nettoyage", "Nettoyage"), ("photos", "Photos"), ("Live", "Live")]
+        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Carte / Découpe"), ("statistiques", "Statistiques"), ("photos", "Photos"), ("Live", "Live")]
         self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
         self._boutons_menu = {}
         for nom_ecran, libelle in self._ecrans_menu:
