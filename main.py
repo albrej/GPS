@@ -1,25 +1,25 @@
 # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 ============================================================================
- OUTILS TRACES ET PHOTOS â Application Android (Kivy)
  RÃ©Ã©criture de start.py (tkinter) pour fonctionner en APK autonome.
 
  - Onglets "Conversion" et "NumÃ©rotation" : entiÃ¨rement fonctionnels.
- - Les 5 autres fonctionnalitÃ©s (Fusion, Carte/DÃ©coupe, Statistiques,
-   Photos, Live) sont dÃ©jÃ  prÃ©sentes dans le menu dÃ©roulant mais
-   affichent un Ã©cran "Ã  venir" tant que leur code n'est pas fourni et
-   intÃ©grÃ©. Voir SCREENS_A_VENIR ci-dessous.
 ============================================================================
- v5.9 â BASE v5.8 (mÃ©canique d'enregistrement de l'onglet Live
- INTACTE : GPSLogger + serveur local + resynchronisation + journal
- debug_points_*.txt) Ã  laquelle ont Ã©tÃ© greffÃ©s depuis la v9.44 :
-   - onglet "Nettoyage" (dÃ©tection/suppression des points aberrants) ;
-   - onglet "temp" (copie de Carte/DÃ©coupe : carte + profil altitude +
-     graphique des pentes + tableaux de stats, interconnectÃ©s) ;
-   - composants nÃ©cessaires : MarqueurFlag, MarqueurDisqueRouge,
-     MarqueurWaypoint (clic â sÃ©lection du point), GrapheProfil
-     (version Ã  flags axe/courbe de vitesse), GraphePentes.
- Aucune ligne du Live v5.8 n'a Ã©tÃ© modifiÃ©e.
+ v5.10 â Reconstruction sur la bonne base : Â« main.py GPS natif Â»
+ (= main.py d'origine + diff Â« v5.1 â GPS natif + service + reprise de
+ session Â» : GPSLogger ENTIEREMENT retire au profit du GPS natif
+ (gps_natif.py), du service de premier plan (tracker_service.py) et de
+ l'absorption/rattrapage via live_service_points.json), avec greffes
+ depuis la v9.44 :
+   - onglet "Nettoyage" (points aberrants) ;
+   - onglet "temp" (copie Carte/DÃ©coupe : carte + profil altitude +
+     pentes 500 m + tableaux de stats, interconnectÃ©s) ;
+   - composants requis : MarqueurFlag, MarqueurDisqueRouge,
+     MarqueurWaypoint (clic -> sÃ©lection), GrapheProfil (flags
+     vitesse), GraphePentes.
+ AUCUNE ligne de la mÃ©canique d'enregistrement du Live (GPS natif +
+ service) n'a Ã©tÃ© modifiÃ©e.
 ============================================================================
 """
 
@@ -59,6 +59,7 @@ from kivy.uix.textinput import TextInput
 from kivy.properties import BooleanProperty
 
 import gps_logic
+import gps_natif
 
 # Extensions considÃ©rÃ©es comme des photos pour le nom d'un waypoint
 # (<name> d'un <wpt> ou d'un Placemark KML) : dans ce cas, le nom affichÃ©
@@ -645,20 +646,27 @@ if CARTE_DISPONIBLE:
     CHEMIN_BLUE_DOT = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "images", "blue_dot.png")
 
-    # Couleurs des flags dÃ©part/arrivÃ©e.
+    def taille_marqueur_waypoint(zoom):
+        """CÃ´tÃ© (en pixels) du curseur des waypoints selon le zoom de la
+        carte : petit quand on est loin (16 dp), plus gros quand on zoome
+        (jusqu'Ã  44 dp). DiamÃ¨tre doublÃ© par rapport Ã  la premiÃ¨re version
+        (onglets Photos et Live)."""
+        return dp(max(16, min(44, 16 + 3.5 * (zoom - 10))))
+
+    # Couleurs des flags dÃÂ©part/arrivÃÂ©e.
     COULEUR_FLAG_DEPART = (0.13, 0.60, 0.22, 1)     # vert
     COULEUR_FLAG_ARRIVEE = (0.80, 0.20, 0.15, 1)    # rouge
-    COULEUR_FLAG_FERMETURE = (0.95, 0.55, 0.05, 1)  # orange (boucle fermÃ©e)
+    COULEUR_FLAG_FERMETURE = (0.95, 0.55, 0.05, 1)  # orange (boucle fermÃÂ©e)
 
     class MarqueurFlag(MapMarker):
-        """Triangle 100 % dessinÃ© pour marquer le dÃ©part et l'arrivÃ©e
-        d'une trace : triangle plein pointant vers le HAUT, centrÃ© sur
-        le point GPS (les flags d'origine ont Ã©tÃ© remplacÃ©s par des
-        triangles, mÃªmes conditions et couleurs). Construit comme
-        MarqueurDisqueRouge : canvas du MapMarker effacÃ© (plus de carrÃ©
-        blanc), Triangle dessinÃ© Ã  la place, source neutralisÃ©e.
-        Taille fixe, indÃ©pendante du zoom. couleur : remplissage du
-        triangle (vert dÃ©part, rouge arrivÃ©e, orange boucle fermÃ©e)."""
+        """Triangle 100 % dessinÃÂ© pour marquer le dÃÂ©part et l'arrivÃÂ©e
+        d'une trace : triangle plein pointant vers le HAUT, centrÃÂ© sur
+        le point GPS (les flags d'origine ont ÃÂ©tÃÂ© remplacÃÂ©s par des
+        triangles, mÃÂªmes conditions et couleurs). Construit comme
+        MarqueurDisqueRouge : canvas du MapMarker effacÃÂ© (plus de carrÃÂ©
+        blanc), Triangle dessinÃÂ© ÃÂ  la place, source neutralisÃÂ©e.
+        Taille fixe, indÃÂ©pendante du zoom. couleur : remplissage du
+        triangle (vert dÃÂ©part, rouge arrivÃÂ©e, orange boucle fermÃÂ©e)."""
 
         def __init__(self, couleur=None, **kwargs):
             super().__init__(**kwargs)
@@ -674,8 +682,8 @@ if CARTE_DISPONIBLE:
             self.anchor_x = 0.5
             self.anchor_y = 0.5
             self.size_hint = (None, None)
-            # Triangle Ã©quilatÃ©ral ~20 dp de cÃ´tÃ©, hauteur ~18 dp
-            # (taille redescendue Ã  la moitiÃ© des flags doublÃ©s).
+            # Triangle ÃÂ©quilatÃÂ©ral ~20 dp de cÃÂ´tÃÂ©, hauteur ~18 dp
+            # (taille redescendue ÃÂ  la moitiÃÂ© des flags doublÃÂ©s).
             self.size = (dp(20), dp(18))
             self._maj_flag()
 
@@ -687,17 +695,17 @@ if CARTE_DISPONIBLE:
                     pass
 
         def maj_taille(self, zoom):
-            """Taille FIXE, indÃ©pendante du zoom : mÃ©thode prÃ©sente
+            """Taille FIXE, indÃÂ©pendante du zoom : mÃÂ©thode prÃÂ©sente
             pour que le changement de zoom des cartes (qui appelle
             maj_taille sur tous les marqueurs de waypoints, y compris
-            les triangles Â« Point de passage 1/2 Â» rangÃ©s dans la mÃªme
-            liste) ne lÃ¨ve pas d'AttributeError. Ne fait rien."""
+            les triangles ÃÂ« Point de passage 1/2 ÃÂ» rangÃÂ©s dans la mÃÂªme
+            liste) ne lÃÂ¨ve pas d'AttributeError. Ne fait rien."""
             pass
 
         def _maj_flag(self, *args):
             try:
                 # Sommet au milieu-haut, base en bas : pointe vers le
-                # haut, centrÃ© sur le marqueur (donc sur le point GPS).
+                # haut, centrÃÂ© sur le marqueur (donc sur le point GPS).
                 x, y = self.pos
                 w, h = self.size
                 self._triangle.points = [
@@ -709,14 +717,14 @@ if CARTE_DISPONIBLE:
                 pass
 
     def _poser_triangles_points_passage(ecran, waypoints):
-        """Sur les traces chargÃ©es, les annotations Â« Point de passage 1 Â»
-        et Â« Point de passage 2 Â» sont Ã  considÃ©rer comme les points de
-        DÃPART et d'ARRIVÃE : on leur applique les triangles (mÃªmes
-        conditions et couleurs que les flags D/A) â vert pour le point
-        de passage 1 (dÃ©part), rouge pour le point de passage 2
-        (arrivÃ©e), et un SEUL triangle orange posÃ© sur l'arrivÃ©e si les
-        deux points sont Ã  moins de 20 m l'un de l'autre (boucle
-        fermÃ©e). Les autres waypoints restent des disques jaunes."""
+        """Sur les traces chargÃÂ©es, les annotations ÃÂ« Point de passage 1 ÃÂ»
+        et ÃÂ« Point de passage 2 ÃÂ» sont ÃÂ  considÃÂ©rer comme les points de
+        DÃÂPART et d'ARRIVÃÂE : on leur applique les triangles (mÃÂªmes
+        conditions et couleurs que les flags D/A) Ã¢ÂÂ vert pour le point
+        de passage 1 (dÃÂ©part), rouge pour le point de passage 2
+        (arrivÃÂ©e), et un SEUL triangle orange posÃÂ© sur l'arrivÃÂ©e si les
+        deux points sont ÃÂ  moins de 20 m l'un de l'autre (boucle
+        fermÃÂ©e). Les autres waypoints restent des disques jaunes."""
         wpt_dep = wpt_arr = None
         for wpt in (waypoints or []):
             nom = (wpt.get('name') or '').strip()
@@ -732,8 +740,8 @@ if CARTE_DISPONIBLE:
             ecran.map_view.add_marker(m)
             ecran.marqueurs_waypoints.append(m)
 
-        # Condition Â« boucle fermÃ©e Â» : un seul triangle orange, sur le
-        # DÃPART (point de passage 1).
+        # Condition ÃÂ« boucle fermÃÂ©e ÃÂ» : un seul triangle orange, sur le
+        # DÃÂPART (point de passage 1).
         if wpt_dep is not None and wpt_arr is not None:
             dist = gps_logic.calculer_distance_haversine(
                 wpt_dep['lat'], wpt_dep['lon'], wpt_arr['lat'], wpt_arr['lon']
@@ -747,42 +755,42 @@ if CARTE_DISPONIBLE:
             _poser(wpt_arr, COULEUR_FLAG_ARRIVEE)
 
     # (L'ancien CHEMIN_BLUE_DOT / images/blue_dot.png n'est plus
-    # utilisÃ© : les waypoints sont des disques jaunes dessinÃ©s, voir
+    # utilisÃÂ© : les waypoints sont des disques jaunes dessinÃÂ©s, voir
     # MarqueurWaypoint.)
     def taille_marqueur_waypoint(zoom):
-        """CÃ´tÃ© (en pixels) du curseur des waypoints selon le zoom de la
+        """CÃÂ´tÃÂ© (en pixels) du curseur des waypoints selon le zoom de la
         carte : petit quand on est loin (16 dp), plus gros quand on zoome
-        (jusqu'Ã  44 dp). DiamÃ¨tre doublÃ© par rapport Ã  la premiÃ¨re version
+        (jusqu'ÃÂ  44 dp). DiamÃÂ¨tre doublÃÂ© par rapport ÃÂ  la premiÃÂ¨re version
         (onglets Photos et Live)."""
         return dp(max(16, min(44, 16 + 3.5 * (zoom - 10))))
 
-    # Couleurs des disques dessinÃ©s sur les cartes :
-    # - rose du curseur mobile de sÃ©lection sur les traces ;
+    # Couleurs des disques dessinÃÂ©s sur les cartes :
+    # - rose du curseur mobile de sÃÂ©lection sur les traces ;
     # - jaune des waypoints/annotations photos.
     COULEUR_ROSE_CURSEUR = (0.95, 0.40, 0.65, 1)
     COULEUR_JAUNE_WAYPOINT = (1.0, 0.84, 0.05, 1)
 
     class MarqueurDisqueRouge(MapMarker):
-        """Marqueur 100 % dessinÃ© : un disque SANS image de fond.
-        Le MapMarker standard de kivy_garden.mapview pose Ã  la
+        """Marqueur 100 % dessinÃÂ© : un disque SANS image de fond.
+        Le MapMarker standard de kivy_garden.mapview pose ÃÂ  la
         construction, DANS SON PROPRE canvas, une instruction Rectangle
-        avec la texture par dÃ©faut (carrÃ© blanc default_marker.png) :
-        dessiner dans canvas.before passait DESSOUS (le carrÃ© restait
-        visible), et vider Â« source Â» n'enlÃ¨ve pas une instruction dÃ©jÃ 
-        crÃ©Ã©e â le Rectangle garde sa texture. La seule parade fiable :
-        EFFACER le canvas du marqueur juste aprÃ¨s la construction, puis
-        dessiner le disque Ã  la place. La taille suit le zoom
-        comme MarqueurWaypoint (maj_taille), Ã  MOITIE de celle des
+        avec la texture par dÃÂ©faut (carrÃÂ© blanc default_marker.png) :
+        dessiner dans canvas.before passait DESSOUS (le carrÃÂ© restait
+        visible), et vider ÃÂ« source ÃÂ» n'enlÃÂ¨ve pas une instruction dÃÂ©jÃÂ 
+        crÃÂ©ÃÂ©e Ã¢ÂÂ le Rectangle garde sa texture. La seule parade fiable :
+        EFFACER le canvas du marqueur juste aprÃÂ¨s la construction, puis
+        dessiner le disque ÃÂ  la place. La taille suit le zoom
+        comme MarqueurWaypoint (maj_taille), ÃÂ  MOITIE de celle des
         waypoints pour les points aberrants (cote_dp=None), ou fixe
-        pour le curseur de sÃ©lection (cote_dp donnÃ© en dp).
-        La couleur est paramÃ©trable : rouge par dÃ©faut (points
+        pour le curseur de sÃÂ©lection (cote_dp donnÃÂ© en dp).
+        La couleur est paramÃÂ©trable : rouge par dÃÂ©faut (points
         aberrants), bleu pour le curseur mobile (couleur=...),
         jaune pour les waypoints (voir MarqueurWaypointJaune)."""
 
         def __init__(self, zoom=10, cote_dp=None, couleur=None, **kwargs):
             super().__init__(**kwargs)
             # 1. Retire l'instruction Rectangle blanche du MapMarker
-            #    (et toute autre instruction posÃ©e Ã  la construction).
+            #    (et toute autre instruction posÃÂ©e ÃÂ  la construction).
             self.canvas.clear()
             # 2. Dessine le disque dans le canvas du marqueur.
             from kivy.graphics import Color, Ellipse
@@ -791,9 +799,9 @@ if CARTE_DISPONIBLE:
                 Color(*self._couleur)
                 self._disque = Ellipse(pos=self.pos, size=self.size)
             self.bind(pos=self._maj_disque, size=self._maj_disque)
-            # 3. EmpÃªche tout retour de texture : mapview peut
-            #    recharger une source par dÃ©faut Ã  divers moments du
-            #    cycle de vie (ajout Ã  la carte, recyclage...).
+            # 3. EmpÃÂªche tout retour de texture : mapview peut
+            #    recharger une source par dÃÂ©faut ÃÂ  divers moments du
+            #    cycle de vie (ajout ÃÂ  la carte, recyclage...).
             self.bind(source=self._neutraliser_source)
             self._cote = None
             self._cote_dp = cote_dp
@@ -833,14 +841,14 @@ if CARTE_DISPONIBLE:
 
     class MarqueurWaypoint(MapMarker):
         """Curseur des waypoints/annotations photos : un disque JAUNE
-        dessinÃ©, 100 % identique au disque rouge des points aberrants
-        (MarqueurDisqueRouge) â mÃªme construction (canvas du MapMarker
-        effacÃ©, Ellipse dessinÃ©e, source neutralisÃ©e), mÃªme suivi du
-        zoom via maj_taille(zoom) â seule la couleur change (l'ancien
-        images/blue_dot.png n'est plus utilisÃ©). CentrÃ© sur le point.
+        dessinÃÂ©, 100 % identique au disque rouge des points aberrants
+        (MarqueurDisqueRouge) Ã¢ÂÂ mÃÂªme construction (canvas du MapMarker
+        effacÃÂ©, Ellipse dessinÃÂ©e, source neutralisÃÂ©e), mÃÂªme suivi du
+        zoom via maj_taille(zoom) Ã¢ÂÂ seule la couleur change (l'ancien
+        images/blue_dot.png n'est plus utilisÃÂ©). CentrÃÂ© sur le point.
         Un tap dessus ouvre un popup avec son nom (<name>) et sa
         description (<desc>). Si un callback on_waypoint_clic est
-        branchÃ© (onglet Â« temp Â»), le tap SÃLECTIONNE AUSSI le point
+        branchÃÂ© (onglet ÃÂ« temp ÃÂ»), le tap SÃÂLECTIONNE AUSSI le point
         de trace le plus proche (curseurs des graphiques + bloc
         d'infos), tout en ouvrant le popup comme avant."""
 
@@ -848,24 +856,24 @@ if CARTE_DISPONIBLE:
             super().__init__(**kwargs)
             self.nom = nom
             self.description = description
-            # Callback optionnel (lat, lon) appelÃ© au tap AVANT le
-            # popup : utilisÃ© par l'onglet Â« temp Â» pour sÃ©lectionner
+            # Callback optionnel (lat, lon) appelÃÂ© au tap AVANT le
+            # popup : utilisÃÂ© par l'onglet ÃÂ« temp ÃÂ» pour sÃÂ©lectionner
             # le point de trace le plus proche du waypoint. None
-            # partout ailleurs : comportement inchangÃ©.
+            # partout ailleurs : comportement inchangÃÂ©.
             self.on_waypoint_clic = on_waypoint_clic
             self._cote = None
             self.anchor_x = 0.5
             self.anchor_y = 0.5
             self.size_hint = (None, None)
-            # Disque jaune dessinÃ©, comme MarqueurDisqueRouge :
-            # efface le carrÃ© blanc posÃ© par le MapMarker standard.
+            # Disque jaune dessinÃÂ©, comme MarqueurDisqueRouge :
+            # efface le carrÃÂ© blanc posÃÂ© par le MapMarker standard.
             self.canvas.clear()
             from kivy.graphics import Color, Ellipse
             with self.canvas:
                 Color(*COULEUR_JAUNE_WAYPOINT)
                 self._disque = Ellipse(pos=self.pos, size=self.size)
             self.bind(pos=self._maj_disque, size=self._maj_disque)
-            # EmpÃªche tout retour de la texture par dÃ©faut.
+            # EmpÃÂªche tout retour de la texture par dÃÂ©faut.
             self.bind(source=self._neutraliser_source)
             # La taille suit le zoom, pas la taille native d'une image.
             self.maj_taille(zoom)
@@ -886,8 +894,8 @@ if CARTE_DISPONIBLE:
 
         def maj_taille(self, zoom):
             # Disque 100 % identique au point rouge (MarqueurDisqueRouge)
-            # : diamÃ¨tre Ã  MOITIÃ de la taille des anciens curseurs
-            # # waypoint (la taille entiÃ¨re donnait un disque trop
+            # : diamÃÂ¨tre ÃÂ  MOITIÃÂ de la taille des anciens curseurs
+            # # waypoint (la taille entiÃÂ¨re donnait un disque trop
             # grand par rapport au blue_dot d'origine).
             self._cote = max(dp(8), taille_marqueur_waypoint(zoom) / 2.0)
             self._reappliquer_taille()
@@ -910,8 +918,8 @@ if CARTE_DISPONIBLE:
             if touch.grab_current is self:
                 touch.ungrab(self)
                 if self.collide_point(*touch.pos):
-                    # SÃ©lection du point de trace le plus proche
-                    # (onglet Â« temp Â» uniquement) AVANT le popup.
+                    # SÃÂ©lection du point de trace le plus proche
+                    # (onglet ÃÂ« temp ÃÂ» uniquement) AVANT le popup.
                     if self.on_waypoint_clic is not None:
                         try:
                             self.on_waypoint_clic(self.lat, self.lon)
@@ -939,11 +947,11 @@ if CARTE_DISPONIBLE:
                 contenu.add_widget(label_desc)
             
             # Une annotation peut contenir PLUSIEURS photos : le <name>
-            # GPX les liste sÃ©parÃ©es par des virgules
-            # (Â« photo1.jpg,photo2.jpg,photo3.jpg Â»). On dÃ©coupe le nom
+            # GPX les liste sÃÂ©parÃÂ©es par des virgules
+            # (ÃÂ« photo1.jpg,photo2.jpg,photo3.jpg ÃÂ»). On dÃÂ©coupe le nom
             # en photos individuelles et on rend CHACUNE cliquable avec
-            # son propre lien [ref=photoN] â un lien unique sur le nom
-            # fusionnÃ© ne pouvait pas ouvrir la galerie.
+            # son propre lien [ref=photoN] Ã¢ÂÂ un lien unique sur le nom
+            # fusionnÃÂ© ne pouvait pas ouvrir la galerie.
             parties_nom = ([p.strip() for p in self.nom.split(",") if p.strip()]
                            if self.nom else [])
             if not parties_nom:
@@ -961,14 +969,14 @@ if CARTE_DISPONIBLE:
                         )
                     else:
                         morceaux.append(escape_markup(p))
-                # Une photo par ligne (retour Ã  la ligne), pas de
-                # virgule de sÃ©paration.
+                # Une photo par ligne (retour ÃÂ  la ligne), pas de
+                # virgule de sÃÂ©paration.
                 texte_nom = "\n".join(morceaux)
-            # Couleur Â« bleu Kivy Â» des liens, comme le libellÃ©
-            # Â« Supprimer les waypoints Â» : nom(s) cliquable(s).
+            # Couleur ÃÂ« bleu Kivy ÃÂ» des liens, comme le libellÃÂ©
+            # ÃÂ« Supprimer les waypoints ÃÂ» : nom(s) cliquable(s).
 
             # Hauteur adaptative : une ligne par photo (30 dp chacune)
-            # pour que la liste verticale ne soit pas tronquÃ©e.
+            # pour que la liste verticale ne soit pas tronquÃÂ©e.
             nb_lignes_nom = max(1, len(parties_nom))
             label_nom = Label(
                 text=texte_nom,
@@ -989,13 +997,13 @@ if CARTE_DISPONIBLE:
             exterieur.add_widget(contenu)
             exterieur.add_widget(Widget())
             
-            # --- LE POPUP EST CRÃÃ ICI EN PREMIER ---
+            # --- LE POPUP EST CRÃÂÃÂ ICI EN PREMIER ---
             popup = Popup(title="", separator_height=0, content=exterieur, size_hint=(0.85, 0.4))
             btn_fermer.bind(on_release=popup.dismiss)
 
             # --- ENSUITE ON BIND LE CLIC DES PHOTOS EN CONNAISSANT LE
-            # POPUP : le ref pressÃ© (Â« photoN Â») donne l'index de la
-            # photo cliquÃ©e dans photos_du_waypoint. ---
+            # POPUP : le ref pressÃÂ© (ÃÂ« photoN ÃÂ») donne l'index de la
+            # photo cliquÃÂ©e dans photos_du_waypoint. ---
             if photos_du_waypoint:
                 def _clic_photo(instance, ref):
                     try:
@@ -1015,13 +1023,13 @@ if CARTE_DISPONIBLE:
 
 
 class GrapheProfil(Widget):
-    """Graphique altitude/vitesse redessinÃ© nativement avec les outils
-    de dessin de Kivy (Ã©quivalent, sans matplotlib, de afficher_profils()
+    """Graphique altitude/vitesse redessinÃÂ© nativement avec les outils
+    de dessin de Kivy (ÃÂ©quivalent, sans matplotlib, de afficher_profils()
     dans la version desktop). Un tap dans la zone du graphique appelle
     callback_clic(distance_km_tapee)."""
 
     def _calculer_distance_depuis_touch(self, touch):
-        """MÃ©thode utilitaire pour calculer la distance km depuis la position du toucher."""
+        """MÃÂ©thode utilitaire pour calculer la distance km depuis la position du toucher."""
         zx, zy, zw, zh = self._zone_graphique()
         decalage_x = dp(42)
         zx_courbe = zx + decalage_x
@@ -1038,11 +1046,11 @@ class GrapheProfil(Widget):
         self.distances_ele = []
         self.altitudes = []
         self.vitesses_kmh = []
-        # --- SÃ©rie secondaire (optionnelle) : une seconde courbe
-        # d'altitude, dessinÃ©e en rouge par-dessus celle de set_donnees()
-        # (bleue). UtilisÃ©e uniquement par l'onglet Live pour superposer
-        # la trace live (rouge) Ã  la trace chargÃ©e manuellement (bleue).
-        # Aucun autre Ã©cran n'appelle set_donnees_secondaires() : ces
+        # --- SÃÂ©rie secondaire (optionnelle) : une seconde courbe
+        # d'altitude, dessinÃÂ©e en rouge par-dessus celle de set_donnees()
+        # (bleue). UtilisÃÂ©e uniquement par l'onglet Live pour superposer
+        # la trace live (rouge) ÃÂ  la trace chargÃÂ©e manuellement (bleue).
+        # Aucun autre ÃÂ©cran n'appelle set_donnees_secondaires() : ces
         # listes restent vides et rien ne change pour eux.
         self.distances_km_secondaire = []
         self.distances_ele_secondaire = []
@@ -1050,23 +1058,23 @@ class GrapheProfil(Widget):
         self.distance_selection = None
         self.callback_clic = None
         # --- Marqueurs de points aberrants (onglet Nettoyage) : liste de
-        # tuples (distance_km, couleur) dessinÃ©s comme de petits ronds
-        # posÃ©s sur la courbe d'altitude â mÃªme graphisme que les
+        # tuples (distance_km, couleur) dessinÃÂ©s comme de petits ronds
+        # posÃÂ©s sur la courbe d'altitude Ã¢ÂÂ mÃÂªme graphisme que les
         # curseurs de waypoints de la carte, mais 2 fois plus petits.
         self.marqueurs_graphiques = []
-        # Bloque toute interaction tactile (sÃ©lection de point) quand
-        # True â mÃªme principe et mÃªme nom que sur MapViewMolette,
-        # que le gel/dÃ©gel s'applique de la mÃªme faÃ§on partout. False
-        # par dÃ©faut : aucun effet pour les Ã©crans qui ne le touchent
-        # jamais (Carte/DÃ©coupe, Photos).
+        # Bloque toute interaction tactile (sÃÂ©lection de point) quand
+        # True Ã¢ÂÂ mÃÂªme principe et mÃÂªme nom que sur MapViewMolette,
+        # que le gel/dÃÂ©gel s'applique de la mÃÂªme faÃÂ§on partout. False
+        # par dÃÂ©faut : aucun effet pour les ÃÂ©crans qui ne le touchent
+        # jamais (Carte/DÃÂ©coupe, Photos).
         self.freeze_actif = False
         self.afficher_courbe_vitesse = True  # <--- AJOUT ICI
-        # Axe/graduations/lÃ©gende de vitesse : masquables sÃ©parÃ©ment
-        # de la courbe (utilisÃ© par l'onglet Â« temp Â»).
+        # Axe/graduations/lÃÂ©gende de vitesse : masquables sÃÂ©parÃÂ©ment
+        # de la courbe (utilisÃÂ© par l'onglet ÃÂ« temp ÃÂ»).
         self.afficher_axe_vitesse = True
         self.afficher_curseur = True
-        # Couleur de la ligne pointillÃ©e de sÃ©lection : rouge par
-        # dÃ©faut ; l'onglet Â« temp Â» la passe en rose
+        # Couleur de la ligne pointillÃÂ©e de sÃÂ©lection : rouge par
+        # dÃÂ©faut ; l'onglet ÃÂ« temp ÃÂ» la passe en rose
         # (COULEUR_ROSE_CURSEUR) pour ses deux graphiques.
         self.couleur_curseur = (0.85, 0.1, 0.1, 0.9)
         self.bind(pos=self._redessiner, size=self._redessiner)
@@ -1080,10 +1088,10 @@ class GrapheProfil(Widget):
         self._redessiner()
 
     def set_donnees_secondaires(self, distances_km, distances_ele, altitudes):
-        """Ajoute (ou remplace) une SECONDE courbe d'altitude, dessinÃ©e
+        """Ajoute (ou remplace) une SECONDE courbe d'altitude, dessinÃÂ©e
         en rouge par-dessus celle de set_donnees() (toujours bleue) :
-        utilisÃ© par l'onglet Live pour superposer la trace live (rouge)
-        Ã  la trace chargÃ©e manuellement (bleue), sans jamais toucher au
+        utilisÃÂ© par l'onglet Live pour superposer la trace live (rouge)
+        ÃÂ  la trace chargÃÂ©e manuellement (bleue), sans jamais toucher au
         comportement des autres onglets."""
         self.distances_km_secondaire = distances_km
         self.distances_ele_secondaire = distances_ele
@@ -1108,8 +1116,8 @@ class GrapheProfil(Widget):
         self._redessiner()
 
     def _altitude_a_la_distance(self, distance_km):
-        """Altitude de la courbe principale Ã  une distance donnÃ©e, par
-        interpolation linÃ©aire entre les points dotÃ©s d'une altitude.
+        """Altitude de la courbe principale ÃÂ  une distance donnÃÂ©e, par
+        interpolation linÃÂ©aire entre les points dotÃÂ©s d'une altitude.
         Renvoie None si la courbe n'a pas d'altitudes."""
         if not self.distances_ele or not self.altitudes:
             return None
@@ -1175,16 +1183,16 @@ class GrapheProfil(Widget):
         d_min, d_max = min(toutes_distances_km), max(toutes_distances_km)
         d_span = max(d_max - d_min, 1e-6)
 
-        # DÃ©calage horizontal (en pixels) pour laisser place aux labels min/max rouges Ã  gauche
+        # DÃÂ©calage horizontal (en pixels) pour laisser place aux labels min/max rouges ÃÂ  gauche
         decalage_x = dp(42)
         zx_courbe = zx + decalage_x
         zw_courbe = max(1.0, zw - decalage_x)
 
-        # Fonction de conversion de coordonnÃ©es (distance -> abscisse Ã©cran)
+        # Fonction de conversion de coordonnÃÂ©es (distance -> abscisse ÃÂ©cran)
         def x_ecran(d):
             return zx_courbe + (d - d_min) / d_span * zw_courbe
 
-        # --- Calculs des Ã©chelles ---
+        # --- Calculs des ÃÂ©chelles ---
         a_ele = len(self.altitudes) >= 2
         a_ele_sec = len(self.altitudes_secondaire) >= 2
         a_vit = a_ele and any(v > 0 for v in self.vitesses_kmh)
@@ -1192,7 +1200,7 @@ class GrapheProfil(Widget):
         if a_ele or a_ele_sec:
             toutes_altitudes = list(self.altitudes) + list(self.altitudes_secondaire)
             a_min, a_max = min(toutes_altitudes), max(toutes_altitudes)
-            # Ajout du padding d'altitude pour Ã©viter le chevauchement
+            # Ajout du padding d'altitude pour ÃÂ©viter le chevauchement
             marge_alt = max((a_max - a_min) * 0.12, 10.0)
             a_bas, a_haut = a_min - marge_alt, a_max + marge_alt
             a_span = max(a_haut - a_bas, 1e-6)
@@ -1222,7 +1230,7 @@ class GrapheProfil(Widget):
                     self._poser_texte(f"{int(round(valeur))}", zx - dp(4), gy, BLEU,
                                        taille_sp=9, centre_v=True, gras=False, aligne_droite=True)
 
-                # Altitudes min et max (en rouge) placÃ©es dans l'espace dÃ©calÃ© Ã  gauche de la courbe
+                # Altitudes min et max (en rouge) placÃÂ©es dans l'espace dÃÂ©calÃÂ© ÃÂ  gauche de la courbe
                 for valeur in (a_min, a_max):
                     self._poser_texte(f"{int(round(valeur))}", zx + dp(4), y_alt(valeur), ROUGE,
                                        taille_sp=9, centre_v=True, gras=True)
@@ -1239,7 +1247,7 @@ class GrapheProfil(Widget):
                                    taille_sp=9, centre_h=True, gras=False)
 
             if a_ele:
-                # TracÃ© de la courbe d'altitude (trace chargÃ©e, bleu)
+                # TracÃÂ© de la courbe d'altitude (trace chargÃÂ©e, bleu)
                 points_ligne = []
                 for d, a in zip(self.distances_ele, self.altitudes):
                     points_ligne.extend([x_ecran(d), y_alt(a)])
@@ -1247,9 +1255,9 @@ class GrapheProfil(Widget):
                 KivyLine(points=points_ligne, width=1.6)
 
             if a_ele_sec:
-                # TracÃ© de la seconde courbe d'altitude (trace live,
-                # rouge), superposÃ©e Ã  celle ci-dessus (onglet Live
-                # uniquement â voir set_donnees_secondaires()).
+                # TracÃÂ© de la seconde courbe d'altitude (trace live,
+                # rouge), superposÃÂ©e ÃÂ  celle ci-dessus (onglet Live
+                # uniquement Ã¢ÂÂ voir set_donnees_secondaires()).
                 points_ligne_sec = []
                 for d, a in zip(self.distances_ele_secondaire, self.altitudes_secondaire):
                     points_ligne_sec.extend([x_ecran(d), y_alt(a)])
@@ -1257,10 +1265,10 @@ class GrapheProfil(Widget):
                 KivyLine(points=points_ligne_sec, width=1.8)
 
             # --- Marqueurs de points aberrants (onglet Nettoyage) :
-            # petits ronds posÃ©s sur la courbe d'altitude aux distances
-            # donnÃ©es par set_marqueurs(). MÃªme graphisme que les
+            # petits ronds posÃÂ©s sur la courbe d'altitude aux distances
+            # donnÃÂ©es par set_marqueurs(). MÃÂªme graphisme que les
             # curseurs de waypoints (bleu) de la carte, 2 fois plus
-            # petits : cÃ´tÃ© dp(8) contre dp(16) minimum sur la carte.
+            # petits : cÃÂ´tÃÂ© dp(8) contre dp(16) minimum sur la carte.
             if self.marqueurs_graphiques:
                 from kivy.graphics import Ellipse
                 cote_m = dp(8)
@@ -1282,7 +1290,7 @@ class GrapheProfil(Widget):
                         self._poser_texte(f"{int(round(valeur))}", zx + zw + dp(4), gy, VERT,
                                            taille_sp=9, centre_v=True, gras=False)
 
-                    # TracÃ© de la courbe de vitesse (masquÃ© si self.afficher_courbe_vitesse
+                    # TracÃÂ© de la courbe de vitesse (masquÃÂ© si self.afficher_courbe_vitesse
                     # est False, cf. LiveScreen (onglet 7) : seul l'axe/les graduations de
                     # vitesse ci-dessus restent visibles dans ce cas).
                     if a_vit and self.afficher_courbe_vitesse:
@@ -1312,7 +1320,7 @@ class GrapheProfil(Widget):
                 self._poser_texte("Vitesse (km/h)", zx + zw - tex_v.width, zy + zh + dp(4), VERT, taille_sp=9)
 
     def on_touch_down(self, touch):
-        # Gel/dÃ©gel (propagÃ© par LiveScreen.basculer_freeze(), mÃªme
+        # Gel/dÃÂ©gel (propagÃÂ© par LiveScreen.basculer_freeze(), mÃÂªme
         # principe que sur MapViewMolette) : bloque toute interaction
         # tactile sur le graphique quand actif.
         if getattr(self, 'freeze_actif', False):
@@ -1329,9 +1337,9 @@ class GrapheProfil(Widget):
             return True
 
         distance_km_tapee = self._calculer_distance_depuis_touch(touch)
-        self.set_selection(distance_km_tapee)  # Met Ã  jour le curseur visuel
+        self.set_selection(distance_km_tapee)  # Met ÃÂ  jour le curseur visuel
         if self.callback_clic:
-            self.callback_clic(distance_km_tapee)  # Met Ã  jour la carte dÃ¨s l'appui
+            self.callback_clic(distance_km_tapee)  # Met ÃÂ  jour la carte dÃÂ¨s l'appui
         return True
 
     def on_touch_move(self, touch):
@@ -1343,7 +1351,7 @@ class GrapheProfil(Widget):
             distance_km_tapee = self._calculer_distance_depuis_touch(touch)
             self.set_selection(distance_km_tapee)  # Suit le mouvement du curseur
             if self.callback_clic:
-                self.callback_clic(distance_km_tapee)  # Met Ã  jour la carte en temps rÃ©el pendant le glissement
+                self.callback_clic(distance_km_tapee)  # Met ÃÂ  jour la carte en temps rÃÂ©el pendant le glissement
             return True
         return super().on_touch_move(touch)
 
@@ -1356,17 +1364,17 @@ class GrapheProfil(Widget):
             distance_km_tapee = self._calculer_distance_depuis_touch(touch)
             self.set_selection(distance_km_tapee)
             if self.callback_clic:
-                self.callback_clic(distance_km_tapee)  # Assure la position finale au lÃ¢cher
+                self.callback_clic(distance_km_tapee)  # Assure la position finale au lÃÂ¢cher
             return True
         return super().on_touch_up(touch)
 
 
 # ----------------------------------------------------------------------
-# Dossier racine utilisÃ© pour parcourir/enregistrer les fichiers.
+# Dossier racine utilisÃÂ© pour parcourir/enregistrer les fichiers.
 # ----------------------------------------------------------------------
 if platform == "android":
     DOSSIER_CHARGEMENT = "/storage/emulated/0/GPX_Files/"
-    # Nouveau dossier de sortie demandÃ©
+    # Nouveau dossier de sortie demandÃÂ©
     DOSSIER_SORTIE = "/storage/emulated/0/GPX_Files/Bubu_GPS_Files"
     
     # S'assure que le dossier de sortie existe sur l'appareil Android
@@ -1386,65 +1394,66 @@ DOSSIER_RACINE = DOSSIER_CHARGEMENT
 SCREENS_A_VENIR = [
 ]
 
+
 class GraphePentes(Widget):
     """Graphique des pentes de l'onglet Statistiques : la trace est
-    dÃ©coupÃ©e en tranches de 500 m ; chaque tranche est dessinÃ©e comme
-    un rectangle vertical (barre) partant du ZÃRO de l'axe des
-    abscisses (base du graphique) et montant jusqu'Ã  la courbe
+    dÃÂ©coupÃÂ©e en tranches de 500 m ; chaque tranche est dessinÃÂ©e comme
+    un rectangle vertical (barre) partant du ZÃÂRO de l'axe des
+    abscisses (base du graphique) et montant jusqu'ÃÂ  la courbe
     d'altitude. La couleur suit des CLASSES de pente fixes : descentes
     en TONS BLEUS de plus en plus sombres (bleu clair #8DA9C4 de
-    -10 Ã  0 % jusqu'au bleu marine trÃ¨s sombre #0A0F24 au-delÃ  de
-    -30 %), PLAT beige/blanc cassÃ© (#EEEDE9) autour de 0, montÃ©es du
-    JAUNE ORANGÃ (#F4A261, 0 Ã  +10 %) Ã  l'ORANGE (#E76F51), au
-    ROUGE (#D62828) puis au MARRON BORDEAUX (#4A0E0E) au-delÃ  de
-    +30 %. La valeur de la pente (ex. Â« +12.4 Â») est inscrite
+    -10 ÃÂ  0 % jusqu'au bleu marine trÃÂ¨s sombre #0A0F24 au-delÃÂ  de
+    -30 %), PLAT beige/blanc cassÃÂ© (#EEEDE9) autour de 0, montÃÂ©es du
+    JAUNE ORANGÃÂ (#F4A261, 0 ÃÂ  +10 %) ÃÂ  l'ORANGE (#E76F51), au
+    ROUGE (#D62828) puis au MARRON BORDEAUX (#4A0E0E) au-delÃÂ  de
+    +30 %. La valeur de la pente (ex. ÃÂ« +12.4 ÃÂ») est inscrite
     au-dessus de la courbe, et le titre affiche le nombre de tranches
-    en montÃ©e et en descente. Reproduit le style des profils Â« pentes
-    sur 500 m Â» des applis de rando."""
+    en montÃÂ©e et en descente. Reproduit le style des profils ÃÂ« pentes
+    sur 500 m ÃÂ» des applis de rando."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.tranches = []  # [(dist_km_debut, pente_pct, alt_debut, alt_fin)]
-        # Altitudes min/max rÃ©elles de la trace (sur tous les points) :
-        # servent d'Ã©chelle au graphique pour rester cohÃ©rent avec le
-        # tableau de statistiques (le sommet rÃ©el peut se trouver ENTRE
-        # deux bornes de tranches interpolÃ©es).
+        # Altitudes min/max rÃÂ©elles de la trace (sur tous les points) :
+        # servent d'ÃÂ©chelle au graphique pour rester cohÃÂ©rent avec le
+        # tableau de statistiques (le sommet rÃÂ©el peut se trouver ENTRE
+        # deux bornes de tranches interpolÃÂ©es).
         self.alt_min_pts = float("inf")
         self.alt_max_pts = float("-inf")
-        # SÃ©lection interconnectÃ©e (onglet Â« temp Â») : distance (km)
-        # du point sÃ©lectionnÃ© â dessinÃ©e comme une ligne verticale
-        # pointillÃ©e rouge, comme le curseur de GrapheProfil.
+        # SÃÂ©lection interconnectÃÂ©e (onglet ÃÂ« temp ÃÂ») : distance (km)
+        # du point sÃÂ©lectionnÃÂ© Ã¢ÂÂ dessinÃÂ©e comme une ligne verticale
+        # pointillÃÂ©e rouge, comme le curseur de GrapheProfil.
         self.distance_selection = None
-        # Distance cumulÃ©e TOTALE de la trace (km) : borne exacte de
-        # l'axe X. Sans elle, l'axe s'arrÃªterait Ã  Â« dÃ©but de la
-        # derniÃ¨re tranche + 0,5 km Â», ce qui allonge artificiellement
-        # l'axe (trace de 10,3 km â axe jusqu'Ã  10,5 km) et dÃ©cale le
-        # curseur de sÃ©lection avec un retard croissant en fin de trace.
+        # Distance cumulÃÂ©e TOTALE de la trace (km) : borne exacte de
+        # l'axe X. Sans elle, l'axe s'arrÃÂªterait ÃÂ  ÃÂ« dÃÂ©but de la
+        # derniÃÂ¨re tranche + 0,5 km ÃÂ», ce qui allonge artificiellement
+        # l'axe (trace de 10,3 km Ã¢ÂÂ axe jusqu'ÃÂ  10,5 km) et dÃÂ©cale le
+        # curseur de sÃÂ©lection avec un retard croissant en fin de trace.
         self.dist_fin_km = None
-        # Points RÃELS de la courbe d'altitude : liste (distance_km,
-        # altitude) de tous les points GPS dotÃ©s d'une altitude. La
-        # courbe est tracÃ©e Ã  partir d'eux (et non des seules bornes
-        # de tranches interpolÃ©es tous les 500 m) pour Ãªtre
-        # EXACTEMENT identique Ã  celle du profil d'altitude â sans
-        # cela, elle paraÃ®t Â« lissÃ©e Â» par l'Ã©chantillonnage.
+        # Points RÃÂELS de la courbe d'altitude : liste (distance_km,
+        # altitude) de tous les points GPS dotÃÂ©s d'une altitude. La
+        # courbe est tracÃÂ©e ÃÂ  partir d'eux (et non des seules bornes
+        # de tranches interpolÃÂ©es tous les 500 m) pour ÃÂªtre
+        # EXACTEMENT identique ÃÂ  celle du profil d'altitude Ã¢ÂÂ sans
+        # cela, elle paraÃÂ®t ÃÂ« lissÃÂ©e ÃÂ» par l'ÃÂ©chantillonnage.
         self.points_courbe = []
-        # Callback appelÃ© au tap dans la zone du graphique, avec la
-        # distance (km) tapÃ©e â mÃªme contrat que GrapheProfil.
+        # Callback appelÃÂ© au tap dans la zone du graphique, avec la
+        # distance (km) tapÃÂ©e Ã¢ÂÂ mÃÂªme contrat que GrapheProfil.
         self.callback_clic = None
-        # Couleur de la ligne pointillÃ©e de sÃ©lection : rouge par
-        # dÃ©faut ; l'onglet Â« temp Â» la passe en rose.
+        # Couleur de la ligne pointillÃÂ©e de sÃÂ©lection : rouge par
+        # dÃÂ©faut ; l'onglet ÃÂ« temp ÃÂ» la passe en rose.
         self.couleur_curseur = (0.85, 0.1, 0.1, 0.9)
         self.bind(size=self._redessiner, pos=self._redessiner)
 
     def set_selection(self, distance_km):
-        """DÃ©place (ou retire si None) le curseur vertical de
-        sÃ©lection, puis redessine."""
+        """DÃÂ©place (ou retire si None) le curseur vertical de
+        sÃÂ©lection, puis redessine."""
         self.distance_selection = distance_km
         self._redessiner()
 
     def _distance_depuis_touch(self, touch):
-        """Distance (km) correspondant Ã  la position tapÃ©e, en
-        replaÃ§ant les marges exactes de _redessiner (renvoie None si
+        """Distance (km) correspondant ÃÂ  la position tapÃÂ©e, en
+        replaÃÂ§ant les marges exactes de _redessiner (renvoie None si
         le tap est hors zone utile)."""
         marge_g, marge_d, marge_h, marge_b = dp(48), dp(48), dp(22), dp(38)
         zx, zy = self.x + marge_g, self.y + marge_b
@@ -1454,17 +1463,17 @@ class GraphePentes(Widget):
             return None
         if not self.tranches:
             return None
-        # MÃªme borne d'axe que _redessiner : vraie longueur de trace
-        # si fournie, sinon derniÃ¨re tranche + 0,5 km.
+        # MÃÂªme borne d'axe que _redessiner : vraie longueur de trace
+        # si fournie, sinon derniÃÂ¨re tranche + 0,5 km.
         dist_fin = self.dist_fin_km if self.dist_fin_km else self.tranches[-1][0] + 0.5
         ratio = max(0.0, min(1.0, (touch.x - gx) / gw))
         return ratio * dist_fin
 
     def on_touch_down(self, touch):
-        """Appui dans le graphique des pentes : sÃ©lectionne la
-        distance tapÃ©e et CAPTURE le toucher pour suivre le
-        glissement (mÃªme mÃ©canisme que GrapheProfil : le curseur
-        suit le doigt en temps rÃ©el). Ne consomme l'Ã©vÃ©nement que si
+        """Appui dans le graphique des pentes : sÃÂ©lectionne la
+        distance tapÃÂ©e et CAPTURE le toucher pour suivre le
+        glissement (mÃÂªme mÃÂ©canisme que GrapheProfil : le curseur
+        suit le doigt en temps rÃÂ©el). Ne consomme l'ÃÂ©vÃÂ©nement que si
         le tap est dans la zone utile."""
         if self.callback_clic is None or touch.grab_current is not None:
             return False
@@ -1477,9 +1486,9 @@ class GraphePentes(Widget):
         return True
 
     def on_touch_move(self, touch):
-        """Glissement : le curseur suit le doigt et la sÃ©lection est
-        mise Ã  jour en temps rÃ©el (carte, graphique d'altitude, bloc
-        d'infos) â mÃªme comportement que GrapheProfil."""
+        """Glissement : le curseur suit le doigt et la sÃÂ©lection est
+        mise ÃÂ  jour en temps rÃÂ©el (carte, graphique d'altitude, bloc
+        d'infos) Ã¢ÂÂ mÃÂªme comportement que GrapheProfil."""
         if touch.grab_current is self:
             distance = self._distance_depuis_touch(touch)
             if distance is not None:
@@ -1489,14 +1498,14 @@ class GraphePentes(Widget):
         return super().on_touch_move(touch)
 
     def on_touch_up(self, touch):
-        """Fin du toucher : relÃ¢che la capture."""
+        """Fin du toucher : relÃÂ¢che la capture."""
         if touch.grab_current is self:
             touch.ungrab(self)
             return True
         return super().on_touch_up(touch)
 
     # Couleurs/textes locaux (BLEU/GRIS_TEXTE de GrapheProfil sont des
-    # variables LOCALES Ã  son _redessiner : on redÃ©finit ici).
+    # variables LOCALES ÃÂ  son _redessiner : on redÃÂ©finit ici).
     BLEU = (0.12, 0.53, 0.90, 1)
     GRIS_TEXTE = (0.25, 0.25, 0.25, 1)
 
@@ -1525,17 +1534,17 @@ class GraphePentes(Widget):
                      points_courbe=None):
         """Alimente le graphique : liste de tranches de 500 m, chacune
         (distance_debut_km, pente_pct, altitude_debut, altitude_fin).
-        alt_min_pts / alt_max_pts : altitudes min/max RÃELLES de la
-        trace (calculÃ©es sur tous les points, comme le tableau), car
+        alt_min_pts / alt_max_pts : altitudes min/max RÃÂELLES de la
+        trace (calculÃÂ©es sur tous les points, comme le tableau), car
         le sommet peut se trouver entre deux bornes de tranches
-        interpolÃ©es. dist_fin_km : distance cumulÃ©e TOTALE de la trace
-        (borne exacte de l'axe X, pour que le curseur de sÃ©lection
-        soit alignÃ© avec le graphique d'altitude, dont l'axe
-        s'arrÃªte Ã  la vraie fin de trace). points_courbe : liste
+        interpolÃÂ©es. dist_fin_km : distance cumulÃÂ©e TOTALE de la trace
+        (borne exacte de l'axe X, pour que le curseur de sÃÂ©lection
+        soit alignÃÂ© avec le graphique d'altitude, dont l'axe
+        s'arrÃÂªte ÃÂ  la vraie fin de trace). points_courbe : liste
         (distance_km, altitude) de TOUS les points GPS avec altitude
-        â la courbe d'altitude est tracÃ©e Ã  partir d'eux pour Ãªtre
-        identique Ã  celle du profil d'altitude (sinon, Ã©chantillonnÃ©e
-        toutes les bornes de 500 m, elle paraÃ®t lissÃ©e). DÃ©clenche le
+        Ã¢ÂÂ la courbe d'altitude est tracÃÂ©e ÃÂ  partir d'eux pour ÃÂªtre
+        identique ÃÂ  celle du profil d'altitude (sinon, ÃÂ©chantillonnÃÂ©e
+        toutes les bornes de 500 m, elle paraÃÂ®t lissÃÂ©e). DÃÂ©clenche le
         redessin."""
         self.tranches = tranches or []
         if alt_min_pts is not None:
@@ -1549,26 +1558,26 @@ class GraphePentes(Widget):
         self._redessiner()
 
     # Palette de classes de pente (couleurs fixes par palier) :
-    DESC_TRES_FORTE = (0.039, 0.059, 0.141, 1)   # < -30 %   : bleu marine trÃ¨s sombre #0A0F24
-    DESC_FORTE = (0.043, 0.145, 0.271, 1)       # -30 Ã  -20 : bleu profond #0B2545
-    DESC_MARQUEE = (0.075, 0.251, 0.455, 1)     # -20 Ã  -10 : bleu vif/moyen #134074
-    DESC_MODEREE = (0.553, 0.663, 0.769, 1)     # -10 Ã  0   : bleu clair #8DA9C4
-    PLAT = (0.933, 0.929, 0.914, 1)             # autour de 0 : beige/blanc cassÃ© #EEEDE9
-    MONT_LEGERE = (0.957, 0.635, 0.380, 1)      # 0 Ã  +10   : jaune orangÃ© #F4A261
-    MONT_MODEREE = (0.906, 0.435, 0.318, 1)    # +10 Ã  +20 : orange vif #E76F51
-    MONT_RAIDE = (0.839, 0.157, 0.157, 1)       # +20 Ã  +30 : rouge #D62828
+    DESC_TRES_FORTE = (0.039, 0.059, 0.141, 1)   # < -30 %   : bleu marine trÃÂ¨s sombre #0A0F24
+    DESC_FORTE = (0.043, 0.145, 0.271, 1)       # -30 ÃÂ  -20 : bleu profond #0B2545
+    DESC_MARQUEE = (0.075, 0.251, 0.455, 1)     # -20 ÃÂ  -10 : bleu vif/moyen #134074
+    DESC_MODEREE = (0.553, 0.663, 0.769, 1)     # -10 ÃÂ  0   : bleu clair #8DA9C4
+    PLAT = (0.933, 0.929, 0.914, 1)             # autour de 0 : beige/blanc cassÃÂ© #EEEDE9
+    MONT_LEGERE = (0.957, 0.635, 0.380, 1)      # 0 ÃÂ  +10   : jaune orangÃÂ© #F4A261
+    MONT_MODEREE = (0.906, 0.435, 0.318, 1)    # +10 ÃÂ  +20 : orange vif #E76F51
+    MONT_RAIDE = (0.839, 0.157, 0.157, 1)       # +20 ÃÂ  +30 : rouge #D62828
     MONT_MUR = (0.290, 0.055, 0.055, 1)         # > +30     : marron/bordeaux #4A0E0E
 
     def _couleur_pente(self, pente):
         """Couleur d'une tranche selon sa classe de pente :
         DESCENTES en BLEUS de plus en plus sombres (bleu clair #8DA9C4
-        de -10 Ã  0 %, jusqu'au bleu marine #0A0F24 au-delÃ  de -30 %),
-        PLAT beige (#EEEDE9) uniquement autour de 0, MONTÃES du jaune
-        orangÃ© (#F4A261, 0 Ã  +10 %) au marron bordeaux (#4A0E0E)
-        au-delÃ  de +30 %. Les bornes sont EXACTEMENT celles de la
-        lÃ©gende : descente modÃ©rÃ©e de -10 Ã  0 %, montÃ©e lÃ©gÃ¨re de
-        0 Ã  +10 %, le beige ne s'appliquant qu'Ã  une pente
-        strictement quasi nulle (Â±0,1 %)."""
+        de -10 ÃÂ  0 %, jusqu'au bleu marine #0A0F24 au-delÃÂ  de -30 %),
+        PLAT beige (#EEEDE9) uniquement autour de 0, MONTÃÂES du jaune
+        orangÃÂ© (#F4A261, 0 ÃÂ  +10 %) au marron bordeaux (#4A0E0E)
+        au-delÃÂ  de +30 %. Les bornes sont EXACTEMENT celles de la
+        lÃÂ©gende : descente modÃÂ©rÃÂ©e de -10 ÃÂ  0 %, montÃÂ©e lÃÂ©gÃÂ¨re de
+        0 ÃÂ  +10 %, le beige ne s'appliquant qu'ÃÂ  une pente
+        strictement quasi nulle (ÃÂ±0,1 %)."""
         if pente < -30.0:
             return self.DESC_TRES_FORTE
         if pente < -20.0:
@@ -1600,24 +1609,24 @@ class GraphePentes(Widget):
             return
         from kivy.graphics import Color, Line, Rectangle as KivyRectangle, Triangle
 
-        # MÃªmes couleurs que GrapheProfil (onglet 4) pour un visuel
+        # MÃÂªmes couleurs que GrapheProfil (onglet 4) pour un visuel
         # identique : axes, courbe d'altitude et altitudes min/max.
         ROUGE = (0.8, 0.1, 0.1, 1)
 
-        # Marges identiques Ã  GrapheProfil._zone_graphique().
+        # Marges identiques ÃÂ  GrapheProfil._zone_graphique().
         marge_g, marge_d, marge_h, marge_b = dp(48), dp(48), dp(22), dp(38)
         zx, zy = self.x + marge_g, self.y + marge_b
         zw, zh = max(1.0, self.width - marge_g - marge_d), max(1.0, self.height - marge_h - marge_b)
 
-        # DÃ©calage horizontal (en pixels) pour laisser place aux labels
-        # min/max rouges Ã  gauche de la courbe â comme GrapheProfil.
+        # DÃÂ©calage horizontal (en pixels) pour laisser place aux labels
+        # min/max rouges ÃÂ  gauche de la courbe Ã¢ÂÂ comme GrapheProfil.
         decalage_x = dp(42)
         gx, gy = zx + decalage_x, zy
         gw, gh = max(1.0, zw - decalage_x), zh
 
         dists = [t[0] for t in self.tranches]
-        # Borne de l'axe X : distance TOTALE rÃ©elle de la trace si
-        # fournie, sinon repli sur Â« derniÃ¨re tranche + 0,5 km Â».
+        # Borne de l'axe X : distance TOTALE rÃÂ©elle de la trace si
+        # fournie, sinon repli sur ÃÂ« derniÃÂ¨re tranche + 0,5 km ÃÂ».
         dist_fin = self.dist_fin_km if self.dist_fin_km else dists[-1] + 0.5
         alt_min = min(self.alt_min_pts, min(t[2] for t in self.tranches))
         alt_max = max(self.alt_max_pts, max(t[3] for t in self.tranches))
@@ -1644,17 +1653,17 @@ class GraphePentes(Widget):
                 self._poser_texte(f"{int(round(valeur))}", zx - dp(4), gyv, self.BLEU,
                                   taille_sp=9, centre_v=True, gras=False, aligne_droite=True)
 
-            # Altitudes min et max (en ROUGE) placÃ©es dans l'espace
-            # dÃ©calÃ© Ã  gauche de la courbe â comme GrapheProfil.
+            # Altitudes min et max (en ROUGE) placÃÂ©es dans l'espace
+            # dÃÂ©calÃÂ© ÃÂ  gauche de la courbe Ã¢ÂÂ comme GrapheProfil.
             for valeur in (alt_min, alt_max):
                 self._poser_texte(f"{int(round(valeur))}", zx + dp(4), y_alt(valeur), ROUGE,
                                   taille_sp=9, centre_v=True, gras=True)
 
-            # Cadre gris du graphique â comme GrapheProfil.
+            # Cadre gris du graphique Ã¢ÂÂ comme GrapheProfil.
             Color(0.55, 0.55, 0.55, 1)
             Line(points=[zx, zy, zx + zw, zy, zx + zw, zy + zh, zx, zy + zh], width=1.2)
 
-            # Graduations de l'axe X des distances (gris) â comme
+            # Graduations de l'axe X des distances (gris) Ã¢ÂÂ comme
             # GrapheProfil.
             for valeur in self._graduations(0.0, dist_fin, 5):
                 gxv = x_km(valeur)
@@ -1663,27 +1672,27 @@ class GraphePentes(Widget):
                 self._poser_texte(f"{valeur:.1f}", gxv, zy - dp(16), self.GRIS_TEXTE,
                                   taille_sp=9, centre_h=True, gras=False)
 
-            # Barres : une par tranche de 500 m, partant du ZÃRO de
+            # Barres : une par tranche de 500 m, partant du ZÃÂRO de
             # l'axe des abscisses (gy, base du graphique) et montant
-            # jusqu'Ã  la courbe d'altitude. Pour Ã©pouser EXACTEMENT
-            # la courbe (tracÃ©e sur les points GPS rÃ©els) sans vides
-            # ni dÃ©bordements, chaque tranche est dÃ©coupÃ©e en BANDES
-            # VERTICALES aux points rÃ©els qu'elle contient : la couleur
+            # jusqu'ÃÂ  la courbe d'altitude. Pour ÃÂ©pouser EXACTEMENT
+            # la courbe (tracÃÂ©e sur les points GPS rÃÂ©els) sans vides
+            # ni dÃÂ©bordements, chaque tranche est dÃÂ©coupÃÂ©e en BANDES
+            # VERTICALES aux points rÃÂ©els qu'elle contient : la couleur
             # reste celle de la classe de pente de la tranche, mais le
-            # sommet de chaque bande suit la courbe point Ã  point.
+            # sommet de chaque bande suit la courbe point ÃÂ  point.
             for dist_km, pente, alt_dep, alt_arr in self.tranches:
                 x0, x1 = x_km(dist_km), x_km(min(dist_km + 0.5, dist_fin))
                 couleur = self._couleur_pente(pente)
-                # Bornes verticales internes : les points rÃ©els situÃ©s
-                # STRICTEMENT Ã  l'intÃ©rieur de la tranche.
+                # Bornes verticales internes : les points rÃÂ©els situÃÂ©s
+                # STRICTEMENT ÃÂ  l'intÃÂ©rieur de la tranche.
                 bornes = [d_pc for d_pc, a_pc in self.points_courbe
                           if dist_km < d_pc < dist_km + 0.5]
                 bornes.append(min(dist_km + 0.5, dist_fin))
                 d_prec = dist_km
                 a_prec = alt_dep
                 for d_b in bornes:
-                    # Altitude de la courbe Ã  la borne : celle du point
-                    # rÃ©el s'il existe, sinon l'altitude interpolÃ©e de
+                    # Altitude de la courbe ÃÂ  la borne : celle du point
+                    # rÃÂ©el s'il existe, sinon l'altitude interpolÃÂ©e de
                     # fin de tranche.
                     a_b = alt_arr
                     for d_pc, a_pc in self.points_courbe:
@@ -1706,11 +1715,11 @@ class GraphePentes(Widget):
                                  pos=(x0 + (w_barre - tex.width) / 2, y_alt(max(alt_dep, alt_arr)) + dp(1)),
                                  size=tex.size)
 
-            # Courbe d'altitude : tracÃ©e Ã  partir des TOUS les points
-            # GPS rÃ©els (self.points_courbe) pour Ãªtre EXACTEMENT la
-            # mÃªme que sur le profil d'altitude â BLEUE, comme
+            # Courbe d'altitude : tracÃÂ©e ÃÂ  partir des TOUS les points
+            # GPS rÃÂ©els (self.points_courbe) pour ÃÂªtre EXACTEMENT la
+            # mÃÂªme que sur le profil d'altitude Ã¢ÂÂ BLEUE, comme
             # GrapheProfil (onglet 4). Repli sur les bornes de
-            # tranches si les points rÃ©els n'ont pas Ã©tÃ© fournis.
+            # tranches si les points rÃÂ©els n'ont pas ÃÂ©tÃÂ© fournis.
             if self.points_courbe:
                 pts_courbe = []
                 for d_pc, a_pc in self.points_courbe:
@@ -1727,8 +1736,8 @@ class GraphePentes(Widget):
             Color(*self.BLEU)
             Line(points=pts_courbe, width=1.6)
 
-            # Curseur de sÃ©lection interconnectÃ© : ligne verticale
-            # pointillÃ©e rouge, mÃªme graphisme que GrapheProfil.
+            # Curseur de sÃÂ©lection interconnectÃÂ© : ligne verticale
+            # pointillÃÂ©e rouge, mÃÂªme graphisme que GrapheProfil.
             if self.distance_selection is not None:
                 cx = x_km(self.distance_selection)
                 Color(*self.couleur_curseur)
@@ -1740,14 +1749,14 @@ class GraphePentes(Widget):
                     Line(points=[cx, y, cx, y_fin], width=1.4)
                     y += longueur_trait + longueur_espace
 
-        # LÃ©gendes d'axes â mÃªmes positions/couleurs que GrapheProfil.
+        # LÃÂ©gendes d'axes Ã¢ÂÂ mÃÂªmes positions/couleurs que GrapheProfil.
         self._poser_texte("Distance (km)", zx + zw / 2, self.y, self.GRIS_TEXTE,
                           taille_sp=10, centre_h=True)
         self._poser_texte("Altitude (m)", zx, zy + zh + dp(4), self.BLEU, taille_sp=9)
         nb_montees = sum(1 for t in self.tranches if t[1] > 0)
         nb_descentes = sum(1 for t in self.tranches if t[1] < 0)
         self._poser_texte(
-            f"Pentes sur 500 m   Â·   {nb_montees} en pentes positives   Â·   {nb_descentes} en pentes nÃ©gatives",
+            f"Pentes sur 500 m   ÃÂ·   {nb_montees} en pentes positives   ÃÂ·   {nb_descentes} en pentes nÃÂ©gatives",
             gx + gw / 2, gy + gh + dp(8),
             (0.16, 0.2, 0.26, 1), taille_sp=11, centre_h=True, gras=True)
 
@@ -2632,7 +2641,7 @@ KV = """
                             color: 0, 0, 0, 1
 
             Label:
-                text: "Vitesse (km/h) au-dessus de laquelle un point est considÃ©rÃ© comme aberrant :"
+                text: "Vitesse (km/h) au-dessus de laquelle un point est considÃÂ©rÃÂ© comme aberrant :"
                 size_hint_y: None
                 height: (dp(28) if root.trace_chargee else 0)
                 opacity: (1 if root.trace_chargee else 0)
@@ -2642,9 +2651,9 @@ KV = """
                 text_size: self.width, None
                 halign: "center"
 
-            # Les blocs suivants (zone de saisie + DÃ©tecter, compteur
-            # + Supprimer de la trace, Enregistrer) sont centrÃ©s
-            # horizontalement et bornÃ©s Ã  dp(350).
+            # Les blocs suivants (zone de saisie + DÃÂ©tecter, compteur
+            # + Supprimer de la trace, Enregistrer) sont centrÃÂ©s
+            # horizontalement et bornÃÂ©s ÃÂ  dp(350).
             BoxLayout:
                 size_hint_y: None
                 height: (dp(44) if root.trace_chargee else 0)
@@ -2664,13 +2673,13 @@ KV = """
                     text: root.seuil_text
                     on_text: root.changer_seuil(self.text)
                 Button:
-                    text: "DÃ©tecter"
+                    text: "DÃÂ©tecter"
                     size_hint_x: None
                     width: dp(110)
                     background_color: 0.15, 0.68, 0.38, 1
                     on_release: root.appliquer_detection()
 
-            # Graphique visible uniquement une fois la trace chargÃ©e
+            # Graphique visible uniquement une fois la trace chargÃÂ©e
             # (comme le bloc compteur et le bouton Enregistrer).
             BoxLayout:
                 id: zone_graphique
@@ -2702,7 +2711,7 @@ KV = """
                     on_release: root.supprimer_aberrants()
 
             Button:
-                text: "Enregistrer la trace nettoyÃ©e"
+                text: "Enregistrer la trace nettoyÃÂ©e"
                 size_hint_y: None
                 height: (dp(52) if root.trace_chargee else 0)
                 size_hint_x: None
@@ -2882,7 +2891,7 @@ KV = """
                             color: 0, 0, 0, 1
 
             Label:
-                text: "Vitesse (km/h) au-dessus de laquelle un point est considÃ©rÃ© comme aberrant :"
+                text: "Vitesse (km/h) au-dessus de laquelle un point est considÃÂ©rÃÂ© comme aberrant :"
                 size_hint_y: None
                 height: (dp(28) if root.trace_chargee else 0)
                 opacity: (1 if root.trace_chargee else 0)
@@ -2892,9 +2901,9 @@ KV = """
                 text_size: self.width, None
                 halign: "center"
 
-            # Les blocs suivants (zone de saisie + DÃ©tecter, compteur
-            # + Supprimer de la trace, Enregistrer) sont centrÃ©s
-            # horizontalement et bornÃ©s Ã  dp(350).
+            # Les blocs suivants (zone de saisie + DÃÂ©tecter, compteur
+            # + Supprimer de la trace, Enregistrer) sont centrÃÂ©s
+            # horizontalement et bornÃÂ©s ÃÂ  dp(350).
             BoxLayout:
                 size_hint_y: None
                 height: (dp(44) if root.trace_chargee else 0)
@@ -2914,13 +2923,13 @@ KV = """
                     text: root.seuil_text
                     on_text: root.changer_seuil(self.text)
                 Button:
-                    text: "DÃ©tecter"
+                    text: "DÃÂ©tecter"
                     size_hint_x: None
                     width: dp(110)
                     background_color: 0.15, 0.68, 0.38, 1
                     on_release: root.appliquer_detection()
 
-            # Graphique visible uniquement une fois la trace chargÃ©e
+            # Graphique visible uniquement une fois la trace chargÃÂ©e
             # (comme le bloc compteur et le bouton Enregistrer).
             BoxLayout:
                 id: zone_graphique
@@ -2952,7 +2961,7 @@ KV = """
                     on_release: root.supprimer_aberrants()
 
             Button:
-                text: "Enregistrer la trace nettoyÃ©e"
+                text: "Enregistrer la trace nettoyÃÂ©e"
                 size_hint_y: None
                 height: (dp(52) if root.trace_chargee else 0)
                 size_hint_x: None
@@ -3017,15 +3026,15 @@ KV = """
                 color: 0.2, 0.5, 0.2, 1
                 italic: True
 
-            # Statistiques de la trace (mÃªmes calculs que l'onglet
-            # Statistiques), mise en forme du bloc Â« Informations du
-            # point sÃ©lectionnÃ© Â» : libellÃ© + valeur sur la mÃªme ligne
-            # (ex. Â« Altitude de dÃ©part : 1250 m Â»), police 12sp,
-            # 2 colonnes de 5 lignes. CentrÃ© horizontalement comme le
-            # bloc d'infos du point (AnchorLayout). AffichÃ© dÃ¨s le
+            # Statistiques de la trace (mÃÂªmes calculs que l'onglet
+            # Statistiques), mise en forme du bloc ÃÂ« Informations du
+            # point sÃÂ©lectionnÃÂ© ÃÂ» : libellÃÂ© + valeur sur la mÃÂªme ligne
+            # (ex. ÃÂ« Altitude de dÃÂ©part : 1250 m ÃÂ»), police 12sp,
+            # 2 colonnes de 5 lignes. CentrÃÂ© horizontalement comme le
+            # bloc d'infos du point (AnchorLayout). AffichÃÂ© dÃÂ¨s le
             # chargement de la trace.
             Label:
-                text: "Statistiques gÃ©nÃ©rales"
+                text: "Statistiques gÃÂ©nÃÂ©rales"
                 font_size: "15sp"
                 bold: True
                 size_hint_y: None
@@ -3113,7 +3122,7 @@ KV = """
                             size: self.size
 
             Label:
-                text: "Informations sur le point sÃ©lectionnÃ©"
+                text: "Informations sur le point sÃÂ©lectionnÃÂ©"
                 font_size: "15sp"
                 bold: True
                 size_hint_y: None
@@ -3198,9 +3207,9 @@ KV = """
                 size_hint_y: None
                 height: dp(175)
 
-            # Graphique des pentes (mÃªme composant que l'onglet
+            # Graphique des pentes (mÃÂªme composant que l'onglet
             # Statistiques) : tranches de 500 m, classes de couleurs
-            # bleuâbeigeâjaune/orange/rouge, courbe d'altitude bleue.
+            # bleuÃ¢ÂÂbeigeÃ¢ÂÂjaune/orange/rouge, courbe d'altitude bleue.
             GraphePentes:
                 id: pentes_temp
                 size_hint_y: None
@@ -4913,6 +4922,7 @@ class LiveScreen(Screen):
         )
 
     def _resynchroniser_avec_gpslogger(self):
+        return  # GPS natif : la resynchronisation GPSLogger est inutile (les points arrivent directement)
         """AppelÃ©e automatiquement au retour au premier plan de l'appli
         (redÃ©marrage aprÃ¨s un plantage ou un clic involontaire sur
         "Quitter", ou simple rÃ©veil de l'Ã©cran) : si GPSLogger est en
@@ -5000,92 +5010,30 @@ class LiveScreen(Screen):
             self._reprendre_trace_gpslogger_active(chemin)
 
     def on_click_live_pydroid(self):
-        """Bouton "Live" (onglet 7) â nouvelle sÃ©quence (dÃ©tection par
-        l'Ã©tat de GPSLogger, broadcast com.mendhak.gpslogger.EVENT,
-        Ã©quivalent de l'icone de notification prÃ©sente/absente :
-
-        - Ã©tat CONNU "started" (GPSLogger enregistre dÃ©jÃ ) : affiche
-          directement la trace du GPX le plus rÃ©cent de GPSLoggerTraces
-          et poursuit le live Ã  partir de lÃ  â rÃ©ponse immÃ©diate,
-          plus aucun dÃ©lai de vÃ©rification.
-        - Ã©tat CONNU "stopped" : lance GPSLogger (immediatestart,
-          comme avant), puis affiche la trace dÃ¨s qu'elle existe et
-          dÃ©marre le serveur d'Ã©coute â le premier point GPS arrive
-          dans les secondes qui suivent.
-        - Ã©tat INCONNU (premier lancement, ou broadcast jamais reÃ§u
-          et fichier d'Ã©tat absent) : repli sur l'ancienne dÃ©tection
-          par croissance de fichier, rÃ©duite Ã  5 s (au lieu de 20)
-          â voir _verifier_gpslogger_actif_suite.
+        """Bouton "Live" (onglet 7) â GPS NATIF : dÃ©marre (ou confirme)
+        l'enregistrement de la trace par le capteur GPS de l'appareil,
+        SANS GPSLogger. Les points sont produits par le module gps_natif
+        (LocationManager Android, listener pyjnius) et suivent le mÃªme
+        pipeline qu'avant : file thread-safe -> _traiter_file_points_live
+        -> _ajouter_point_live (carte, profil, statut), puis "Terminer"
+        exporte en GPX comme d'habitude.
 
         Ne touche jamais Ã  la trace "chargÃ©e" manuellement (bleue)
         ni Ã  aucun autre onglet."""
         self._journaliser_evenement_live(
-            f"clic_live;etat_gpslogger={self._gpslogger_actif}")
-        if self._gpslogger_actif is True:
-            # GPSLogger enregistre dÃ©jÃ  (icone prÃ©sente) : afficher
-            # la trace du GPX le plus rÃ©cent, sans dÃ©lai.
-            chemin = self._trouver_dernier_gpx_gpslogger()
-            self._journaliser_evenement_live(
-                f"voie=started;gpx_recent={chemin}")
-            if chemin is not None:
-                self._reprendre_trace_gpslogger_active(chemin)
-                return
-            # IcÃ´ne "started" mais aucun GPX trouvÃ© (dossiers de
-            # sortie inattendus) : nouveau suivi quand mÃªme.
-            self._demarrer_nouveau_suivi_live()
+            f"clic_live;gps_natif={gps_natif.etat}")
+
+        if self.en_cours_live:
+            # Suivi dÃ©jÃ  en cours (bouton "Live" recliquÃ©, ou retour
+            # d'un autre onglet) : simple confirmation, rien Ã  relancer,
+            # aucun point perdu.
+            self._maj_statut_live(
+                self._texte_statut_live(),
+                (0.180, 0.490, 0.196, 1)  # #2E7D32
+            )
             return
 
-        if self._gpslogger_actif is False:
-            # Aucun enregistrement en cours (icone absente) : lancer
-            # GPSLogger puis afficher la trace du GPX qui apparaÃ®t.
-            self._demarrer_nouveau_suivi_live()
-            return
-
-        # Etat inconnu : repli sur la vÃ©rification de croissance de
-        # fichier (comptage maintenant, re-comptage 5 s plus tard).
-        chemin_candidat = self._trouver_dernier_gpx_gpslogger()
-        if chemin_candidat is None:
-            self._demarrer_nouveau_suivi_live()
-            return
-
-        try:
-            nb_lignes_reference = self._compter_lignes(chemin_candidat)
-        except OSError as e:
-            print(f"[Live GPSLogger] Impossible de lire {chemin_candidat} pour la dÃ©tection ({e}) : nouveau suivi.")
-            self._demarrer_nouveau_suivi_live()
-            return
-
-        self._maj_statut_live(
-            f"VÃ©rification de GPSlogger... ({os.path.basename(chemin_candidat)})",
-            (0.33, 0.33, 0.33, 1)
-        )
-        Clock.schedule_once(
-            lambda dt: self._verifier_gpslogger_actif_suite(chemin_candidat, nb_lignes_reference),
-            5,
-        )
-
-    def _verifier_gpslogger_actif_suite(self, chemin, nb_lignes_reference):
-        """Suite (unique, 5 secondes plus tard) de la dÃ©tection de repli
-        dÃ©marrÃ©e par on_click_live_pydroid (uniquement quand l'Ã©tat de
-        GPSLogger est INCONNU â broadcast jamais reÃ§u et fichier d'Ã©tat
-        absent) : si le fichier a grossi depuis le premier comptage
-        (nb_lignes_reference), GPSLogger est bien en train d'enregistrer
-        une trace. Sinon, dÃ©marre un nouveau suivi normalement."""
-        try:
-            nb_lignes_actuel = self._compter_lignes(chemin)
-        except OSError:
-            nb_lignes_actuel = nb_lignes_reference
-
-        if nb_lignes_actuel != nb_lignes_reference:
-            # L'enregistrement est actif : le memoriser (le broadcast
-            # EVENT l'aura normalement deja fait, mais l'etat etait
-            # inconnu au clic â on le fixe maintenant de facon certaine).
-            self._enregistrer_etat_gpslogger(True)
-            self._journaliser_evenement_live(
-                f"resync;fichier_en_croissance={chemin}")
-            self._reprendre_trace_gpslogger_active(chemin)
-        else:
-            self._demarrer_nouveau_suivi_live()
+        self._demarrer_nouveau_suivi_live()
 
     def _demarrer_nouveau_suivi_live(self):
         """SÃ©quence normale de dÃ©marrage du suivi en direct (bouton
@@ -5093,11 +5041,10 @@ class LiveScreen(Screen):
         n'est pas dÃ©jÃ  dÃ©tectÃ© comme Ã©tant en train d'enregistrer une
         trace :
         Phase 1 : rÃ©initialise le suivi EN DIRECT (rouge) de cet onglet.
-        Phase 2 : dÃ©marre (ou confirme dÃ©jÃ  dÃ©marrÃ©) le serveur d'Ã©coute
-        live local qui reÃ§oit les points GPS envoyÃ©s par GPSLogger.
-        Phase 3 : tente de lancer GPSLogger et d'y dÃ©marrer
-        automatiquement l'enregistrement (best effort : pyjnius, puis
-        commande "am" en secours).
+        Phase 2 : dÃ©marre le GPS NATIF de l'appareil (module gps_natif,
+        LocationManager Android) ; chaque fix est dÃ©posÃ© directement
+        dans la file self.file_points_live, consommÃ©e par
+        _traiter_file_points_live -> _ajouter_point_live.
 
         Ne touche jamais Ã  la trace "chargÃ©e" manuellement (bleue,
         gÃ©rÃ©e par ouvrir_selecteur_fichier/_fichier_choisi ci-dessus) ni
@@ -5141,28 +5088,103 @@ class LiveScreen(Screen):
             self.marqueurs_actifs_live = []
 
         # d. Le texte de statut passe Ã  l'orange.
-        self._maj_statut_live("DÃ©marrage du suivi en direct : lancement de GPSLogger...", (0.937, 0.424, 0.0, 1))  # #EF6C00
+        self._maj_statut_live("DÃ©marrage du suivi en direct : activation du GPS de l'appareil...", (0.937, 0.424, 0.0, 1))  # #EF6C00
 
-        # --- Phase 2 : dÃ©marrage (ou confirmation) du serveur d'Ã©coute live ---
-        # Fait AVANT la phase 3 : demarrer_serveur_live() affiche son
-        # propre message transitoire ("Serveur d'Ã©coute live dÃ©marrÃ©
-        # sur ...") aussitÃ´t remplacÃ© par celui de la phase 3 ci-dessous,
-        # qui doit rester le message final visible aprÃ¨s un clic sur
-        # "Live".
-        self.demarrer_serveur_live()
-
-        # --- Phase 3 : lancement de GPSLogger + dÃ©marrage de l'enregistrement ---
-        ok, message = self._lancer_gpslogger_et_demarrer_enregistrement()
+        # --- DÃ©marrage du GPS NATIF (module gps_natif) ---
+        # Les points sont dÃ©posÃ©s directement dans la file thread-safe
+        # self.file_points_live, dÃ©jÃ  consommÃ©e par
+        # _traiter_file_points_live : le petit serveur HTTP local qui
+        # recevait les points de GPSLogger n'est plus nÃ©cessaire.
+        ok, message = gps_natif.demarrer(self.file_points_live)
         if ok:
+            # --- Service de premier plan (foreground service) : il garde
+            # l'enregistrement actif Ã©cran Ã©teint / appli en arriÃ¨re-plan
+            # (tracker_service.py). L'appli absorbe ses points via
+            # _absorber_points_service (fichier live_service_points.json).
+            self._demarrer_service_tracker()
             self._maj_statut_live(
                 self._texte_statut_live(),
                 (0.180, 0.490, 0.196, 1)  # #2E7D32
             )
         else:
+            # Permission en cours de demande (popup systÃ¨me), fix en
+            # acquisition, localisation systÃ¨me dÃ©sactivÃ©e... : le
+            # contrÃ´le diffÃ©rÃ© re-vÃ©rifie toutes les 4 s et dÃ©marre le
+            # suivi dÃ¨s que possible, avec le message exact du module.
             self._maj_statut_live(
-                f"Enregistrement impossible. Veuillez installer l'application << GPSLogger for Android (Mendhak) >> pour continuer.",
-                (0.776, 0.157, 0.157, 1)  # #C62828
+                str(message),
+                (0.937, 0.424, 0.0, 1)  # #EF6C00
             )
+            Clock.schedule_once(self._verifier_demarrage_gps_natif, 4)
+
+    def _verifier_demarrage_gps_natif(self, dt):
+        """ContrÃ´le diffÃ©rÃ© du dÃ©marrage du GPS natif : met Ã  jour le
+        statut live avec l'erreur EXACTE du module gps_natif, sans
+        jamais relancer un suivi par erreur. Si la permission vient
+        d'Ãªtre accordÃ©e, redÃ©marre le GPS natif puis reprogramme un
+        contrÃ´le tant qu'il n'est pas actif."""
+        if not self.en_cours_live:
+            return
+        if gps_natif.est_actif():
+            self._maj_statut_live(
+                self._texte_statut_live(),
+                (0.180, 0.490, 0.196, 1)  # #2E7D32
+            )
+            return
+        if gps_natif.etat == "refuse":
+            self.en_cours_live = False
+            if not gps_natif.permission_accordee():
+                self._maj_statut_live(
+                    "Enregistrement impossible : permission de localisation refusÃ©e. Accordez la permission via le bouton RÃ©glages affichÃ©.",
+                    (0.776, 0.157, 0.157, 1)  # #C62828
+                )
+                self._popup_permission_refusee()
+            else:
+                self._maj_statut_live(
+                    f"Enregistrement impossible : {gps_natif.derniere_erreur}",
+                    (0.776, 0.157, 0.157, 1)  # #C62828
+                )
+            return
+        gps_natif.demarrer(self.file_points_live)
+        if not gps_natif.est_actif() and gps_natif.derniere_erreur:
+            self._maj_statut_live(
+                f"En attente du GPS : {gps_natif.derniere_erreur}",
+                (0.937, 0.424, 0.0, 1)  # #EF6C00
+            )
+        Clock.schedule_once(self._verifier_demarrage_gps_natif, 4)
+
+    def _popup_permission_refusee(self):
+        """Popup affichÃ©e quand la permission de localisation a Ã©tÃ©
+        REFUSÃE : Android (11+, et MIUI/HyperOS dÃ¨s le premier refus)
+        ne montrera plus jamais la popup systÃ¨me (Â« Ne plus demander Â»
+        implicite). Deux boutons : Â« Ouvrir les rÃ©glages Â» (page
+        Permissions de l'appli) et Â« RÃ©essayer Â» (relance le suivi ;
+        le GPS dÃ©marre dÃ¨s que la permission est accordÃ©e)."""
+        contenu = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(12))
+        lbl = Label(
+            text=("La permission de localisation a Ã©tÃ© refusÃ©e.\n\n"
+                  "Android ne redemandera plus automatiquement.\n"
+                  "Accordez la permission Position dans les rÃ©glages,\n"
+                  "puis revenez et appuyez sur RÃ©essayer."),
+            text_size=(dp(280), None), halign="left", valign="middle",
+            size_hint_y=None,
+        )
+        lbl.bind(texture_size=lambda w, v: setattr(w, "height", v[1]))
+        contenu.add_widget(lbl)
+
+        boutons = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+        btn_reglages = Button(text="Ouvrir les rÃ©glages", background_color=(0.2, 0.6, 0.86, 1))
+        btn_reessayer = Button(text="RÃ©essayer", background_color=(0.15, 0.68, 0.38, 1))
+        boutons.add_widget(btn_reglages)
+        boutons.add_widget(btn_reessayer)
+        contenu.add_widget(boutons)
+
+        popup = Popup(title="Permission de localisation", content=contenu,
+                      size_hint=(0.9, 0.5))
+        btn_reglages.bind(on_release=lambda *a: gps_natif.ouvrir_reglages())
+        btn_reessayer.bind(on_release=lambda *a: (popup.dismiss(), self._demarrer_nouveau_suivi_live()))
+        popup.open()
+
 
     def _texte_statut_live(self):
         """Texte du statut live : nombre de points, et nombre de
@@ -5522,6 +5544,174 @@ class LiveScreen(Screen):
             except Exception as e:
                 print(f"[Live GPSLogger] Erreur lors de l'ajout d'un point live (point ignorÃ©) : {e}")
 
+        # --- Diagnostic GPS natif : tant que le suivi est actif mais
+        # qu'aucun point n'est arrivÃ©, affiche chaque seconde l'Ã©tat
+        # rÃ©el du module (fixes reÃ§us, dernier fix, fournisseurs).
+        if (self.en_cours_live and not self.pause_traitement_live
+                and not self.points_trace_live and gps_natif.est_actif()):
+            nb_recus = gps_natif.fixes_recus()
+            if nb_recus == 0:
+                texte = ("Live en cours... (0 point) - GPS actif, en attente du "
+                         "premier fix (peut prendre 1 a 2 min a l'exterieur). "
+                         "Fournisseurs : " + (", ".join(gps_natif.fournisseurs()) or "aucun") + ".")
+            else:
+                texte = ("Live en cours... (0 point) - " + str(nb_recus)
+                         + " fix(es) recus du systeme (dernier a "
+                         + gps_natif.heure_dernier_fix() + "), points en attente de traitement.")
+            self._maj_statut_live(texte, (0.937, 0.424, 0.0, 1))  # #EF6C00
+
+        # Absorption des points du service de premier plan (Ã©crits pendant
+        # un Ã©cran Ã©teint ou un arriÃ¨re-plan prolongÃ©) : le service tourne
+        # dans son propre processus et dÃ©pose ses points dans un fichier.
+        try:
+            self._absorber_points_service()
+        except Exception:
+            pass
+
+    # -------------------------------------------------------------
+    # Service de premier plan (foreground service "Tracker") : garde
+    # l'enregistrement GPS actif Ã©cran Ã©teint / appli fermÃ©e
+    # (tracker_service.py, dÃ©clarÃ© dans buildozer.spec via
+    # services = Tracker:tracker_service.py:foreground). Il Ã©crit les
+    # points dans live_service_points.json (une ligne JSON par point),
+    # que l'appli absorbe ici par simple lecture incrÃ©mentale.
+    # -------------------------------------------------------------
+    CHEMIN_POINTS_SERVICE = os.path.join(
+        DOSSIER_SORTIE, "live_service_points.json")
+    # Marqueur de session live : contient le numÃ©ro de la ligne du
+    # fichier de points oÃ¹ a commencÃ© la session. Ãcrit au clic "Live",
+    # supprimÃ© Ã  "Terminer". S'il est encore prÃ©sent au dÃ©marrage
+    # suivant, c'est que l'appli a Ã©tÃ© quittÃ©e/tuÃ©e SANS Terminer :
+    # la session continue â ses points (y compris ceux enregistrÃ©s par
+    # le service pendant l'arrÃªt de l'appli) sont rÃ©absorbÃ©s.
+    CHEMIN_MARQUEUR_SESSION = os.path.join(
+        DOSSIER_SORTIE, "live_session_en_cours.json")
+
+    def _demarrer_service_tracker(self):
+        """Lance le service de premier plan (Android uniquement). Ne
+        lÃ¨ve jamais ; en cas d'Ã©chec, le live Ã  l'Ã©cran continue de
+        fonctionner (gps_natif), seule la capture Ã©cran Ã©teint manque.
+
+        Gestion des sessions : si un marqueur de session survit (appli
+        quittÃ©e/tuÃ©e sans "Terminer"), on REPART DE LUI â tous les
+        points de la session interrompue seront rÃ©absorbÃ©s. Sinon,
+        nouvelle session : le marqueur est crÃ©Ã© au point courant du
+        fichier (l'historique des sessions prÃ©cÃ©dentes est ignorÃ©)."""
+        if platform != "android":
+            return
+        try:
+            # Marqueur survivant = session interrompue : la reprendre.
+            offset_session = None
+            try:
+                with open(self.CHEMIN_MARQUEUR_SESSION, "r", encoding="utf-8") as f:
+                    donnees = json.load(f)
+                offset_session = int(donnees.get("offset", 0))
+            except Exception:
+                offset_session = None
+
+            try:
+                with open(self.CHEMIN_POINTS_SERVICE, "r", encoding="utf-8") as f:
+                    nb_lignes = sum(1 for _ in f)
+            except OSError:
+                nb_lignes = 0
+
+            if offset_session is not None:
+                # Session interrompue (quitter/kill) : on reprend ses
+                # points depuis le dÃ©but de la session â y compris ceux
+                # Ã©crits par le service pendant l'absence de l'appli.
+                self._lignes_service_lues = min(offset_session, nb_lignes)
+                print(f"[Live service] Session interrompue reprise : "
+                      f"points depuis la ligne {self._lignes_service_lues}.")
+            else:
+                # Nouvelle session : ignorer l'historique, noter le point.
+                self._lignes_service_lues = nb_lignes
+                try:
+                    with open(self.CHEMIN_MARQUEUR_SESSION, "w", encoding="utf-8") as f:
+                        json.dump({"offset": nb_lignes,
+                                   "debut": datetime.now().isoformat()}, f)
+                except OSError:
+                    pass
+
+            from jnius import autoclass
+            service = autoclass("org.perso.outilstraces.ServiceTracker")
+            activite = autoclass("org.kivy.android.PythonActivity").mActivity
+            service.start(activite, "")
+            # RedÃ©marrage automatique si Android/MIUI tue le service
+            # (doit continuer Ã  enregistrer aprÃ¨s un "Quitter").
+            try:
+                autoclass("org.kivy.android.PythonService").mService.setAutoRestartService(True)
+            except Exception:
+                pass
+            print("[Live service] Service tracker lancÃ© (premier plan).")
+        except Exception as e:
+            print(f"[Live service] Impossible de lancer le service tracker : {e}")
+
+    def _arreter_service_tracker(self):
+        """ArrÃªte le service de premier plan ET CLÃT la session (le
+        marqueur de session est supprimÃ© : un futur "Live" repartira
+        d'une trace vierge). Ne lÃ¨ve jamais."""
+        if platform != "android":
+            # ClÃ´turer aussi la session hors Android (tests PC).
+            self._clore_marqueur_session()
+            return
+        self._clore_marqueur_session()
+        try:
+            from jnius import autoclass
+            service = autoclass("org.perso.outilstraces.ServiceTracker")
+            service.stop()
+            print("[Live service] Service tracker arrÃªtÃ©.")
+        except Exception as e:
+            print(f"[Live service] Erreur Ã  l'arrÃªt du service tracker : {e}")
+
+    def _clore_marqueur_session(self):
+        """Supprime le marqueur de session (fin de session : "Terminer")."""
+        try:
+            if os.path.exists(self.CHEMIN_MARQUEUR_SESSION):
+                os.remove(self.CHEMIN_MARQUEUR_SESSION)
+        except OSError:
+            pass
+
+    def _absorber_points_service(self):
+        """Lit les NOUVELLES lignes de live_service_points.json (Ã©crites
+        par le service pendant un Ã©cran Ã©teint / un arriÃ¨re-plan) et les
+        dÃ©pose dans la file live : le pipeline habituel les affiche et
+        les dÃ©doublonne (_ajouter_point_live rejette une position dÃ©jÃ 
+        prÃ©sente Ã  1e-6 prÃ¨s). Les lignes non-ponctuelles (dÃ©but_session,
+        erreur) sont ignorÃ©es."""
+        chemin = self.CHEMIN_POINTS_SERVICE
+        if not os.path.exists(chemin):
+            return
+        if not hasattr(self, "_lignes_service_lues"):
+            self._lignes_service_lues = 0
+        try:
+            with open(chemin, "r", encoding="utf-8") as f:
+                lignes = f.readlines()
+        except OSError:
+            return
+        for ligne in lignes[self._lignes_service_lues:]:
+            self._lignes_service_lues += 1
+            ligne = ligne.strip()
+            if not ligne:
+                continue
+            try:
+                donnees = json.loads(ligne)
+            except ValueError:
+                continue
+            if "lat" not in donnees or "lon" not in donnees:
+                continue  # ligne dÃ©but_session / erreur : ignorÃ©e
+            try:
+                heure = datetime.fromisoformat(donnees["time"])
+            except Exception:
+                heure = datetime.now()
+            self.file_points_live.put({
+                "lat": float(donnees["lat"]),
+                "lon": float(donnees["lon"]),
+                "ele": donnees.get("ele"),
+                "time": heure,
+                "name": None,
+                "source": donnees.get("source", "service"),
+            })
+
     def _journaliser_evenement_live(self, texte):
         """Ajoute une ligne d'EVENEMENT au journal de post-mortem des
         points live (debug_points_*.txt, voir _arreter_gpslogger) :
@@ -5701,11 +5891,16 @@ class LiveScreen(Screen):
            effort), puis soit invite Ã  fermer GPSLogger manuellement
            (trace enregistrÃ©e), soit rÃ©initialise entiÃ¨rement l'onglet
            (trace abandonnÃ©e)."""
-        # DerniÃ¨re chance de rattraper des points que GPSLogger aurait
-        # Ã©crits mais que le serveur d'Ã©coute local n'aurait pas reÃ§us
-        # (Ã©cran Ã©teint, mise en arriÃ¨re-plan...), AVANT de figer la
-        # trace qui sera proposÃ©e Ã  l'enregistrement.
-        self._fusionner_avec_gpslogger_avant_finalisation()
+        # Les points du GPS natif arrivent directement dans la file :
+        # rien Ã  rattraper avant de figer la trace (l'ancienne
+        # resynchronisation GPSLogger n'a plus d'objet).
+        # DerniÃ¨re absorption des points du service de premier plan
+        # (Ã©cran Ã©teint depuis le dernier cycle d'absorption) avant
+        # de figer la trace qui sera proposÃ©e Ã  l'enregistrement.
+        try:
+            self._absorber_points_service()
+        except Exception:
+            pass
 
         self.pause_traitement_live = True
         self._maj_statut_live("Suivi en direct mis en pause...", (0.937, 0.424, 0.0, 1))  # #EF6C00
@@ -5839,27 +6034,13 @@ class LiveScreen(Screen):
         self._reinitialiser_onglet7_vierge()
 
     def _arreter_gpslogger(self):
-        """OpÃ©ration inverse de _lancer_gpslogger_et_demarrer_enregistrement :
-           a) ordonne Ã  GPSLogger d'arrÃªter l'enregistrement en cours
-              (extra Android "immediatestop", symÃ©trique de
-              "immediatestart") ;
-           b) tente ensuite de fermer l'application (best effort :
-              Android n'autorise pas une appli tierce non-rootÃ©e Ã 
-              forcer l'arrÃªt d'une autre application de faÃ§on garantie ;
-              killBackgroundProcesses est tentÃ©, mais peut ne pas
-              fonctionner selon l'appareil/la version d'Android,
-              notamment si GPSLogger est encore au premier plan).
+        """ArrÃªt du GPS NATIF (symÃ©trique de gps_natif.demarrer, appelÃ©
+        par _demarrer_nouveau_suivi_live) + Ã©criture des logs silencieux
+        (comptage par source, journal post-mortem des points live),
+        exactement comme dans l'ancienne version GPSLogger.
 
-        Renvoie (ok_arret_enregistrement, ok_fermeture, dÃ©tail). Ne lÃ¨ve
-        jamais d'exception."""
-        # L'ordre d'arrÃªt est envoyÃ© : l'Ã©tat repasse Ã  "stopped" (le
-        # broadcast EVENT de GPSLogger le confirmera, mais en cas de
-        # broadcast bloquÃ© par le systÃ¨me, cet Ã©tat reste correct).
-        self._enregistrer_etat_gpslogger(False)
-        # --- Ãcriture silencieuse du log de comptage par source de
-        # gÃ©olocalisation (aucun message, comme demandÃ©). Toujours
-        # tentÃ©e en tout premier, indÃ©pendamment du succÃ¨s du reste de
-        # cette mÃ©thode (automatisation Android best-effort ci-dessous).
+        Renvoie (True, True, dÃ©tail) â signature conservÃ©e pour ne pas
+        toucher aux appelants (on_click_terminer_live). Ne lÃ¨ve jamais."""
         try:
             dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
             os.makedirs(dossier_cible, exist_ok=True)
@@ -5869,12 +6050,6 @@ class LiveScreen(Screen):
                 for source, nb in sorted(self.compteur_sources_live.items()):
                     f.write(f"{source} : {nb}\n")
 
-            # Journal de post-mortem des points directs (voir
-            # _ajouter_point_live) : horodatage de reception,
-            # coordonnees, altitude, source de chaque point recu.
-            # Indispensable pour diagnostiquer les reprises
-            # problematiques (points anciens re-injectes apres un
-            # reveil d'ecran).
             if self._journal_points_live:
                 nom_debug = f"debug_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
                 chemin_debug = os.path.join(dossier_cible, nom_debug)
@@ -5889,87 +6064,27 @@ class LiveScreen(Screen):
             pass
         finally:
             self.compteur_sources_live = {}
-
             self.annotations_live = []
 
-        ok_stop = False
-        ok_fermeture = False
         details = []
-
-        # --- a) ArrÃªt de l'enregistrement (fiable, documentÃ© par GPSLogger) ---
         try:
-            from jnius import autoclass, cast
-
-            activite_courante = None
-            for chemin_classe in ("org.kivy.android.PythonActivity", "org.kivy.android.PythonService"):
-                try:
-                    activite_courante = autoclass(chemin_classe).mActivity
-                    if activite_courante:
-                        break
-                except Exception:
-                    continue
-
-            if activite_courante is None:
-                raise RuntimeError("activitÃ© Android introuvable via pyjnius")
-
-            Intent = autoclass("android.content.Intent")
-            contexte = cast("android.content.Context", activite_courante)
-
-            intent_arret = Intent(self.ACTION_TASKER_GPSLOGGER)
-            intent_arret.setClassName(self.PACKAGE_GPSLOGGER, self.RECEIVER_TASKER_GPSLOGGER)
-            intent_arret.putExtra("immediatestop", True)
-            contexte.sendBroadcast(intent_arret)
-            ok_stop = True
-            details.append("enregistrement arrÃªtÃ© (pyjnius)")
-
-            # --- b) Tentative de fermeture de l'application (best effort) ---
-            try:
-                gestionnaire_activites = cast(
-                    "android.app.ActivityManager",
-                    contexte.getSystemService(activite_courante.ACTIVITY_SERVICE)
-                )
-                gestionnaire_activites.killBackgroundProcesses(self.PACKAGE_GPSLOGGER)
-                ok_fermeture = True
-                details.append("fermeture tentÃ©e (killBackgroundProcesses)")
-            except Exception:
-                # On Ã©vite volontairement d'afficher le dÃ©tail technique
-                # brut de l'exception Android (souvent une longue trace
-                # Java/Parcel illisible et sans intÃ©rÃªt pour
-                # l'utilisateur) : un message court et indicatif suffit,
-                # l'essentiel (l'arrÃªt de l'enregistrement, lui, rÃ©ussi)
-                # Ã©tant dÃ©jÃ  remontÃ© Ã  part.
-                details.append("fermeture non autorisÃ©e par Android sur cet appareil")
-
-            return ok_stop, ok_fermeture, " / ".join(details)
-        except Exception as e_jnius:
-            print(f"[Live GPSLogger] Ãchec pyjnius (arrÃªt) : {e_jnius}")
-            raison_jnius = "mÃ©thode pyjnius indisponible"
-
-        # --- Secours : commande Android "am", si disponible ---
+            # Absorber les derniers points Ã©crits par le service de premier
+            # plan (Ã©cran Ã©teint...) AVANT l'arrÃªt, pour une trace complÃ¨te.
+            self._absorber_points_service()
+        except Exception:
+            pass
         try:
-            resultat = subprocess.run(
-                [
-                    "am", "broadcast",
-                    "-a", self.ACTION_TASKER_GPSLOGGER,
-                    "-n", f"{self.PACKAGE_GPSLOGGER}/{self.RECEIVER_TASKER_GPSLOGGER}",
-                    "--ez", "immediatestop", "true"
-                ],
-                check=False, timeout=5,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            if resultat.returncode == 0:
-                # La fermeture complÃ¨te via "am force-stop" nÃ©cessite des
-                # privilÃ¨ges (root/ADB) qu'une appli normale n'a pas :
-                # non tentÃ©e ici pour Ã©viter un Ã©chec silencieux trompeur.
-                return True, False, "enregistrement arrÃªtÃ© (commande am), fermeture non tentÃ©e (nÃ©cessite root)"
-            print(f"[Live GPSLogger] Ãchec commande am (arrÃªt), code {resultat.returncode} : "
-                  f"{resultat.stderr.decode(errors='ignore').strip()}")
-            raison_am = "commande am indisponible ou refusÃ©e"
-        except Exception as e_am:
-            print(f"[Live GPSLogger] Ãchec commande am (arrÃªt) : {e_am}")
-            raison_am = "commande am indisponible ou refusÃ©e"
-
-        return False, False, f"{raison_jnius} ; {raison_am}"
+            gps_natif.arreter()
+            details.append("GPS natif arrÃªtÃ©")
+        except Exception as e:
+            details.append(f"Ã©chec de l'arrÃªt du GPS natif : {e}")
+        # ArrÃªt du service de premier plan (Ã©cran Ã©teint).
+        try:
+            self._arreter_service_tracker()
+            details.append("service tracker arrÃªtÃ©")
+        except Exception as e:
+            details.append(f"Ã©chec de l'arrÃªt du service tracker : {e}")
+        return True, True, " / ".join(details)
 
     def _reinitialiser_onglet7_vierge(self):
         """Remet l'onglet Live dans son Ã©tat initial "vierge", identique
@@ -7014,36 +7129,36 @@ class StatistiquesScreen(Screen):
 
 
 class NettoyageScreen(Screen):
-    """Onglet Nettoyage : charge une trace GPX horodatÃ©e, l'affiche sur
+    """Onglet Nettoyage : charge une trace GPX horodatÃÂ©e, l'affiche sur
     la carte et sur le graphique d'altitude (comme les autres onglets),
-    et y marque les points aberrants dÃ©tectÃ©s par
+    et y marque les points aberrants dÃÂ©tectÃÂ©s par
     gps_logic.detecter_points_aberrants avec le SEUIL (km/h) saisi par
-    l'utilisateur : tout point extrÃ©mitÃ© d'un segment plus rapide que
-    le seuil est aberrant (rÃ¨gle randonnÃ©e : > 5 km/h suspect, 10 km/h
-    par dÃ©faut). Les marqueurs reprennent le curseur rond des
+    l'utilisateur : tout point extrÃÂ©mitÃÂ© d'un segment plus rapide que
+    le seuil est aberrant (rÃÂ¨gle randonnÃÂ©e : > 5 km/h suspect, 10 km/h
+    par dÃÂ©faut). Les marqueurs reprennent le curseur rond des
     annotations/waypoints (MarqueurWaypoint), en DEUX FOIS PLUS PETIT.
     Lecture uniquement : cet onglet ne supprime rien (le nettoyage
-    efficace se fait ensuite dans l'onglet NumÃ©rotation, qui sait
+    efficace se fait ensuite dans l'onglet NumÃÂ©rotation, qui sait
     supprimer des points par indices)."""
 
     fichier_source = StringProperty("")
-    info_fichier = StringProperty("Aucune trace chargÃ©e.")
-    # Seuil de dÃ©tection (km/h) saisi par l'utilisateur : tout point
-    # extrÃ©mitÃ© d'un segment plus rapide que ce seuil est aberrant.
+    info_fichier = StringProperty("Aucune trace chargÃÂ©e.")
+    # Seuil de dÃÂ©tection (km/h) saisi par l'utilisateur : tout point
+    # extrÃÂ©mitÃÂ© d'un segment plus rapide que ce seuil est aberrant.
     seuil_text = StringProperty("10")
-    # Compteur des points aberrants affichÃ© dans le titre Â« Points
-    # aberrants (N) : Â» (Ã  la place de l'ancienne liste de numÃ©ros).
+    # Compteur des points aberrants affichÃÂ© dans le titre ÃÂ« Points
+    # aberrants (N) : ÃÂ» (ÃÂ  la place de l'ancienne liste de numÃÂ©ros).
     compteur_aberrants_text = StringProperty("Points aberrants (0) :")
-    # Vrai dÃ¨s qu'une trace est chargÃ©e : le graphique, le bloc compteur
-    # et le bouton Enregistrer n'apparaissent qu'Ã  partir de lÃ  (ils
-    # sont masquÃ©s via trace_chargee dans le KV).
+    # Vrai dÃÂ¨s qu'une trace est chargÃÂ©e : le graphique, le bloc compteur
+    # et le bouton Enregistrer n'apparaissent qu'ÃÂ  partir de lÃÂ  (ils
+    # sont masquÃÂ©s via trace_chargee dans le KV).
     trace_chargee = BooleanProperty(False)
-    # Vrai si des points aberrants sont affichÃ©s (active Â« Supprimer Â»).
+    # Vrai si des points aberrants sont affichÃÂ©s (active ÃÂ« Supprimer ÃÂ»).
     aberrants_present = BooleanProperty(False)
-    # Vrai si la trace a Ã©tÃ© nettoyÃ©e (active Â« Enregistrer Â»).
+    # Vrai si la trace a ÃÂ©tÃÂ© nettoyÃÂ©e (active ÃÂ« Enregistrer ÃÂ»).
     trace_nettoyee = BooleanProperty(False)
-    # Bloc Â« Informations du point sÃ©lectionnÃ© Â» (mÃªme gabarit que
-    # l'onglet Carte/DÃ©coupe : grille 3 lignes x 2 colonnes).
+    # Bloc ÃÂ« Informations du point sÃÂ©lectionnÃÂ© ÃÂ» (mÃÂªme gabarit que
+    # l'onglet Carte/DÃÂ©coupe : grille 3 lignes x 2 colonnes).
     info_point_text = StringProperty("")
     info_point_num = StringProperty("")
     info_point_gps = StringProperty("")
@@ -7053,7 +7168,7 @@ class NettoyageScreen(Screen):
     info_point_vit = StringProperty("")
 
     def dezoomer_carte(self):
-        """RÃ©duit le zoom de la carte (mÃªme garde-fou que CarteScreen)."""
+        """RÃÂ©duit le zoom de la carte (mÃÂªme garde-fou que CarteScreen)."""
         mapview = getattr(self, "map_view", None)
         if mapview and hasattr(mapview, "zoom"):
             min_z = getattr(getattr(mapview, "map_source", None), "min_zoom", 0)
@@ -7062,7 +7177,7 @@ class NettoyageScreen(Screen):
                 mapview.center_on(mapview.lat, mapview.lon)
 
     def zoomer_carte(self):
-        """Augmente le zoom de la carte (mÃªme garde-fou que CarteScreen)."""
+        """Augmente le zoom de la carte (mÃÂªme garde-fou que CarteScreen)."""
         mapview = getattr(self, "map_view", None)
         if mapview and hasattr(mapview, "zoom"):
             max_z = getattr(getattr(mapview, "map_source", None), "max_zoom", 19)
@@ -7077,7 +7192,7 @@ class NettoyageScreen(Screen):
         self.marqueurs_actifs = []        # D / A
         self.marqueurs_waypoints = []     # curseurs bleus des waypoints
         self.marqueurs_nettoyage = []     # curseurs rouges (2x plus petits) des points aberrants DURS
-        self.marqueur_curseur = None      # curseur de sÃ©lection (tap graphique), comme l'onglet Carte
+        self.marqueur_curseur = None      # curseur de sÃÂ©lection (tap graphique), comme l'onglet Carte
         self.trace_layer = None
         self.map_view = None
 
@@ -7097,7 +7212,7 @@ class NettoyageScreen(Screen):
                 color=(0.6, 0.1, 0.1, 1), halign="center"))
 
     def changer_vue_carte(self, valeur):
-        """Change le fond de carte (satellite ou plan) â mÃªme logique
+        """Change le fond de carte (satellite ou plan) Ã¢ÂÂ mÃÂªme logique
         que CarteScreen.changer_vue_carte."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
@@ -7105,8 +7220,8 @@ class NettoyageScreen(Screen):
         self.map_view.trigger_update(True)
 
     def ouvrir_menu_fonds(self, bouton):
-        """Ouvre le menu dÃ©roulant des fonds de carte sous le bouton
-        Layer â mÃªme logique que CarteScreen.ouvrir_menu_fonds."""
+        """Ouvre le menu dÃÂ©roulant des fonds de carte sous le bouton
+        Layer Ã¢ÂÂ mÃÂªme logique que CarteScreen.ouvrir_menu_fonds."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         menu = _construire_menu_fonds_carte(self)
@@ -7131,7 +7246,7 @@ class NettoyageScreen(Screen):
             return
 
         if not points:
-            self.info_fichier = "Aucun point GPS trouvÃ© dans ce fichier."
+            self.info_fichier = "Aucun point GPS trouvÃÂ© dans ce fichier."
             return
 
         try:
@@ -7159,24 +7274,24 @@ class NettoyageScreen(Screen):
         self.graphe.set_donnees(*self.profil)
         self._afficher_trace_sur_carte(points, waypoints=waypoints)
 
-        # --- DÃ©tection avec le seuil courant de l'utilisateur.
+        # --- DÃÂ©tection avec le seuil courant de l'utilisateur.
         self.appliquer_detection()
 
     def changer_seuil(self, texte):
-        """AppelÃ© Ã  chaque frappe dans la zone de saisie du seuil :
-        mÃ©morise le texte (le retour KV affiche root.seuil_text)."""
+        """AppelÃÂ© ÃÂ  chaque frappe dans la zone de saisie du seuil :
+        mÃÂ©morise le texte (le retour KV affiche root.seuil_text)."""
         self.seuil_text = texte
 
     def appliquer_detection(self):
-        """Relance la dÃ©tection des points aberrants sur la trace
-        chargÃ©e avec le seuil courant (km/h), et met Ã  jour : marqueurs
+        """Relance la dÃÂ©tection des points aberrants sur la trace
+        chargÃÂ©e avec le seuil courant (km/h), et met ÃÂ  jour : marqueurs
         rouges sur la carte, marqueurs sur le graphique, rapport dans
-        l'info de fichier. Sans effet si aucune trace n'est chargÃ©e."""
+        l'info de fichier. Sans effet si aucune trace n'est chargÃÂ©e."""
         points = self.points_courants
         if not points:
             return
 
-        # Seuil : la saisie en cours, sinon 10 km/h par dÃ©faut.
+        # Seuil : la saisie en cours, sinon 10 km/h par dÃÂ©faut.
         try:
             seuil = float(self.seuil_text.replace(",", "."))
         except (ValueError, AttributeError):
@@ -7210,10 +7325,10 @@ class NettoyageScreen(Screen):
 
         for idx in indices_dur:
             self._poser_marqueur_aberrant(points, idx)
-        # La remontÃ©e doit suivre la re-pose des disques (le Â« Supprimer Â»
+        # La remontÃÂ©e doit suivre la re-pose des disques (le ÃÂ« Supprimer ÃÂ»
         # redessine la carte via _afficher_trace_sur_carte PUIS repose
         # les marqueurs ici : sans ce rappel, ils repassaient sous la
-        # trace aprÃ¨s une suppression).
+        # trace aprÃÂ¨s une suppression).
         self._remonte_calque_marqueurs()
         distances_km = self.profil[0]
         marqueurs_dur = [(distances_km[idx], (0.80, 0.10, 0.10, 1))
@@ -7221,20 +7336,20 @@ class NettoyageScreen(Screen):
         self.graphe.set_marqueurs(marqueurs_dur)
 
         # --- Compteur des points aberrants (remplace l'ancienne liste
-        # de numÃ©ros) : Â« Points aberrants (N) : Â».
+        # de numÃÂ©ros) : ÃÂ« Points aberrants (N) : ÃÂ».
         self.compteur_aberrants_text = f"Points aberrants ({len(indices_dur)}) :"
         self.aberrants_present = bool(indices_dur)
-        # Une nouvelle dÃ©tection sur la trace COURANTE (dÃ©jÃ  nettoyÃ©e ou
+        # Une nouvelle dÃÂ©tection sur la trace COURANTE (dÃÂ©jÃÂ  nettoyÃÂ©e ou
         # non) ne change pas le drapeau trace_nettoyee : il ne devient
-        # vrai qu'aprÃ¨s un Â« Supprimer Â» effectif.
+        # vrai qu'aprÃÂ¨s un ÃÂ« Supprimer ÃÂ» effectif.
         self._indices_aberrants = list(indices_dur)
 
     def supprimer_aberrants(self):
-        """Supprime TOTALEMENT de la trace chargÃ©e les points aberrants
-        affichÃ©s (ceux de la derniÃ¨re dÃ©tection) : la trace affichÃ©e,
+        """Supprime TOTALEMENT de la trace chargÃÂ©e les points aberrants
+        affichÃÂ©s (ceux de la derniÃÂ¨re dÃÂ©tection) : la trace affichÃÂ©e,
         le graphique, la carte et les marqueurs sont refaits sans eux.
-        Ne touche Ã  aucun fichier â l'Ã©criture passe par
-        Â« Enregistrer la trace nettoyÃ©e Â». Confirmation par popup."""
+        Ne touche ÃÂ  aucun fichier Ã¢ÂÂ l'ÃÂ©criture passe par
+        ÃÂ« Enregistrer la trace nettoyÃÂ©e ÃÂ». Confirmation par popup."""
         points = self.points_courants
         indices = getattr(self, "_indices_aberrants", [])
         if not points or not indices:
@@ -7242,9 +7357,9 @@ class NettoyageScreen(Screen):
         a_suppr = set(indices)
 
         contenu = _construire_confirmation_oui_non_annuler(
-            (f"Supprimer dÃ©finitivement {len(a_suppr)} point(s) aberrant(s) "
-             f"de la trace affichÃ©e ?\n(le fichier source n'est pas modifiÃ© ; "
-             f"utilisez Â« Enregistrer Â» ensuite pour Ã©crire la trace nettoyÃ©e)"),
+            (f"Supprimer dÃÂ©finitivement {len(a_suppr)} point(s) aberrant(s) "
+             f"de la trace affichÃÂ©e ?\n(le fichier source n'est pas modifiÃÂ© ; "
+             f"utilisez ÃÂ« Enregistrer ÃÂ» ensuite pour ÃÂ©crire la trace nettoyÃÂ©e)"),
             self._reponse_suppression_aberrants,
         )
         self._popup_suppression = Popup(title="Supprimer les points aberrants",
@@ -7265,10 +7380,10 @@ class NettoyageScreen(Screen):
         self.points_courants = [p for i, p in enumerate(points) if i not in a_suppr]
         self.trace_nettoyee = True
 
-        # RafraÃ®chit tout l'affichage avec la trace nettoyÃ©e, puis
-        # relance la dÃ©tection au seuil courant (de nouveaux points
-        # peuvent devenir aberrants une fois les pics retirÃ©s : les
-        # segments fusionnÃ©s redeviennent mesurables).
+        # RafraÃÂ®chit tout l'affichage avec la trace nettoyÃÂ©e, puis
+        # relance la dÃÂ©tection au seuil courant (de nouveaux points
+        # peuvent devenir aberrants une fois les pics retirÃÂ©s : les
+        # segments fusionnÃÂ©s redeviennent mesurables).
         points_nettoyes = self.points_courants
         self.profil = gps_logic.calculer_profil(points_nettoyes)
         self.graphe.set_donnees(*self.profil)
@@ -7285,10 +7400,10 @@ class NettoyageScreen(Screen):
         self.appliquer_detection()
 
     def enregistrer_trace_nettoyee(self):
-        """Ãcrit la trace nettoyÃ©e dans un nouveau fichier GPX nommÃ©
-        <nom_source>_vit<seuil>.gpx dans le mÃªme dossier que le fichier
+        """ÃÂcrit la trace nettoyÃÂ©e dans un nouveau fichier GPX nommÃÂ©
+        <nom_source>_vit<seuil>.gpx dans le mÃÂªme dossier que le fichier
         source (ex: rando.gpx + seuil 10 -> rando_vit10.gpx).
-        Enregistrement validÃ© par popup Oui/Non/Annuler."""
+        Enregistrement validÃÂ© par popup Oui/Non/Annuler."""
         if not self.points_courants or not self.fichier_source:
             return
         try:
@@ -7297,17 +7412,17 @@ class NettoyageScreen(Screen):
             seuil = 10.0
 
         base = os.path.splitext(os.path.basename(self.fichier_source))[0]
-        # Seuil sans dÃ©cimale inutile (10.0 -> "10", 7.5 -> "7.5").
+        # Seuil sans dÃÂ©cimale inutile (10.0 -> "10", 7.5 -> "7.5").
         seuil_txt = f"{seuil:g}"
         nom_sortie = f"{base}_vit{seuil_txt}.gpx"
         dossier = os.path.dirname(self.fichier_source) or DOSSIER_SORTIE
 
         contenu = _construire_confirmation_oui_non_annuler(
-            (f"Enregistrer la trace nettoyÃ©e ({len(self.points_courants)} points) "
+            (f"Enregistrer la trace nettoyÃÂ©e ({len(self.points_courants)} points) "
              f"dans le fichier :\n{nom_sortie} ?"),
             self._reponse_enregistrement_nettoyage,
         )
-        self._popup_enregistrement = Popup(title="Enregistrer la trace nettoyÃ©e",
+        self._popup_enregistrement = Popup(title="Enregistrer la trace nettoyÃÂ©e",
                                            content=contenu, size_hint=(0.9, 0.45))
         self._popup_enregistrement.open()
 
@@ -7327,9 +7442,9 @@ class NettoyageScreen(Screen):
             os.makedirs(dossier, exist_ok=True)
             chemin_sortie = os.path.join(dossier, f"{base}_vit{seuil_txt}.gpx")
 
-            # Waypoints du fichier source, conservÃ©s tels quels (les
-            # points aberrants supprimÃ©s sont des <trkpt>, jamais des
-            # waypoints ; on conserve donc l'intÃ©gralitÃ© des <wpt>).
+            # Waypoints du fichier source, conservÃÂ©s tels quels (les
+            # points aberrants supprimÃÂ©s sont des <trkpt>, jamais des
+            # waypoints ; on conserve donc l'intÃÂ©gralitÃÂ© des <wpt>).
             try:
                 waypoints = gps_logic.lire_waypoints_source(
                     self.fichier_source, heure_locale=False)
@@ -7342,16 +7457,16 @@ class NettoyageScreen(Screen):
             self.info_fichier = (
                 f"Trace : {os.path.basename(self.fichier_source)}\n"
                 f"{len(self.points_courants)} points; {len(waypoints)} waypoints.\n"
-                f"Trace nettoyÃ©e enregistrÃ©e : {os.path.basename(chemin_sortie)}"
+                f"Trace nettoyÃÂ©e enregistrÃÂ©e : {os.path.basename(chemin_sortie)}"
             )
         except Exception as e:
-            self.info_fichier = f"Erreur Ã  l'enregistrement : {e}"
+            self.info_fichier = f"Erreur ÃÂ  l'enregistrement : {e}"
 
     def _sur_clic_graphique(self, distance_km):
-        """AppelÃ© au tap sur l'UN OU L'AUTRE graphique : sÃ©lectionne le
-        point de distance cumulÃ©e la plus proche et synchronise le
-        curseur partout â marqueur sur la carte (comme l'onglet
-        Carte/DÃ©coupe), ligne pointillÃ©e des DEUX graphiques."""
+        """AppelÃÂ© au tap sur l'UN OU L'AUTRE graphique : sÃÂ©lectionne le
+        point de distance cumulÃÂ©e la plus proche et synchronise le
+        curseur partout Ã¢ÂÂ marqueur sur la carte (comme l'onglet
+        Carte/DÃÂ©coupe), ligne pointillÃÂ©e des DEUX graphiques."""
         distances_km = self.profil[0]
         if not distances_km:
             return
@@ -7360,8 +7475,8 @@ class NettoyageScreen(Screen):
         dist = distances_km[idx]
 
         # 1. Curseur sur la carte : petit disque ROSE sans fond blanc
-        # (MarqueurDisqueRouge : texture du MapMarker neutralisÃ©e,
-        # disque dessinÃ©).
+        # (MarqueurDisqueRouge : texture du MapMarker neutralisÃÂ©e,
+        # disque dessinÃÂ©).
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.marqueur_curseur is not None:
                 self.map_view.remove_marker(self.marqueur_curseur)
@@ -7374,11 +7489,11 @@ class NettoyageScreen(Screen):
             self.map_view.add_marker(self.marqueur_curseur)
             self.map_view.center_on(p['lat'], p['lon'])
 
-        # 2. Ligne de sÃ©lection sur le graphique.
+        # 2. Ligne de sÃÂ©lection sur le graphique.
         self.graphe.set_selection(dist)
 
-        # 3. Bloc Â« Informations du point sÃ©lectionnÃ© Â» (mÃªme gabarit
-        # que l'onglet Carte/DÃ©coupe).
+        # 3. Bloc ÃÂ« Informations du point sÃÂ©lectionnÃÂ© ÃÂ» (mÃÂªme gabarit
+        # que l'onglet Carte/DÃÂ©coupe).
         _, _, _, vitesses_kmh = self.profil
         vit = vitesses_kmh[idx] if idx < len(vitesses_kmh) else 0.0
         heure = p['time'].strftime("%H:%M:%S") if p.get('time') else "-"
@@ -7393,37 +7508,37 @@ class NettoyageScreen(Screen):
 
     def _poser_marqueur_aberrant(self, points, idx):
         """Pose sur la carte le petit disque ROUGE d'un point aberrant
-        (MarqueurDisqueRouge : canvas du MapMarker effacÃ©, donc ni
-        carrÃ© blanc ni texture, disque dessinÃ© Ã  la place, demi-taille
-        gÃ©rÃ©e par la classe elle-mÃªme)."""
+        (MarqueurDisqueRouge : canvas du MapMarker effacÃÂ©, donc ni
+        carrÃÂ© blanc ni texture, disque dessinÃÂ© ÃÂ  la place, demi-taille
+        gÃÂ©rÃÂ©e par la classe elle-mÃÂªme)."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         p = points[idx]
         mw = MarqueurDisqueRouge(
             zoom=self.map_view.zoom, lat=p['lat'], lon=p['lon'],
         )
-        mw.nom = f"Point aberrant nÂ°{idx + 1}"
+        mw.nom = f"Point aberrant nÃÂ°{idx + 1}"
         mw.description = (f"Vitesse aberrante au point {idx + 1} "
-                          f"(au-dessus du seuil choisi) : fix GPS dÃ©gradÃ© probable.")
+                          f"(au-dessus du seuil choisi) : fix GPS dÃÂ©gradÃÂ© probable.")
         self.map_view.add_marker(mw)
         self.marqueurs_nettoyage.append(mw)
 
     def _remonte_calque_marqueurs(self):
         """Remonte le calque des marqueurs AU-DESSUS du calque de trace.
         Au CHARGEMENT d'une trace, l'ordre est correct NATURELLEMENT : le
-        calque de marqueurs n'existe pas encore quand la trace est posÃ©e
-        (mapview ne le crÃ©e qu'au premier add_marker). Mais dÃ¨s que la
-        carte est REDRESSÃE avec des marqueurs dÃ©jÃ  posÃ©s (bouton
-        Â« Supprimer Â» : remove_layer puis add_layer de la trace alors que
+        calque de marqueurs n'existe pas encore quand la trace est posÃÂ©e
+        (mapview ne le crÃÂ©e qu'au premier add_marker). Mais dÃÂ¨s que la
+        carte est REDRESSÃÂE avec des marqueurs dÃÂ©jÃÂ  posÃÂ©s (bouton
+        ÃÂ« Supprimer ÃÂ» : remove_layer puis add_layer de la trace alors que
         le calque de marqueurs existe), la trace repasse au-dessus.
         Solution : retirer puis re-poser le calque de marqueurs via
-        l'API PUBLIQUE de MapView (remove_layer/add_layer â la mÃªme qui
+        l'API PUBLIQUE de MapView (remove_layer/add_layer Ã¢ÂÂ la mÃÂªme qui
         fonctionne pour la trace), ce qui le renvoie en fin de pile,
-        au-dessus de tout. Ã appeler aprÃ¨s TOUTE pose de marqueurs
-        suivant un add_layer (chargement, dÃ©tection, suppression)."""
+        au-dessus de tout. ÃÂ appeler aprÃÂ¨s TOUTE pose de marqueurs
+        suivant un add_layer (chargement, dÃÂ©tection, suppression)."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
-        # RÃ©fÃ©rence au calque de marqueurs : attribut interne de mapview,
+        # RÃÂ©fÃÂ©rence au calque de marqueurs : attribut interne de mapview,
         # sinon recherche dans la liste publique des calques.
         couche = getattr(self.map_view, "_marker_layer", None)
         if couche is None:
@@ -7440,8 +7555,8 @@ class NettoyageScreen(Screen):
             pass
 
     def _afficher_trace_sur_carte(self, points, waypoints=None):
-        """Trace + marqueurs D/A + waypoints + cadrage automatique â
-        mÃªme logique que CarteScreen._afficher_trace_sur_carte."""
+        """Trace + marqueurs D/A + waypoints + cadrage automatique Ã¢ÂÂ
+        mÃÂªme logique que CarteScreen._afficher_trace_sur_carte."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
 
@@ -7468,13 +7583,13 @@ class NettoyageScreen(Screen):
         self.trace_layer = TraceLayer()
         self.trace_layer.set_points(liste_coords)
         # Dans mapview, les marqueurs vivent dans un calque de marqueurs
-        # DISTINCT du calque de trace : tout calque ajoutÃ© aprÃ¨s recouvre
+        # DISTINCT du calque de trace : tout calque ajoutÃÂ© aprÃÂ¨s recouvre
         # TOUS les marqueurs, peu importe leur ordre de pose. Pour que
-        # les disques rouges (points aberrants, curseur de sÃ©lection)
-        # passent PAR-DESSUS la trace â demande explicite de l'onglet
-        # Nettoyage â on inverse ici l'ordre des autres onglets : le
-        # calque de trace est posÃ© EN PREMIER, avant tous les marqueurs.
-        # ConsÃ©quence acceptÃ©e : les curseurs de waypoints passent aussi
+        # les disques rouges (points aberrants, curseur de sÃÂ©lection)
+        # passent PAR-DESSUS la trace Ã¢ÂÂ demande explicite de l'onglet
+        # Nettoyage Ã¢ÂÂ on inverse ici l'ordre des autres onglets : le
+        # calque de trace est posÃÂ© EN PREMIER, avant tous les marqueurs.
+        # ConsÃÂ©quence acceptÃÂ©e : les curseurs de waypoints passent aussi
         # au-dessus de la trace (au lieu de dessous comme ailleurs).
         self.map_view.add_layer(self.trace_layer)
 
@@ -7482,8 +7597,8 @@ class NettoyageScreen(Screen):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
                 continue
-            # Â« Point de passage 1/2 Â» : ce sont le dÃ©part et l'arrivÃ©e,
-            # traitÃ©s Ã  part (triangles) juste aprÃ¨s la boucle â pas
+            # ÃÂ« Point de passage 1/2 ÃÂ» : ce sont le dÃÂ©part et l'arrivÃÂ©e,
+            # traitÃÂ©s ÃÂ  part (triangles) juste aprÃÂ¨s la boucle Ã¢ÂÂ pas
             # de disque jaune pour eux.
             nom_w = (wpt.get('name') or '').strip()
             if nom_w in ("Point de passage 1", "Point de passage 2"):
@@ -7495,8 +7610,8 @@ class NettoyageScreen(Screen):
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
 
-        # Triangles dÃ©part/arrivÃ©e pour Â« Point de passage 1/2 Â»
-        # (vert / rouge, orange unique si boucle fermÃ©e â¤ 20 m).
+        # Triangles dÃÂ©part/arrivÃÂ©e pour ÃÂ« Point de passage 1/2 ÃÂ»
+        # (vert / rouge, orange unique si boucle fermÃÂ©e Ã¢ÂÂ¤ 20 m).
         _poser_triangles_points_passage(self, waypoints)
 
         dist_dep_arr = gps_logic.calculer_distance_haversine(
@@ -7513,14 +7628,14 @@ class NettoyageScreen(Screen):
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
-        # REMONTÃE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE :
+        # REMONTÃÂE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE :
         # dans cette version de mapview, le calque des marqueurs est
-        # crÃ©Ã© dÃ¨s l'initialisation du MapView â donc TOUJOURS posÃ©
+        # crÃÂ©ÃÂ© dÃÂ¨s l'initialisation du MapView Ã¢ÂÂ donc TOUJOURS posÃÂ©
         # avant notre calque de trace, quel que soit l'ordre des
         # add_layer/add_marker. Les marqueurs (dont les disques
         # rouges) restaient ainsi sous la trace. On le remonte donc
         # explicitement en fin de pile du Scatter interne de la carte
-        # (et on le refait aprÃ¨s TOUTE pose ultÃ©rieure de marqueurs,
+        # (et on le refait aprÃÂ¨s TOUTE pose ultÃÂ©rieure de marqueurs,
         # voir _remonte_calque_marqueurs).
         self._remonte_calque_marqueurs()
 
@@ -7538,8 +7653,8 @@ class NettoyageScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         """Suit le zoom de la carte : les curseurs de waypoints gardent
         leur taille habituelle ; les disques rouges des points
-        aberrants gÃ¨rent eux-mÃªmes leur demi-taille (MarqueurDisqueRouge
-        .maj_taille : ne PAS rediviser ici, elle serait doublÃ©e)."""
+        aberrants gÃÂ¨rent eux-mÃÂªmes leur demi-taille (MarqueurDisqueRouge
+        .maj_taille : ne PAS rediviser ici, elle serait doublÃÂ©e)."""
         for mw in self.marqueurs_waypoints:
             try:
                 mw.maj_taille(zoom)
@@ -7547,7 +7662,7 @@ class NettoyageScreen(Screen):
                 pass
 
         # Le curseur mobile (disque rose) suit aussi le zoom depuis
-        # qu'il est passÃ© sur la mÃªme formule de taille que les
+        # qu'il est passÃÂ© sur la mÃÂªme formule de taille que les
         # disques jaunes/rouges (plus de cote_dp fixe).
         if getattr(self, "marqueur_curseur", None) is not None:
             try:
@@ -7562,36 +7677,36 @@ class NettoyageScreen(Screen):
                 pass
 
 
-    """Onglet Nettoyage : charge une trace GPX horodatÃ©e, l'affiche sur
+    """Onglet Nettoyage : charge une trace GPX horodatÃÂ©e, l'affiche sur
     la carte et sur le graphique d'altitude (comme les autres onglets),
-    et y marque les points aberrants dÃ©tectÃ©s par
+    et y marque les points aberrants dÃÂ©tectÃÂ©s par
     gps_logic.detecter_points_aberrants avec le SEUIL (km/h) saisi par
-    l'utilisateur : tout point extrÃ©mitÃ© d'un segment plus rapide que
-    le seuil est aberrant (rÃ¨gle randonnÃ©e : > 5 km/h suspect, 10 km/h
-    par dÃ©faut). Les marqueurs reprennent le curseur rond des
+    l'utilisateur : tout point extrÃÂ©mitÃÂ© d'un segment plus rapide que
+    le seuil est aberrant (rÃÂ¨gle randonnÃÂ©e : > 5 km/h suspect, 10 km/h
+    par dÃÂ©faut). Les marqueurs reprennent le curseur rond des
     annotations/waypoints (MarqueurWaypoint), en DEUX FOIS PLUS PETIT.
     Lecture uniquement : cet onglet ne supprime rien (le nettoyage
-    efficace se fait ensuite dans l'onglet NumÃ©rotation, qui sait
+    efficace se fait ensuite dans l'onglet NumÃÂ©rotation, qui sait
     supprimer des points par indices)."""
 
     fichier_source = StringProperty("")
-    info_fichier = StringProperty("Aucune trace chargÃ©e.")
-    # Seuil de dÃ©tection (km/h) saisi par l'utilisateur : tout point
-    # extrÃ©mitÃ© d'un segment plus rapide que ce seuil est aberrant.
+    info_fichier = StringProperty("Aucune trace chargÃÂ©e.")
+    # Seuil de dÃÂ©tection (km/h) saisi par l'utilisateur : tout point
+    # extrÃÂ©mitÃÂ© d'un segment plus rapide que ce seuil est aberrant.
     seuil_text = StringProperty("10")
-    # Compteur des points aberrants affichÃ© dans le titre Â« Points
-    # aberrants (N) : Â» (Ã  la place de l'ancienne liste de numÃ©ros).
+    # Compteur des points aberrants affichÃÂ© dans le titre ÃÂ« Points
+    # aberrants (N) : ÃÂ» (ÃÂ  la place de l'ancienne liste de numÃÂ©ros).
     compteur_aberrants_text = StringProperty("Points aberrants (0) :")
-    # Vrai dÃ¨s qu'une trace est chargÃ©e : le graphique, le bloc compteur
-    # et le bouton Enregistrer n'apparaissent qu'Ã  partir de lÃ  (ils
-    # sont masquÃ©s via trace_chargee dans le KV).
+    # Vrai dÃÂ¨s qu'une trace est chargÃÂ©e : le graphique, le bloc compteur
+    # et le bouton Enregistrer n'apparaissent qu'ÃÂ  partir de lÃÂ  (ils
+    # sont masquÃÂ©s via trace_chargee dans le KV).
     trace_chargee = BooleanProperty(False)
-    # Vrai si des points aberrants sont affichÃ©s (active Â« Supprimer Â»).
+    # Vrai si des points aberrants sont affichÃÂ©s (active ÃÂ« Supprimer ÃÂ»).
     aberrants_present = BooleanProperty(False)
-    # Vrai si la trace a Ã©tÃ© nettoyÃ©e (active Â« Enregistrer Â»).
+    # Vrai si la trace a ÃÂ©tÃÂ© nettoyÃÂ©e (active ÃÂ« Enregistrer ÃÂ»).
     trace_nettoyee = BooleanProperty(False)
-    # Bloc Â« Informations du point sÃ©lectionnÃ© Â» (mÃªme gabarit que
-    # l'onglet Carte/DÃ©coupe : grille 3 lignes x 2 colonnes).
+    # Bloc ÃÂ« Informations du point sÃÂ©lectionnÃÂ© ÃÂ» (mÃÂªme gabarit que
+    # l'onglet Carte/DÃÂ©coupe : grille 3 lignes x 2 colonnes).
     info_point_text = StringProperty("")
     info_point_num = StringProperty("")
     info_point_gps = StringProperty("")
@@ -7601,7 +7716,7 @@ class NettoyageScreen(Screen):
     info_point_vit = StringProperty("")
 
     def dezoomer_carte(self):
-        """RÃ©duit le zoom de la carte (mÃªme garde-fou que CarteScreen)."""
+        """RÃÂ©duit le zoom de la carte (mÃÂªme garde-fou que CarteScreen)."""
         mapview = getattr(self, "map_view", None)
         if mapview and hasattr(mapview, "zoom"):
             min_z = getattr(getattr(mapview, "map_source", None), "min_zoom", 0)
@@ -7610,7 +7725,7 @@ class NettoyageScreen(Screen):
                 mapview.center_on(mapview.lat, mapview.lon)
 
     def zoomer_carte(self):
-        """Augmente le zoom de la carte (mÃªme garde-fou que CarteScreen)."""
+        """Augmente le zoom de la carte (mÃÂªme garde-fou que CarteScreen)."""
         mapview = getattr(self, "map_view", None)
         if mapview and hasattr(mapview, "zoom"):
             max_z = getattr(getattr(mapview, "map_source", None), "max_zoom", 19)
@@ -7625,7 +7740,7 @@ class NettoyageScreen(Screen):
         self.marqueurs_actifs = []        # D / A
         self.marqueurs_waypoints = []     # curseurs bleus des waypoints
         self.marqueurs_nettoyage = []     # curseurs rouges (2x plus petits) des points aberrants DURS
-        self.marqueur_curseur = None      # curseur de sÃ©lection (tap graphique), comme l'onglet Carte
+        self.marqueur_curseur = None      # curseur de sÃÂ©lection (tap graphique), comme l'onglet Carte
         self.trace_layer = None
         self.map_view = None
 
@@ -7645,7 +7760,7 @@ class NettoyageScreen(Screen):
                 color=(0.6, 0.1, 0.1, 1), halign="center"))
 
     def changer_vue_carte(self, valeur):
-        """Change le fond de carte (satellite ou plan) â mÃªme logique
+        """Change le fond de carte (satellite ou plan) Ã¢ÂÂ mÃÂªme logique
         que CarteScreen.changer_vue_carte."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
@@ -7653,8 +7768,8 @@ class NettoyageScreen(Screen):
         self.map_view.trigger_update(True)
 
     def ouvrir_menu_fonds(self, bouton):
-        """Ouvre le menu dÃ©roulant des fonds de carte sous le bouton
-        Layer â mÃªme logique que CarteScreen.ouvrir_menu_fonds."""
+        """Ouvre le menu dÃÂ©roulant des fonds de carte sous le bouton
+        Layer Ã¢ÂÂ mÃÂªme logique que CarteScreen.ouvrir_menu_fonds."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         menu = _construire_menu_fonds_carte(self)
@@ -7679,7 +7794,7 @@ class NettoyageScreen(Screen):
             return
 
         if not points:
-            self.info_fichier = "Aucun point GPS trouvÃ© dans ce fichier."
+            self.info_fichier = "Aucun point GPS trouvÃÂ© dans ce fichier."
             return
 
         try:
@@ -7707,24 +7822,24 @@ class NettoyageScreen(Screen):
         self.graphe.set_donnees(*self.profil)
         self._afficher_trace_sur_carte(points, waypoints=waypoints)
 
-        # --- DÃ©tection avec le seuil courant de l'utilisateur.
+        # --- DÃÂ©tection avec le seuil courant de l'utilisateur.
         self.appliquer_detection()
 
     def changer_seuil(self, texte):
-        """AppelÃ© Ã  chaque frappe dans la zone de saisie du seuil :
-        mÃ©morise le texte (le retour KV affiche root.seuil_text)."""
+        """AppelÃÂ© ÃÂ  chaque frappe dans la zone de saisie du seuil :
+        mÃÂ©morise le texte (le retour KV affiche root.seuil_text)."""
         self.seuil_text = texte
 
     def appliquer_detection(self):
-        """Relance la dÃ©tection des points aberrants sur la trace
-        chargÃ©e avec le seuil courant (km/h), et met Ã  jour : marqueurs
+        """Relance la dÃÂ©tection des points aberrants sur la trace
+        chargÃÂ©e avec le seuil courant (km/h), et met ÃÂ  jour : marqueurs
         rouges sur la carte, marqueurs sur le graphique, rapport dans
-        l'info de fichier. Sans effet si aucune trace n'est chargÃ©e."""
+        l'info de fichier. Sans effet si aucune trace n'est chargÃÂ©e."""
         points = self.points_courants
         if not points:
             return
 
-        # Seuil : la saisie en cours, sinon 10 km/h par dÃ©faut.
+        # Seuil : la saisie en cours, sinon 10 km/h par dÃÂ©faut.
         try:
             seuil = float(self.seuil_text.replace(",", "."))
         except (ValueError, AttributeError):
@@ -7758,10 +7873,10 @@ class NettoyageScreen(Screen):
 
         for idx in indices_dur:
             self._poser_marqueur_aberrant(points, idx)
-        # La remontÃ©e doit suivre la re-pose des disques (le Â« Supprimer Â»
+        # La remontÃÂ©e doit suivre la re-pose des disques (le ÃÂ« Supprimer ÃÂ»
         # redessine la carte via _afficher_trace_sur_carte PUIS repose
         # les marqueurs ici : sans ce rappel, ils repassaient sous la
-        # trace aprÃ¨s une suppression).
+        # trace aprÃÂ¨s une suppression).
         self._remonte_calque_marqueurs()
         distances_km = self.profil[0]
         marqueurs_dur = [(distances_km[idx], (0.80, 0.10, 0.10, 1))
@@ -7769,20 +7884,20 @@ class NettoyageScreen(Screen):
         self.graphe.set_marqueurs(marqueurs_dur)
 
         # --- Compteur des points aberrants (remplace l'ancienne liste
-        # de numÃ©ros) : Â« Points aberrants (N) : Â».
+        # de numÃÂ©ros) : ÃÂ« Points aberrants (N) : ÃÂ».
         self.compteur_aberrants_text = f"Points aberrants ({len(indices_dur)}) :"
         self.aberrants_present = bool(indices_dur)
-        # Une nouvelle dÃ©tection sur la trace COURANTE (dÃ©jÃ  nettoyÃ©e ou
+        # Une nouvelle dÃÂ©tection sur la trace COURANTE (dÃÂ©jÃÂ  nettoyÃÂ©e ou
         # non) ne change pas le drapeau trace_nettoyee : il ne devient
-        # vrai qu'aprÃ¨s un Â« Supprimer Â» effectif.
+        # vrai qu'aprÃÂ¨s un ÃÂ« Supprimer ÃÂ» effectif.
         self._indices_aberrants = list(indices_dur)
 
     def supprimer_aberrants(self):
-        """Supprime TOTALEMENT de la trace chargÃ©e les points aberrants
-        affichÃ©s (ceux de la derniÃ¨re dÃ©tection) : la trace affichÃ©e,
+        """Supprime TOTALEMENT de la trace chargÃÂ©e les points aberrants
+        affichÃÂ©s (ceux de la derniÃÂ¨re dÃÂ©tection) : la trace affichÃÂ©e,
         le graphique, la carte et les marqueurs sont refaits sans eux.
-        Ne touche Ã  aucun fichier â l'Ã©criture passe par
-        Â« Enregistrer la trace nettoyÃ©e Â». Confirmation par popup."""
+        Ne touche ÃÂ  aucun fichier Ã¢ÂÂ l'ÃÂ©criture passe par
+        ÃÂ« Enregistrer la trace nettoyÃÂ©e ÃÂ». Confirmation par popup."""
         points = self.points_courants
         indices = getattr(self, "_indices_aberrants", [])
         if not points or not indices:
@@ -7790,9 +7905,9 @@ class NettoyageScreen(Screen):
         a_suppr = set(indices)
 
         contenu = _construire_confirmation_oui_non_annuler(
-            (f"Supprimer dÃ©finitivement {len(a_suppr)} point(s) aberrant(s) "
-             f"de la trace affichÃ©e ?\n(le fichier source n'est pas modifiÃ© ; "
-             f"utilisez Â« Enregistrer Â» ensuite pour Ã©crire la trace nettoyÃ©e)"),
+            (f"Supprimer dÃÂ©finitivement {len(a_suppr)} point(s) aberrant(s) "
+             f"de la trace affichÃÂ©e ?\n(le fichier source n'est pas modifiÃÂ© ; "
+             f"utilisez ÃÂ« Enregistrer ÃÂ» ensuite pour ÃÂ©crire la trace nettoyÃÂ©e)"),
             self._reponse_suppression_aberrants,
         )
         self._popup_suppression = Popup(title="Supprimer les points aberrants",
@@ -7813,10 +7928,10 @@ class NettoyageScreen(Screen):
         self.points_courants = [p for i, p in enumerate(points) if i not in a_suppr]
         self.trace_nettoyee = True
 
-        # RafraÃ®chit tout l'affichage avec la trace nettoyÃ©e, puis
-        # relance la dÃ©tection au seuil courant (de nouveaux points
-        # peuvent devenir aberrants une fois les pics retirÃ©s : les
-        # segments fusionnÃ©s redeviennent mesurables).
+        # RafraÃÂ®chit tout l'affichage avec la trace nettoyÃÂ©e, puis
+        # relance la dÃÂ©tection au seuil courant (de nouveaux points
+        # peuvent devenir aberrants une fois les pics retirÃÂ©s : les
+        # segments fusionnÃÂ©s redeviennent mesurables).
         points_nettoyes = self.points_courants
         self.profil = gps_logic.calculer_profil(points_nettoyes)
         self.graphe.set_donnees(*self.profil)
@@ -7833,10 +7948,10 @@ class NettoyageScreen(Screen):
         self.appliquer_detection()
 
     def enregistrer_trace_nettoyee(self):
-        """Ãcrit la trace nettoyÃ©e dans un nouveau fichier GPX nommÃ©
-        <nom_source>_vit<seuil>.gpx dans le mÃªme dossier que le fichier
+        """ÃÂcrit la trace nettoyÃÂ©e dans un nouveau fichier GPX nommÃÂ©
+        <nom_source>_vit<seuil>.gpx dans le mÃÂªme dossier que le fichier
         source (ex: rando.gpx + seuil 10 -> rando_vit10.gpx).
-        Enregistrement validÃ© par popup Oui/Non/Annuler."""
+        Enregistrement validÃÂ© par popup Oui/Non/Annuler."""
         if not self.points_courants or not self.fichier_source:
             return
         try:
@@ -7845,17 +7960,17 @@ class NettoyageScreen(Screen):
             seuil = 10.0
 
         base = os.path.splitext(os.path.basename(self.fichier_source))[0]
-        # Seuil sans dÃ©cimale inutile (10.0 -> "10", 7.5 -> "7.5").
+        # Seuil sans dÃÂ©cimale inutile (10.0 -> "10", 7.5 -> "7.5").
         seuil_txt = f"{seuil:g}"
         nom_sortie = f"{base}_vit{seuil_txt}.gpx"
         dossier = os.path.dirname(self.fichier_source) or DOSSIER_SORTIE
 
         contenu = _construire_confirmation_oui_non_annuler(
-            (f"Enregistrer la trace nettoyÃ©e ({len(self.points_courants)} points) "
+            (f"Enregistrer la trace nettoyÃÂ©e ({len(self.points_courants)} points) "
              f"dans le fichier :\n{nom_sortie} ?"),
             self._reponse_enregistrement_nettoyage,
         )
-        self._popup_enregistrement = Popup(title="Enregistrer la trace nettoyÃ©e",
+        self._popup_enregistrement = Popup(title="Enregistrer la trace nettoyÃÂ©e",
                                            content=contenu, size_hint=(0.9, 0.45))
         self._popup_enregistrement.open()
 
@@ -7875,9 +7990,9 @@ class NettoyageScreen(Screen):
             os.makedirs(dossier, exist_ok=True)
             chemin_sortie = os.path.join(dossier, f"{base}_vit{seuil_txt}.gpx")
 
-            # Waypoints du fichier source, conservÃ©s tels quels (les
-            # points aberrants supprimÃ©s sont des <trkpt>, jamais des
-            # waypoints ; on conserve donc l'intÃ©gralitÃ© des <wpt>).
+            # Waypoints du fichier source, conservÃÂ©s tels quels (les
+            # points aberrants supprimÃÂ©s sont des <trkpt>, jamais des
+            # waypoints ; on conserve donc l'intÃÂ©gralitÃÂ© des <wpt>).
             try:
                 waypoints = gps_logic.lire_waypoints_source(
                     self.fichier_source, heure_locale=False)
@@ -7890,16 +8005,16 @@ class NettoyageScreen(Screen):
             self.info_fichier = (
                 f"Trace : {os.path.basename(self.fichier_source)}\n"
                 f"{len(self.points_courants)} points; {len(waypoints)} waypoints.\n"
-                f"Trace nettoyÃ©e enregistrÃ©e : {os.path.basename(chemin_sortie)}"
+                f"Trace nettoyÃÂ©e enregistrÃÂ©e : {os.path.basename(chemin_sortie)}"
             )
         except Exception as e:
-            self.info_fichier = f"Erreur Ã  l'enregistrement : {e}"
+            self.info_fichier = f"Erreur ÃÂ  l'enregistrement : {e}"
 
     def _sur_clic_graphique(self, distance_km):
-        """AppelÃ© au tap sur l'UN OU L'AUTRE graphique : sÃ©lectionne le
-        point de distance cumulÃ©e la plus proche et synchronise le
-        curseur partout â marqueur sur la carte (comme l'onglet
-        Carte/DÃ©coupe), ligne pointillÃ©e des DEUX graphiques."""
+        """AppelÃÂ© au tap sur l'UN OU L'AUTRE graphique : sÃÂ©lectionne le
+        point de distance cumulÃÂ©e la plus proche et synchronise le
+        curseur partout Ã¢ÂÂ marqueur sur la carte (comme l'onglet
+        Carte/DÃÂ©coupe), ligne pointillÃÂ©e des DEUX graphiques."""
         distances_km = self.profil[0]
         if not distances_km:
             return
@@ -7908,8 +8023,8 @@ class NettoyageScreen(Screen):
         dist = distances_km[idx]
 
         # 1. Curseur sur la carte : petit disque ROSE sans fond blanc
-        # (MarqueurDisqueRouge : texture du MapMarker neutralisÃ©e,
-        # disque dessinÃ©).
+        # (MarqueurDisqueRouge : texture du MapMarker neutralisÃÂ©e,
+        # disque dessinÃÂ©).
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.marqueur_curseur is not None:
                 self.map_view.remove_marker(self.marqueur_curseur)
@@ -7922,11 +8037,11 @@ class NettoyageScreen(Screen):
             self.map_view.add_marker(self.marqueur_curseur)
             self.map_view.center_on(p['lat'], p['lon'])
 
-        # 2. Ligne de sÃ©lection sur le graphique.
+        # 2. Ligne de sÃÂ©lection sur le graphique.
         self.graphe.set_selection(dist)
 
-        # 3. Bloc Â« Informations du point sÃ©lectionnÃ© Â» (mÃªme gabarit
-        # que l'onglet Carte/DÃ©coupe).
+        # 3. Bloc ÃÂ« Informations du point sÃÂ©lectionnÃÂ© ÃÂ» (mÃÂªme gabarit
+        # que l'onglet Carte/DÃÂ©coupe).
         _, _, _, vitesses_kmh = self.profil
         vit = vitesses_kmh[idx] if idx < len(vitesses_kmh) else 0.0
         heure = p['time'].strftime("%H:%M:%S") if p.get('time') else "-"
@@ -7941,37 +8056,37 @@ class NettoyageScreen(Screen):
 
     def _poser_marqueur_aberrant(self, points, idx):
         """Pose sur la carte le petit disque ROUGE d'un point aberrant
-        (MarqueurDisqueRouge : canvas du MapMarker effacÃ©, donc ni
-        carrÃ© blanc ni texture, disque dessinÃ© Ã  la place, demi-taille
-        gÃ©rÃ©e par la classe elle-mÃªme)."""
+        (MarqueurDisqueRouge : canvas du MapMarker effacÃÂ©, donc ni
+        carrÃÂ© blanc ni texture, disque dessinÃÂ© ÃÂ  la place, demi-taille
+        gÃÂ©rÃÂ©e par la classe elle-mÃÂªme)."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         p = points[idx]
         mw = MarqueurDisqueRouge(
             zoom=self.map_view.zoom, lat=p['lat'], lon=p['lon'],
         )
-        mw.nom = f"Point aberrant nÂ°{idx + 1}"
+        mw.nom = f"Point aberrant nÃÂ°{idx + 1}"
         mw.description = (f"Vitesse aberrante au point {idx + 1} "
-                          f"(au-dessus du seuil choisi) : fix GPS dÃ©gradÃ© probable.")
+                          f"(au-dessus du seuil choisi) : fix GPS dÃÂ©gradÃÂ© probable.")
         self.map_view.add_marker(mw)
         self.marqueurs_nettoyage.append(mw)
 
     def _remonte_calque_marqueurs(self):
         """Remonte le calque des marqueurs AU-DESSUS du calque de trace.
         Au CHARGEMENT d'une trace, l'ordre est correct NATURELLEMENT : le
-        calque de marqueurs n'existe pas encore quand la trace est posÃ©e
-        (mapview ne le crÃ©e qu'au premier add_marker). Mais dÃ¨s que la
-        carte est REDRESSÃE avec des marqueurs dÃ©jÃ  posÃ©s (bouton
-        Â« Supprimer Â» : remove_layer puis add_layer de la trace alors que
+        calque de marqueurs n'existe pas encore quand la trace est posÃÂ©e
+        (mapview ne le crÃÂ©e qu'au premier add_marker). Mais dÃÂ¨s que la
+        carte est REDRESSÃÂE avec des marqueurs dÃÂ©jÃÂ  posÃÂ©s (bouton
+        ÃÂ« Supprimer ÃÂ» : remove_layer puis add_layer de la trace alors que
         le calque de marqueurs existe), la trace repasse au-dessus.
         Solution : retirer puis re-poser le calque de marqueurs via
-        l'API PUBLIQUE de MapView (remove_layer/add_layer â la mÃªme qui
+        l'API PUBLIQUE de MapView (remove_layer/add_layer Ã¢ÂÂ la mÃÂªme qui
         fonctionne pour la trace), ce qui le renvoie en fin de pile,
-        au-dessus de tout. Ã appeler aprÃ¨s TOUTE pose de marqueurs
-        suivant un add_layer (chargement, dÃ©tection, suppression)."""
+        au-dessus de tout. ÃÂ appeler aprÃÂ¨s TOUTE pose de marqueurs
+        suivant un add_layer (chargement, dÃÂ©tection, suppression)."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
-        # RÃ©fÃ©rence au calque de marqueurs : attribut interne de mapview,
+        # RÃÂ©fÃÂ©rence au calque de marqueurs : attribut interne de mapview,
         # sinon recherche dans la liste publique des calques.
         couche = getattr(self.map_view, "_marker_layer", None)
         if couche is None:
@@ -7988,8 +8103,8 @@ class NettoyageScreen(Screen):
             pass
 
     def _afficher_trace_sur_carte(self, points, waypoints=None):
-        """Trace + marqueurs D/A + waypoints + cadrage automatique â
-        mÃªme logique que CarteScreen._afficher_trace_sur_carte."""
+        """Trace + marqueurs D/A + waypoints + cadrage automatique Ã¢ÂÂ
+        mÃÂªme logique que CarteScreen._afficher_trace_sur_carte."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
 
@@ -8016,13 +8131,13 @@ class NettoyageScreen(Screen):
         self.trace_layer = TraceLayer()
         self.trace_layer.set_points(liste_coords)
         # Dans mapview, les marqueurs vivent dans un calque de marqueurs
-        # DISTINCT du calque de trace : tout calque ajoutÃ© aprÃ¨s recouvre
+        # DISTINCT du calque de trace : tout calque ajoutÃÂ© aprÃÂ¨s recouvre
         # TOUS les marqueurs, peu importe leur ordre de pose. Pour que
-        # les disques rouges (points aberrants, curseur de sÃ©lection)
-        # passent PAR-DESSUS la trace â demande explicite de l'onglet
-        # Nettoyage â on inverse ici l'ordre des autres onglets : le
-        # calque de trace est posÃ© EN PREMIER, avant tous les marqueurs.
-        # ConsÃ©quence acceptÃ©e : les curseurs de waypoints passent aussi
+        # les disques rouges (points aberrants, curseur de sÃÂ©lection)
+        # passent PAR-DESSUS la trace Ã¢ÂÂ demande explicite de l'onglet
+        # Nettoyage Ã¢ÂÂ on inverse ici l'ordre des autres onglets : le
+        # calque de trace est posÃÂ© EN PREMIER, avant tous les marqueurs.
+        # ConsÃÂ©quence acceptÃÂ©e : les curseurs de waypoints passent aussi
         # au-dessus de la trace (au lieu de dessous comme ailleurs).
         self.map_view.add_layer(self.trace_layer)
 
@@ -8030,8 +8145,8 @@ class NettoyageScreen(Screen):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
                 continue
-            # Â« Point de passage 1/2 Â» : ce sont le dÃ©part et l'arrivÃ©e,
-            # traitÃ©s Ã  part (triangles) juste aprÃ¨s la boucle â pas
+            # ÃÂ« Point de passage 1/2 ÃÂ» : ce sont le dÃÂ©part et l'arrivÃÂ©e,
+            # traitÃÂ©s ÃÂ  part (triangles) juste aprÃÂ¨s la boucle Ã¢ÂÂ pas
             # de disque jaune pour eux.
             nom_w = (wpt.get('name') or '').strip()
             if nom_w in ("Point de passage 1", "Point de passage 2"):
@@ -8043,8 +8158,8 @@ class NettoyageScreen(Screen):
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
 
-        # Triangles dÃ©part/arrivÃ©e pour Â« Point de passage 1/2 Â»
-        # (vert / rouge, orange unique si boucle fermÃ©e â¤ 20 m).
+        # Triangles dÃÂ©part/arrivÃÂ©e pour ÃÂ« Point de passage 1/2 ÃÂ»
+        # (vert / rouge, orange unique si boucle fermÃÂ©e Ã¢ÂÂ¤ 20 m).
         _poser_triangles_points_passage(self, waypoints)
 
         dist_dep_arr = gps_logic.calculer_distance_haversine(
@@ -8061,14 +8176,14 @@ class NettoyageScreen(Screen):
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
-        # REMONTÃE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE :
+        # REMONTÃÂE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE :
         # dans cette version de mapview, le calque des marqueurs est
-        # crÃ©Ã© dÃ¨s l'initialisation du MapView â donc TOUJOURS posÃ©
+        # crÃÂ©ÃÂ© dÃÂ¨s l'initialisation du MapView Ã¢ÂÂ donc TOUJOURS posÃÂ©
         # avant notre calque de trace, quel que soit l'ordre des
         # add_layer/add_marker. Les marqueurs (dont les disques
         # rouges) restaient ainsi sous la trace. On le remonte donc
         # explicitement en fin de pile du Scatter interne de la carte
-        # (et on le refait aprÃ¨s TOUTE pose ultÃ©rieure de marqueurs,
+        # (et on le refait aprÃÂ¨s TOUTE pose ultÃÂ©rieure de marqueurs,
         # voir _remonte_calque_marqueurs).
         self._remonte_calque_marqueurs()
 
@@ -8086,8 +8201,8 @@ class NettoyageScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         """Suit le zoom de la carte : les curseurs de waypoints gardent
         leur taille habituelle ; les disques rouges des points
-        aberrants gÃ¨rent eux-mÃªmes leur demi-taille (MarqueurDisqueRouge
-        .maj_taille : ne PAS rediviser ici, elle serait doublÃ©e)."""
+        aberrants gÃÂ¨rent eux-mÃÂªmes leur demi-taille (MarqueurDisqueRouge
+        .maj_taille : ne PAS rediviser ici, elle serait doublÃÂ©e)."""
         for mw in self.marqueurs_waypoints:
             try:
                 mw.maj_taille(zoom)
@@ -8095,7 +8210,7 @@ class NettoyageScreen(Screen):
                 pass
 
         # Le curseur mobile (disque rose) suit aussi le zoom depuis
-        # qu'il est passÃ© sur la mÃªme formule de taille que les
+        # qu'il est passÃÂ© sur la mÃÂªme formule de taille que les
         # disques jaunes/rouges (plus de cote_dp fixe).
         if getattr(self, "marqueur_curseur", None) is not None:
             try:
@@ -8111,21 +8226,21 @@ class NettoyageScreen(Screen):
 
 
 class TempScreen(Screen):
-    """Onglet Â« temp Â» : copie de travail de l'onglet Carte/DÃ©coupe,
+    """Onglet ÃÂ« temp ÃÂ» : copie de travail de l'onglet Carte/DÃÂ©coupe,
     SANS la courbe de vitesse du graphique (ni son axe ni sa
-    lÃ©gende : altitude seule) et SANS le bloc de dÃ©coupe de
-    trace (zone de saisie + bouton Â« Couper ici Â»). Le reste est
+    lÃÂ©gende : altitude seule) et SANS le bloc de dÃÂ©coupe de
+    trace (zone de saisie + bouton ÃÂ« Couper ici ÃÂ»). Le reste est
     identique : carte, graphique d'altitude, infos du point
-    sÃ©lectionnÃ©."""
+    sÃÂ©lectionnÃÂ©."""
     fichier_source = StringProperty("")
-    info_fichier = StringProperty("Aucune trace chargÃ©e.")
+    info_fichier = StringProperty("Aucune trace chargÃÂ©e.")
     trace_chargee = BooleanProperty(False)
     point_coupure_text = StringProperty("")
     status_text = StringProperty("")
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     en_cours = BooleanProperty(False)
     info_point_text = StringProperty("")
-    # Bloc "Informations du point sÃ©lectionnÃ©" (grille 3 lignes x 2
+    # Bloc "Informations du point sÃÂ©lectionnÃÂ©" (grille 3 lignes x 2
     # colonnes : Point/GPS, Distance/Altitude, Heure/Vitesse).
     info_point_num = StringProperty("")
     info_point_gps = StringProperty("")
@@ -8134,14 +8249,14 @@ class TempScreen(Screen):
     info_point_heure = StringProperty("")
     info_point_vit = StringProperty("")
 
-    # LibellÃ©s du tableau de statistiques (mÃªmes clÃ©s que l'onglet
-    # Statistiques) : 10 lignes, affichÃ©es en 2 colonnes de 5.
+    # LibellÃÂ©s du tableau de statistiques (mÃÂªmes clÃÂ©s que l'onglet
+    # Statistiques) : 10 lignes, affichÃÂ©es en 2 colonnes de 5.
     LIBELLES_STATS = [
-        ("alt_depart", "Altitude de dÃ©part :"),
+        ("alt_depart", "Altitude de dÃÂ©part :"),
         ("alt_max", "Altitude maximale :"),
         ("distance", "Distance parcourue :"),
-        ("den_pos", "DÃ©nivelÃ© positif :"),
-        ("km_effort", "KilomÃ¨tre-Effort :"),
+        ("den_pos", "DÃÂ©nivelÃÂ© positif :"),
+        ("km_effort", "KilomÃÂ¨tre-Effort :"),
         ("temps_total", "Temps total :"),
         ("temps_marche", "Temps sans pauses :"),
         ("vit_moy", "Vitesse moyenne :"),
@@ -8150,8 +8265,8 @@ class TempScreen(Screen):
     ]
 
     def dezoomer_carte(self):
-        """RÃ©duit le niveau de zoom de la carte si la carte est chargÃ©e."""
-        # 1. VÃ©rifie si self.mapview existe dÃ©jÃ 
+        """RÃÂ©duit le niveau de zoom de la carte si la carte est chargÃÂ©e."""
+        # 1. VÃÂ©rifie si self.mapview existe dÃÂ©jÃÂ 
         mapview = getattr(self, "mapview", None)
 
         # 2. Sinon, cherche l'instance de la carte directement dans l'un des enfants du container
@@ -8161,7 +8276,7 @@ class TempScreen(Screen):
                     mapview = child
                     break
 
-        # 3. Applique le dÃ©zoom si la carte est trouvÃ©e
+        # 3. Applique le dÃÂ©zoom si la carte est trouvÃÂ©e
         if mapview and hasattr(mapview, "zoom"):
             min_z = getattr(getattr(mapview, "map_source", None), "min_zoom", 0)
             if mapview.zoom > min_z:
@@ -8169,7 +8284,7 @@ class TempScreen(Screen):
                 mapview.center_on(mapview.lat, mapview.lon)
 
     def zoomer_carte(self):
-        """Augmente le niveau de zoom de la carte si la carte est chargÃ©e."""
+        """Augmente le niveau de zoom de la carte si la carte est chargÃÂ©e."""
         mapview = getattr(self, "mapview", None)
 
         if not mapview and "map_container" in self.ids:
@@ -8197,26 +8312,26 @@ class TempScreen(Screen):
         self.graphe = GrapheProfil()
         self.graphe.callback_clic = self._sur_clic_graphique
         self.ids.zone_graphique.add_widget(self.graphe)
-        # Onglet Â« temp Â» : PAS de courbe de vitesse sur le graphique,
-        # ni son axe/graduations ni sa lÃ©gende (altitude seule).
+        # Onglet ÃÂ« temp ÃÂ» : PAS de courbe de vitesse sur le graphique,
+        # ni son axe/graduations ni sa lÃÂ©gende (altitude seule).
         self.graphe.afficher_courbe_vitesse = False
         self.graphe.afficher_axe_vitesse = False
-        # Lignes pointillÃ©es de sÃ©lection en ROSE (couleur du disque
+        # Lignes pointillÃÂ©es de sÃÂ©lection en ROSE (couleur du disque
         # curseur de la carte) sur les DEUX graphiques de cet onglet.
         self.graphe.couleur_curseur = COULEUR_ROSE_CURSEUR
         # Interconnexion : un tap sur le graphique des pentes
-        # sÃ©lectionne le point le plus proche (mÃªme handler que le
+        # sÃÂ©lectionne le point le plus proche (mÃÂªme handler que le
         # graphique d'altitude).
         self.ids.pentes_temp.callback_clic = self._sur_clic_graphique
         self.ids.pentes_temp.couleur_curseur = COULEUR_ROSE_CURSEUR
 
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
-            # On Ã©coute les touchers au niveau de la Window, complÃ¨tement
-            # Ã  l'Ã©cart du Scatter interne de MapView (qui gÃ¨re lui-mÃªme
+            # On ÃÂ©coute les touchers au niveau de la Window, complÃÂ¨tement
+            # ÃÂ  l'ÃÂ©cart du Scatter interne de MapView (qui gÃÂ¨re lui-mÃÂªme
             # le glisser/pincement). Un binding ou un grab sur le Scatter
-            # ou sur MapView empÃªcherait ce dernier de recevoir l'Ã©vÃ©nement
-            # et bloquerait le glisser â ce qu'on a observÃ© en pratique.
+            # ou sur MapView empÃÂªcherait ce dernier de recevoir l'ÃÂ©vÃÂ©nement
+            # et bloquerait le glisser Ã¢ÂÂ ce qu'on a observÃÂ© en pratique.
             Window.bind(on_touch_down=self._debut_touch_carte, on_touch_up=self._sur_touch_carte)
             self.ids.map_container.add_widget(self.map_view)
             # La taille des curseurs de waypoints suit le zoom de la carte.
@@ -8238,15 +8353,15 @@ class TempScreen(Screen):
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         self.map_view.map_source = SOURCES_FONDS_CARTES[valeur]
-        # L'affectation seule ne suffit pas toujours Ã  relancer le
-        # chargement des tuiles : on force explicitement un rafraÃ®chissement
+        # L'affectation seule ne suffit pas toujours ÃÂ  relancer le
+        # chargement des tuiles : on force explicitement un rafraÃÂ®chissement
         # complet (sinon le fond peut rester gris-bleu / ne pas revenir).
         self.map_view.trigger_update(True)
 
     def ouvrir_menu_fonds(self, bouton):
-        """Ouvre le menu dÃ©roulant compact des fonds de carte sous le
-        bouton carrÃ© "Layer" (satellite par dÃ©faut, vue courante
-        marquÃ©e d'un point). Voir _construire_menu_fonds_carte."""
+        """Ouvre le menu dÃÂ©roulant compact des fonds de carte sous le
+        bouton carrÃÂ© "Layer" (satellite par dÃÂ©faut, vue courante
+        marquÃÂ©e d'un point). Voir _construire_menu_fonds_carte."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         menu = _construire_menu_fonds_carte(self)
@@ -8266,17 +8381,17 @@ class TempScreen(Screen):
         self.charger_trace(chemin)
 
     def charger_trace(self, chemin):
-        """Charge une trace GPX/KMZ/KML dans cet onglet. UtilisÃ©e Ã  la
-        fois par le sÃ©lecteur de fichier interne (_fichier_choisi
+        """Charge une trace GPX/KMZ/KML dans cet onglet. UtilisÃÂ©e ÃÂ  la
+        fois par le sÃÂ©lecteur de fichier interne (_fichier_choisi
         ci-dessus) et par l'ouverture d'un fichier externe via Android
-        (association de fichiers .gpx/.kml/.kmz, "Ouvrir avec" â Bubu
+        (association de fichiers .gpx/.kml/.kmz, "Ouvrir avec" Ã¢ÂÂ Bubu
         GPS), voir OutilsTracesApp._sur_nouvel_intent."""
         if not chemin:
             return
         try:
             points = gps_logic.lire_fichier_pour_conversion(chemin)
             
-            # ---> AJOUT : Lecture des waypoints de la source (nÃ©cessaire pour l'affichage)
+            # ---> AJOUT : Lecture des waypoints de la source (nÃÂ©cessaire pour l'affichage)
             waypoints = gps_logic.lire_waypoints_source(chemin, heure_locale=False)
         except Exception as e:
             self.trace_chargee = False
@@ -8285,7 +8400,7 @@ class TempScreen(Screen):
 
         if not points:
             self.trace_chargee = False
-            self.info_fichier = "Aucun point GPS trouvÃ© dans ce fichier."
+            self.info_fichier = "Aucun point GPS trouvÃÂ© dans ce fichier."
             return
 
         self.fichier_source = chemin
@@ -8294,42 +8409,42 @@ class TempScreen(Screen):
         self.point_coupure_text = ""
         self.status_text = ""
         
-        # MÃªme rÃ¨gle que les onglets Statistiques/Photos/Live : ni nÂ° de
-        # points (nom uniquement en chiffres), ni waypoints superposÃ©s au
-        # dÃ©part ou Ã  l'arrivÃ©e de la trace.
+        # MÃÂªme rÃÂ¨gle que les onglets Statistiques/Photos/Live : ni nÃÂ° de
+        # points (nom uniquement en chiffres), ni waypoints superposÃÂ©s au
+        # dÃÂ©part ou ÃÂ  l'arrivÃÂ©e de la trace.
         nb_points = len(points)
         vrais_wpts = gps_logic.vrais_waypoints(
             waypoints, [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])])
         nb_waypoints = len(vrais_wpts)
         self.info_fichier = f"Trace : {os.path.basename(chemin)}"
 
-        self.info_point_text = "Tape sur la carte ou le graphique pour voir le dÃ©tail d'un point."
+        self.info_point_text = "Tape sur la carte ou le graphique pour voir le dÃÂ©tail d'un point."
         self.info_point_num = ""
         self.info_point_gps = ""
         self.info_point_dist = ""
         self.info_point_alt = ""
         self.info_point_heure = ""
         self.info_point_vit = ""
-        # Statistiques de la trace (mÃªmes calculs que l'onglet
-        # Statistiques), affichÃ©es dans le tableau 2 colonnes x 5
+        # Statistiques de la trace (mÃÂªmes calculs que l'onglet
+        # Statistiques), affichÃÂ©es dans le tableau 2 colonnes x 5
         # lignes au-dessus de la carte.
         self._afficher_stats_trace(points, waypoints)
         self.profil = gps_logic.calculer_profil(points)
         self.graphe.set_donnees(*self.profil)
         self._afficher_trace_sur_carte(points, waypoints=vrais_wpts)
-        # Nouvelle trace : retire l'Ã©ventuel curseur de sÃ©lection du
+        # Nouvelle trace : retire l'ÃÂ©ventuel curseur de sÃÂ©lection du
         # graphique des pentes avant de recalculer ses tranches.
         self.ids.pentes_temp.set_selection(None)
-        # Graphique des pentes (mÃªme composant que l'onglet
+        # Graphique des pentes (mÃÂªme composant que l'onglet
         # Statistiques) : tranches de 500 m, altitudes min/max
-        # rÃ©elles. MasquÃ© si trace trop courte ou sans altitudes.
+        # rÃÂ©elles. MasquÃÂ© si trace trop courte ou sans altitudes.
         self._afficher_pentes(points)
 
     def _afficher_stats_trace(self, points, waypoints):
         """Remplit le tableau de statistiques : 2 colonnes de 5 lignes,
-        chaque ligne Â« libellÃ© : valeur Â» reprenant EXACTEMENT la mise
-        en forme du bloc Â« Informations du point sÃ©lectionnÃ© Â» (labels
-        12sp, texte noir, taille ajustÃ©e au contenu). MÃªmes calculs
+        chaque ligne ÃÂ« libellÃÂ© : valeur ÃÂ» reprenant EXACTEMENT la mise
+        en forme du bloc ÃÂ« Informations du point sÃÂ©lectionnÃÂ© ÃÂ» (labels
+        12sp, texte noir, taille ajustÃÂ©e au contenu). MÃÂªmes calculs
         que l'onglet Statistiques (gps_logic.calculer_statistiques)."""
         from kivy.uix.boxlayout import BoxLayout
         from kivy.uix.label import Label as LabelKv
@@ -8337,7 +8452,7 @@ class TempScreen(Screen):
         stats = gps_logic.calculer_statistiques(points, waypoints)
         valeurs = [(libelle, str(stats.get(cle, "-")))
                    for cle, libelle in self.LIBELLES_STATS]
-        # 5 premiÃ¨res stats Ã  gauche, 5 suivantes Ã  droite.
+        # 5 premiÃÂ¨res stats ÃÂ  gauche, 5 suivantes ÃÂ  droite.
         for colonne_id, trio in zip(
             ("stats_temp_gauche", "stats_temp_droite"),
             (valeurs[:5], valeurs[5:]),
@@ -8345,10 +8460,10 @@ class TempScreen(Screen):
             colonne = self.ids[colonne_id]
             colonne.clear_widgets()
             for libelle, valeur in trio:
-                # LibellÃ© + valeur sur la mÃªme ligne, comme les labels
-                # Â« Point 1/230 Â», Â« Distance : 12.4 km Â» du bloc
+                # LibellÃÂ© + valeur sur la mÃÂªme ligne, comme les labels
+                # ÃÂ« Point 1/230 ÃÂ», ÃÂ« Distance : 12.4 km ÃÂ» du bloc
                 # d'infos du point (12sp, noir). La texture est
-                # rafraÃ®chie AVANT de lire texture_size, sinon la
+                # rafraÃÂ®chie AVANT de lire texture_size, sinon la
                 # taille vaut (0, 0) et les labels se superposent.
                 lbl = LabelKv(
                     text=f"{libelle} {valeur}",
@@ -8361,23 +8476,23 @@ class TempScreen(Screen):
 
     def _afficher_pentes(self, points):
         """Calcule les tranches de 500 m et alimente le GraphePentes
-        de l'onglet (ids.pentes_temp). MasquÃ© si la trace est trop
+        de l'onglet (ids.pentes_temp). MasquÃÂ© si la trace est trop
         courte (< 1 km) ou sans altitudes."""
         graphe = self.ids.pentes_temp
         tranches = self._calculer_tranches_pentes(points, pas_m=500.0)
-        # Altitudes min/max rÃ©elles sur TOUS les points de la trace
-        # (cohÃ©rence avec le graphique d'altitude au-dessus).
+        # Altitudes min/max rÃÂ©elles sur TOUS les points de la trace
+        # (cohÃÂ©rence avec le graphique d'altitude au-dessus).
         altitudes = [p['ele'] for p in points if p.get('ele') is not None]
         alt_min = min(altitudes) if altitudes else None
         alt_max = max(altitudes) if altitudes else None
-        # Distance cumulÃ©e TOTALE de la trace (km) : borne exacte de
-        # l'axe X du graphique, pour que le curseur de sÃ©lection reste
-        # alignÃ© avec le graphique d'altitude (la derniÃ¨re tranche est
-        # le plus souvent tronquÃ©e : 10,3 km de trace â  axe de 10,5 km).
-        # En mÃªme temps : liste (distance_km, altitude) de TOUS les
-        # points GPS avec altitude â la courbe du graphique des pentes
-        # est tracÃ©e Ã  partir d'eux pour Ãªtre identique au profil
-        # (sinon, Ã©chantillonnÃ©e aux bornes de 500 m, elle paraÃ®t lissÃ©e).
+        # Distance cumulÃÂ©e TOTALE de la trace (km) : borne exacte de
+        # l'axe X du graphique, pour que le curseur de sÃÂ©lection reste
+        # alignÃÂ© avec le graphique d'altitude (la derniÃÂ¨re tranche est
+        # le plus souvent tronquÃÂ©e : 10,3 km de trace Ã¢ÂÂ  axe de 10,5 km).
+        # En mÃÂªme temps : liste (distance_km, altitude) de TOUS les
+        # points GPS avec altitude Ã¢ÂÂ la courbe du graphique des pentes
+        # est tracÃÂ©e ÃÂ  partir d'eux pour ÃÂªtre identique au profil
+        # (sinon, ÃÂ©chantillonnÃÂ©e aux bornes de 500 m, elle paraÃÂ®t lissÃÂ©e).
         dist_totale = 0.0
         points_courbe = []
         precedent = None
@@ -8398,12 +8513,12 @@ class TempScreen(Screen):
                             points_courbe=points_courbe)
 
     def _calculer_tranches_pentes(self, points, pas_m=500.0):
-        """DÃ©coupe la trace en tranches de 500 m (derniÃ¨re tronquÃ©e).
-        Pour chaque tranche : distance cumulÃ©e de dÃ©but (km), pente
-        MOYENNE (%, = (alt_fin - alt_dÃ©but) / distance rÃ©elle), altitude
-        de dÃ©but et de fin. Retourne une liste
+        """DÃÂ©coupe la trace en tranches de 500 m (derniÃÂ¨re tronquÃÂ©e).
+        Pour chaque tranche : distance cumulÃÂ©e de dÃÂ©but (km), pente
+        MOYENNE (%, = (alt_fin - alt_dÃÂ©but) / distance rÃÂ©elle), altitude
+        de dÃÂ©but et de fin. Retourne une liste
         [(dist_debut_km, pente_pct, alt_dep, alt_arr), ...]."""
-        # Points avec altitude, distances cumulÃ©es.
+        # Points avec altitude, distances cumulÃÂ©es.
         pts = []
         dist_cum = 0.0
         precedent = None
@@ -8418,7 +8533,7 @@ class TempScreen(Screen):
             return []
 
         def _alt_a(distance_m):
-            """Altitude interpolÃ©e au mÃ¨tre donnÃ© (les traces ont peu
+            """Altitude interpolÃÂ©e au mÃÂ¨tre donnÃÂ© (les traces ont peu
             de points, un balayage simple suffit)."""
             for i in range(1, len(pts)):
                 if pts[i][0] >= distance_m:
@@ -8447,9 +8562,9 @@ class TempScreen(Screen):
     def _remonte_calque_marqueurs(self):
         """Remonte le calque des marqueurs AU-DESSUS du calque de trace,
         via l'API publique de MapView (remove_layer/add_layer). Voir la
-        version commentÃ©e identique dans NettoyageScreen. NÃ©cessaire dÃ¨s
-        qu'une trace est re-posÃ©e alors que le calque de marqueurs
-        existe dÃ©jÃ  (re-chargement d'une trace dans l'onglet)."""
+        version commentÃÂ©e identique dans NettoyageScreen. NÃÂ©cessaire dÃÂ¨s
+        qu'une trace est re-posÃÂ©e alors que le calque de marqueurs
+        existe dÃÂ©jÃÂ  (re-chargement d'une trace dans l'onglet)."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         couche = getattr(self.map_view, "_marker_layer", None)
@@ -8470,7 +8585,7 @@ class TempScreen(Screen):
         """Equivalent de afficher_trace_sur_carte() dans la version
         desktop : trace la polyligne, place les marqueurs D/A, centre
         et zoome la carte sur l'emprise de la trace. Les waypoints
-        Ã©ventuels sont indiquÃ©s par un petit curseur rond et bleu
+        ÃÂ©ventuels sont indiquÃÂ©s par un petit curseur rond et bleu
         (MarqueurWaypoint), comme dans les onglets Photos et Live."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
@@ -8492,12 +8607,12 @@ class TempScreen(Screen):
             return
 
         liste_coords = [(p['lat'], p['lon']) for p in points]
-        # Le calque de la trace est posÃ© AVANT les marqueurs : dans
+        # Le calque de la trace est posÃÂ© AVANT les marqueurs : dans
         # mapview, les marqueurs vivent dans un calque distinct et tout
-        # calque ajoutÃ© aprÃ¨s les recouvre TOUS. PosÃ© en premier, le
-        # calque de trace passe sous les marqueurs â le disque rouge du
-        # curseur de sÃ©lection (et les curseurs de waypoints) s'affichent
-        # donc PAR-DESSUS la trace, comme demandÃ© (mÃªme choix que
+        # calque ajoutÃÂ© aprÃÂ¨s les recouvre TOUS. PosÃÂ© en premier, le
+        # calque de trace passe sous les marqueurs Ã¢ÂÂ le disque rouge du
+        # curseur de sÃÂ©lection (et les curseurs de waypoints) s'affichent
+        # donc PAR-DESSUS la trace, comme demandÃÂ© (mÃÂªme choix que
         # l'onglet Nettoyage).
         self.trace_layer = TraceLayer()
         self.trace_layer.set_points(liste_coords)
@@ -8507,8 +8622,8 @@ class TempScreen(Screen):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
                 continue
-            # Â« Point de passage 1/2 Â» : ce sont le dÃ©part et l'arrivÃ©e,
-            # traitÃ©s Ã  part (triangles) juste aprÃ¨s la boucle â pas
+            # ÃÂ« Point de passage 1/2 ÃÂ» : ce sont le dÃÂ©part et l'arrivÃÂ©e,
+            # traitÃÂ©s ÃÂ  part (triangles) juste aprÃÂ¨s la boucle Ã¢ÂÂ pas
             # de disque jaune pour eux.
             nom_w = (wpt.get('name') or '').strip()
             if nom_w in ("Point de passage 1", "Point de passage 2"):
@@ -8521,8 +8636,8 @@ class TempScreen(Screen):
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
 
-        # Triangles dÃ©part/arrivÃ©e pour Â« Point de passage 1/2 Â»
-        # (vert / rouge, orange unique si boucle fermÃ©e â¤ 20 m).
+        # Triangles dÃÂ©part/arrivÃÂ©e pour ÃÂ« Point de passage 1/2 ÃÂ»
+        # (vert / rouge, orange unique si boucle fermÃÂ©e Ã¢ÂÂ¤ 20 m).
         _poser_triangles_points_passage(self, waypoints)
 
         dist_dep_arr = gps_logic.calculer_distance_haversine(
@@ -8539,10 +8654,10 @@ class TempScreen(Screen):
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
-        # REMONTÃE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE (mÃªme
+        # REMONTÃÂE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE (mÃÂªme
         # correction que l'onglet Nettoyage, via l'API publique
-        # remove_layer/add_layer de MapView â voir lÃ -bas la mÃ©thode
-        # _remonte_calque_marqueurs pour l'explication complÃ¨te).
+        # remove_layer/add_layer de MapView Ã¢ÂÂ voir lÃÂ -bas la mÃÂ©thode
+        # _remonte_calque_marqueurs pour l'explication complÃÂ¨te).
         self._remonte_calque_marqueurs()
 
         lats = [c[0] for c in liste_coords]
@@ -8560,16 +8675,16 @@ class TempScreen(Screen):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
         # Le curseur mobile (disque rose) suit aussi le zoom depuis
-        # qu'il est passÃ© sur la mÃªme formule de taille que les
+        # qu'il est passÃÂ© sur la mÃÂªme formule de taille que les
         # disques jaunes/rouges (plus de cote_dp fixe).
         if getattr(self, "marqueur_curseur", None) is not None:
             self.marqueur_curseur.maj_taille(zoom)
 
     def _debut_touch_carte(self, window, touch):
-        """MÃ©morise la position de l'appui si le toucher dÃ©marre sur la
-        carte, SANS jamais consommer l'Ã©vÃ©nement (pas de grab, pas de
-        return True) pour ne surtout pas empÃªcher MapView de gÃ©rer
-        normalement le glisser/pincement lui-mÃªme."""
+        """MÃÂ©morise la position de l'appui si le toucher dÃÂ©marre sur la
+        carte, SANS jamais consommer l'ÃÂ©vÃÂ©nement (pas de grab, pas de
+        return True) pour ne surtout pas empÃÂªcher MapView de gÃÂ©rer
+        normalement le glisser/pincement lui-mÃÂªme."""
         if (
             self.manager is not None and self.manager.current == self.name
             and self.map_view is not None and self.map_view.collide_point(*touch.pos)
@@ -8585,7 +8700,7 @@ class TempScreen(Screen):
         if not CARTE_DISPONIBLE or self.map_view is None or not self.points_courants or depart is None:
             return False
         if abs(touch.x - depart[0]) > dp(8) or abs(touch.y - depart[1]) > dp(8):
-            return False  # c'Ã©tait un glissement (pan/zoom), pas un tap
+            return False  # c'ÃÂ©tait un glissement (pan/zoom), pas un tap
 
         zoom = self.map_view.zoom
         cx, cy = gps_logic.projeter_mercator(self.map_view.lat, self.map_view.lon, zoom)
@@ -8607,10 +8722,10 @@ class TempScreen(Screen):
         return True
 
     def _sur_clic_graphique(self, distance_km):
-        """AppelÃ© au tap sur le graphique : sÃ©lectionne le point dont la
-        distance cumulÃ©e est la plus proche de la distance tapÃ©e
-        (Ã©quivalent de sur_clic_graphique dans la version desktop, qui
-        recentre aussi la carte contrairement Ã  un tap sur la carte)."""
+        """AppelÃÂ© au tap sur le graphique : sÃÂ©lectionne le point dont la
+        distance cumulÃÂ©e est la plus proche de la distance tapÃÂ©e
+        (ÃÂ©quivalent de sur_clic_graphique dans la version desktop, qui
+        recentre aussi la carte contrairement ÃÂ  un tap sur la carte)."""
         distances_km = self.profil[0]
         if not distances_km:
             return
@@ -8619,12 +8734,12 @@ class TempScreen(Screen):
 
 
     def _sur_clic_waypoint(self, lat, lon):
-        """Tap sur un waypoint (disque jaune) : sÃ©lectionne le point de
-        la trace le PLUS PROCHE du waypoint â les curseurs des deux
-        graphiques et le bloc d'infos se placent dessus â SANS
+        """Tap sur un waypoint (disque jaune) : sÃÂ©lectionne le point de
+        la trace le PLUS PROCHE du waypoint Ã¢ÂÂ les curseurs des deux
+        graphiques et le bloc d'infos se placent dessus Ã¢ÂÂ SANS
         recentrer la carte et SANS toucher au popup du waypoint, qui
         s'ouvre ensuite exactement comme avant (le callback est
-        appelÃ© AVANT _afficher_popup par MarqueurWaypoint)."""
+        appelÃÂ© AVANT _afficher_popup par MarqueurWaypoint)."""
         if not self.points_courants:
             return
         meilleur_idx = None
@@ -8638,9 +8753,9 @@ class TempScreen(Screen):
             self._selectionner_point(meilleur_idx, recentrer_carte=False)
 
     def _selectionner_point(self, idx, recentrer_carte):
-        """Met Ã  jour, en un seul endroit, tout ce qui doit reflÃ©ter le
-        point sÃ©lectionnÃ© : marqueur curseur sur la carte, numÃ©ro de
-        dÃ©coupe, texte d'info, et curseur du graphique."""
+        """Met ÃÂ  jour, en un seul endroit, tout ce qui doit reflÃÂ©ter le
+        point sÃÂ©lectionnÃÂ© : marqueur curseur sur la carte, numÃÂ©ro de
+        dÃÂ©coupe, texte d'info, et curseur du graphique."""
         if not (0 <= idx < len(self.points_courants)):
             return
         p = self.points_courants[idx]
@@ -8649,8 +8764,8 @@ class TempScreen(Screen):
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.marqueur_curseur is not None:
                 self.map_view.remove_marker(self.marqueur_curseur)
-            # MÃªme curseur que l'onglet Nettoyage : disque ROSE dessinÃ©,
-            # sans le carrÃ© blanc du MapMarker standard.
+            # MÃÂªme curseur que l'onglet Nettoyage : disque ROSE dessinÃÂ©,
+            # sans le carrÃÂ© blanc du MapMarker standard.
             self.marqueur_curseur = MarqueurDisqueRouge(
                 zoom=self.map_view.zoom,
                 couleur=COULEUR_ROSE_CURSEUR,
@@ -8672,8 +8787,8 @@ class TempScreen(Screen):
         self.info_point_alt = f"Altitude: {ele_txt}"
         self.info_point_heure = f"Heure: {heure}"
         self.info_point_vit = f"Vitesse: {vit} km/h"
-        # Interconnexion : le curseur de sÃ©lection apparaÃ®t AUSSI sur
-        # le graphique des pentes, Ã  la mÃªme distance cumulÃ©e.
+        # Interconnexion : le curseur de sÃÂ©lection apparaÃÂ®t AUSSI sur
+        # le graphique des pentes, ÃÂ  la mÃÂªme distance cumulÃÂ©e.
         self.graphe.set_selection(dist)
         self.ids.pentes_temp.set_selection(dist)
 
