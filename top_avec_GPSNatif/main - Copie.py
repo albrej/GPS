@@ -630,6 +630,18 @@ if CARTE_DISPONIBLE:
             self._label.center_x = self.center_x
             self._label.center_y = self.center_y + dp(6)
 
+    # Curseur rond et bleu des waypoints (onglet Photos). L'image est cherchée
+    # à côté de main.py : images/blue_dot.png.
+    CHEMIN_BLUE_DOT = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "images", "blue_dot.png")
+
+    def taille_marqueur_waypoint(zoom):
+        """Côté (en pixels) du curseur des waypoints selon le zoom de la
+        carte : petit quand on est loin (16 dp), plus gros quand on zoome
+        (jusqu'à 44 dp). Diamètre doublé par rapport à la première version
+        (onglets Photos et Live)."""
+        return dp(max(16, min(44, 16 + 3.5 * (zoom - 10))))
+
     # Couleurs des flags départ/arrivée.
     COULEUR_FLAG_DEPART = (0.13, 0.60, 0.22, 1)     # vert
     COULEUR_FLAG_ARRIVEE = (0.80, 0.20, 0.15, 1)    # rouge
@@ -734,7 +746,6 @@ if CARTE_DISPONIBLE:
     # (L'ancien CHEMIN_BLUE_DOT / images/blue_dot.png n'est plus
     # utilisé : les waypoints sont des disques jaunes dessinés, voir
     # MarqueurWaypoint.)
-
     def taille_marqueur_waypoint(zoom):
         """Côté (en pixels) du curseur des waypoints selon le zoom de la
         carte : petit quand on est loin (16 dp), plus gros quand on zoome
@@ -998,8 +1009,6 @@ if CARTE_DISPONIBLE:
                 label_nom.bind(on_ref_press=_clic_photo)
 
             popup.open()
-
-
 class GrapheProfil(Widget):
     """Graphique altitude/vitesse redessiné nativement avec les outils
     de dessin de Kivy (équivalent, sans matplotlib, de afficher_profils()
@@ -1344,7 +1353,378 @@ class GrapheProfil(Widget):
             if self.callback_clic:
                 self.callback_clic(distance_km_tapee)  # Assure la position finale au lâcher
             return True
+
+class GraphePentes(Widget):
+    """Graphique des pentes de l'onglet Statistiques : la trace est
+    découpée en tranches de 500 m ; chaque tranche est dessinée comme
+    un rectangle vertical (barre) partant du ZÉRO de l'axe des
+    abscisses (base du graphique) et montant jusqu'à la courbe
+    d'altitude. La couleur suit des CLASSES de pente fixes : descentes
+    en TONS BLEUS de plus en plus sombres (bleu clair #8DA9C4 de
+    -10 à 0 % jusqu'au bleu marine très sombre #0A0F24 au-delà de
+    -30 %), PLAT beige/blanc cassé (#EEEDE9) autour de 0, montées du
+    JAUNE ORANGÉ (#F4A261, 0 à +10 %) à l'ORANGE (#E76F51), au
+    ROUGE (#D62828) puis au MARRON BORDEAUX (#4A0E0E) au-delà de
+    +30 %. La valeur de la pente (ex. « +12.4 ») est inscrite
+    au-dessus de la courbe, et le titre affiche le nombre de tranches
+    en montée et en descente. Reproduit le style des profils « pentes
+    sur 500 m » des applis de rando."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.tranches = []  # [(dist_km_debut, pente_pct, alt_debut, alt_fin)]
+        # Altitudes min/max réelles de la trace (sur tous les points) :
+        # servent d'échelle au graphique pour rester cohérent avec le
+        # tableau de statistiques (le sommet réel peut se trouver ENTRE
+        # deux bornes de tranches interpolées).
+        self.alt_min_pts = float("inf")
+        self.alt_max_pts = float("-inf")
+        # Sélection interconnectée (onglet « temp ») : distance (km)
+        # du point sélectionné — dessinée comme une ligne verticale
+        # pointillée rouge, comme le curseur de GrapheProfil.
+        self.distance_selection = None
+        # Distance cumulée TOTALE de la trace (km) : borne exacte de
+        # l'axe X. Sans elle, l'axe s'arrêterait à « début de la
+        # dernière tranche + 0,5 km », ce qui allonge artificiellement
+        # l'axe (trace de 10,3 km → axe jusqu'à 10,5 km) et décale le
+        # curseur de sélection avec un retard croissant en fin de trace.
+        self.dist_fin_km = None
+        # Points RÉELS de la courbe d'altitude : liste (distance_km,
+        # altitude) de tous les points GPS dotés d'une altitude. La
+        # courbe est tracée à partir d'eux (et non des seules bornes
+        # de tranches interpolées tous les 500 m) pour être
+        # EXACTEMENT identique à celle du profil d'altitude — sans
+        # cela, elle paraît « lissée » par l'échantillonnage.
+        self.points_courbe = []
+        # Callback appelé au tap dans la zone du graphique, avec la
+        # distance (km) tapée — même contrat que GrapheProfil.
+        self.callback_clic = None
+        # Couleur de la ligne pointillée de sélection : rouge par
+        # défaut ; l'onglet « temp » la passe en rose.
+        self.couleur_curseur = (0.85, 0.1, 0.1, 0.9)
+        self.bind(size=self._redessiner, pos=self._redessiner)
+
+    def set_selection(self, distance_km):
+        """Déplace (ou retire si None) le curseur vertical de
+        sélection, puis redessine."""
+        self.distance_selection = distance_km
+        self._redessiner()
+
+    def _distance_depuis_touch(self, touch):
+        """Distance (km) correspondant à la position tapée, en
+        replaçant les marges exactes de _redessiner (renvoie None si
+        le tap est hors zone utile)."""
+        marge_g, marge_d, marge_h, marge_b = dp(48), dp(48), dp(22), dp(38)
+        zx, zy = self.x + marge_g, self.y + marge_b
+        zw, zh = max(1.0, self.width - marge_g - marge_d), max(1.0, self.height - marge_h - marge_b)
+        gx, gw = zx + dp(42), max(1.0, zw - dp(42))
+        if not (gx <= touch.x <= gx + gw and zy <= touch.y <= zy + zh):
+            return None
+        if not self.tranches:
+            return None
+        # Même borne d'axe que _redessiner : vraie longueur de trace
+        # si fournie, sinon dernière tranche + 0,5 km.
+        dist_fin = self.dist_fin_km if self.dist_fin_km else self.tranches[-1][0] + 0.5
+        ratio = max(0.0, min(1.0, (touch.x - gx) / gw))
+        return ratio * dist_fin
+
+    def on_touch_down(self, touch):
+        """Appui dans le graphique des pentes : sélectionne la
+        distance tapée et CAPTURE le toucher pour suivre le
+        glissement (même mécanisme que GrapheProfil : le curseur
+        suit le doigt en temps réel). Ne consomme l'événement que si
+        le tap est dans la zone utile."""
+        if self.callback_clic is None or touch.grab_current is not None:
+            return False
+        distance = self._distance_depuis_touch(touch)
+        if distance is None:
+            return False
+        touch.grab(self)
+        self.set_selection(distance)
+        self.callback_clic(distance)
+        return True
+
+    def on_touch_move(self, touch):
+        """Glissement : le curseur suit le doigt et la sélection est
+        mise à jour en temps réel (carte, graphique d'altitude, bloc
+        d'infos) — même comportement que GrapheProfil."""
+        if touch.grab_current is self:
+            distance = self._distance_depuis_touch(touch)
+            if distance is not None:
+                self.set_selection(distance)
+                self.callback_clic(distance)
+            return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        """Fin du toucher : relâche la capture."""
+        if touch.grab_current is self:
+            touch.ungrab(self)
+            return True
         return super().on_touch_up(touch)
+
+    # Couleurs/textes locaux (BLEU/GRIS_TEXTE de GrapheProfil sont des
+    # variables LOCALES à son _redessiner : on redéfinit ici).
+    BLEU = (0.12, 0.53, 0.90, 1)
+    GRIS_TEXTE = (0.25, 0.25, 0.25, 1)
+
+    @staticmethod
+    def _texte_texture(texte, taille_sp=10, gras=True):
+        core_lbl = CoreLabel(text=texte, font_size=dp(taille_sp), bold=gras)
+        core_lbl.refresh()
+        return core_lbl.texture
+
+    def _poser_texte(self, texte, x, y, couleur, taille_sp=10, centre_h=False, centre_v=False,
+                     gras=True, aligne_droite=False):
+        tex = self._texte_texture(texte, taille_sp=taille_sp, gras=gras)
+        if aligne_droite:
+            px = x - tex.width
+        elif centre_h:
+            px = x - tex.width / 2
+        else:
+            px = x
+        py = y - tex.height / 2 if centre_v else y
+        from kivy.graphics import Color, Rectangle as KivyRect
+        with self.canvas:
+            Color(*couleur)
+            KivyRect(texture=tex, pos=(px, py), size=tex.size)
+
+    def set_tranches(self, tranches, alt_min_pts=None, alt_max_pts=None, dist_fin_km=None,
+                     points_courbe=None):
+        """Alimente le graphique : liste de tranches de 500 m, chacune
+        (distance_debut_km, pente_pct, altitude_debut, altitude_fin).
+        alt_min_pts / alt_max_pts : altitudes min/max RÉELLES de la
+        trace (calculées sur tous les points, comme le tableau), car
+        le sommet peut se trouver entre deux bornes de tranches
+        interpolées. dist_fin_km : distance cumulée TOTALE de la trace
+        (borne exacte de l'axe X, pour que le curseur de sélection
+        soit aligné avec le graphique d'altitude, dont l'axe
+        s'arrête à la vraie fin de trace). points_courbe : liste
+        (distance_km, altitude) de TOUS les points GPS avec altitude
+        — la courbe d'altitude est tracée à partir d'eux pour être
+        identique à celle du profil d'altitude (sinon, échantillonnée
+        toutes les bornes de 500 m, elle paraît lissée). Déclenche le
+        redessin."""
+        self.tranches = tranches or []
+        if alt_min_pts is not None:
+            self.alt_min_pts = alt_min_pts
+        if alt_max_pts is not None:
+            self.alt_max_pts = alt_max_pts
+        if dist_fin_km is not None:
+            self.dist_fin_km = dist_fin_km
+        if points_courbe is not None:
+            self.points_courbe = list(points_courbe)
+        self._redessiner()
+
+    # Palette de classes de pente (couleurs fixes par palier) :
+    DESC_TRES_FORTE = (0.039, 0.059, 0.141, 1)   # < -30 %   : bleu marine très sombre #0A0F24
+    DESC_FORTE = (0.043, 0.145, 0.271, 1)       # -30 à -20 : bleu profond #0B2545
+    DESC_MARQUEE = (0.075, 0.251, 0.455, 1)     # -20 à -10 : bleu vif/moyen #134074
+    DESC_MODEREE = (0.553, 0.663, 0.769, 1)     # -10 à 0   : bleu clair #8DA9C4
+    PLAT = (0.933, 0.929, 0.914, 1)             # autour de 0 : beige/blanc cassé #EEEDE9
+    MONT_LEGERE = (0.957, 0.635, 0.380, 1)      # 0 à +10   : jaune orangé #F4A261
+    MONT_MODEREE = (0.906, 0.435, 0.318, 1)    # +10 à +20 : orange vif #E76F51
+    MONT_RAIDE = (0.839, 0.157, 0.157, 1)       # +20 à +30 : rouge #D62828
+    MONT_MUR = (0.290, 0.055, 0.055, 1)         # > +30     : marron/bordeaux #4A0E0E
+
+    def _couleur_pente(self, pente):
+        """Couleur d'une tranche selon sa classe de pente :
+        DESCENTES en BLEUS de plus en plus sombres (bleu clair #8DA9C4
+        de -10 à 0 %, jusqu'au bleu marine #0A0F24 au-delà de -30 %),
+        PLAT beige (#EEEDE9) uniquement autour de 0, MONTÉES du jaune
+        orangé (#F4A261, 0 à +10 %) au marron bordeaux (#4A0E0E)
+        au-delà de +30 %. Les bornes sont EXACTEMENT celles de la
+        légende : descente modérée de -10 à 0 %, montée légère de
+        0 à +10 %, le beige ne s'appliquant qu'à une pente
+        strictement quasi nulle (±0,1 %)."""
+        if pente < -30.0:
+            return self.DESC_TRES_FORTE
+        if pente < -20.0:
+            return self.DESC_FORTE
+        if pente < -10.0:
+            return self.DESC_MARQUEE
+        if pente < -0.1:
+            return self.DESC_MODEREE
+        if pente <= 0.1:
+            return self.PLAT
+        if pente < 10.0:
+            return self.MONT_LEGERE
+        if pente < 20.0:
+            return self.MONT_MODEREE
+        if pente <= 30.0:
+            return self.MONT_RAIDE
+        return self.MONT_MUR
+
+    @staticmethod
+    def _graduations(v_min, v_max, nb=4):
+        if nb <= 1 or v_max <= v_min:
+            return [v_min]
+        pas = (v_max - v_min) / (nb - 1)
+        return [v_min + i * pas for i in range(nb)]
+
+    def _redessiner(self, *args):
+        self.canvas.clear()
+        if not self.tranches or self.width < dp(30) or self.height < dp(30):
+            return
+        from kivy.graphics import Color, Line, Rectangle as KivyRectangle, Triangle
+
+        # Mêmes couleurs que GrapheProfil (onglet 4) pour un visuel
+        # identique : axes, courbe d'altitude et altitudes min/max.
+        ROUGE = (0.8, 0.1, 0.1, 1)
+
+        # Marges identiques à GrapheProfil._zone_graphique().
+        marge_g, marge_d, marge_h, marge_b = dp(48), dp(48), dp(22), dp(38)
+        zx, zy = self.x + marge_g, self.y + marge_b
+        zw, zh = max(1.0, self.width - marge_g - marge_d), max(1.0, self.height - marge_h - marge_b)
+
+        # Décalage horizontal (en pixels) pour laisser place aux labels
+        # min/max rouges à gauche de la courbe — comme GrapheProfil.
+        decalage_x = dp(42)
+        gx, gy = zx + decalage_x, zy
+        gw, gh = max(1.0, zw - decalage_x), zh
+
+        dists = [t[0] for t in self.tranches]
+        # Borne de l'axe X : distance TOTALE réelle de la trace si
+        # fournie, sinon repli sur « dernière tranche + 0,5 km ».
+        dist_fin = self.dist_fin_km if self.dist_fin_km else dists[-1] + 0.5
+        alt_min = min(self.alt_min_pts, min(t[2] for t in self.tranches))
+        alt_max = max(self.alt_max_pts, max(t[3] for t in self.tranches))
+        marge_alt = max((alt_max - alt_min) * 0.12, 10.0)
+        a_bas, a_haut = alt_min - marge_alt, alt_max + marge_alt
+        a_span = max(a_haut - a_bas, 1e-6)
+
+        def x_km(d):
+            return gx + d / dist_fin * gw
+
+        def y_alt(a):
+            return gy + (a - a_bas) / a_span * gh
+
+        with self.canvas:
+            Color(1, 1, 1, 1)
+            KivyRectangle(pos=(zx, zy), size=(zw, zh))
+
+            # Quadrillage d'altitude et valeurs sur l'axe Y (bleu),
+            # comme GrapheProfil.
+            for valeur in self._graduations(a_bas, a_haut, 5):
+                gyv = y_alt(valeur)
+                Color(0.88, 0.88, 0.88, 1)
+                Line(points=[zx, gyv, zx + zw, gyv], width=1)
+                self._poser_texte(f"{int(round(valeur))}", zx - dp(4), gyv, self.BLEU,
+                                  taille_sp=9, centre_v=True, gras=False, aligne_droite=True)
+
+            # Altitudes min et max (en ROUGE) placées dans l'espace
+            # décalé à gauche de la courbe — comme GrapheProfil.
+            for valeur in (alt_min, alt_max):
+                self._poser_texte(f"{int(round(valeur))}", zx + dp(4), y_alt(valeur), ROUGE,
+                                  taille_sp=9, centre_v=True, gras=True)
+
+            # Cadre gris du graphique — comme GrapheProfil.
+            Color(0.55, 0.55, 0.55, 1)
+            Line(points=[zx, zy, zx + zw, zy, zx + zw, zy + zh, zx, zy + zh], width=1.2)
+
+            # Graduations de l'axe X des distances (gris) — comme
+            # GrapheProfil.
+            for valeur in self._graduations(0.0, dist_fin, 5):
+                gxv = x_km(valeur)
+                Color(0.88, 0.88, 0.88, 1)
+                Line(points=[gxv, zy, gxv, zy + zh], width=1)
+                self._poser_texte(f"{valeur:.1f}", gxv, zy - dp(16), self.GRIS_TEXTE,
+                                  taille_sp=9, centre_h=True, gras=False)
+
+            # Barres : une par tranche de 500 m, partant du ZÉRO de
+            # l'axe des abscisses (gy, base du graphique) et montant
+            # jusqu'à la courbe d'altitude. Pour épouser EXACTEMENT
+            # la courbe (tracée sur les points GPS réels) sans vides
+            # ni débordements, chaque tranche est découpée en BANDES
+            # VERTICALES aux points réels qu'elle contient : la couleur
+            # reste celle de la classe de pente de la tranche, mais le
+            # sommet de chaque bande suit la courbe point à point.
+            for dist_km, pente, alt_dep, alt_arr in self.tranches:
+                x0, x1 = x_km(dist_km), x_km(min(dist_km + 0.5, dist_fin))
+                couleur = self._couleur_pente(pente)
+                # Bornes verticales internes : les points réels situés
+                # STRICTEMENT à l'intérieur de la tranche.
+                bornes = [d_pc for d_pc, a_pc in self.points_courbe
+                          if dist_km < d_pc < dist_km + 0.5]
+                bornes.append(min(dist_km + 0.5, dist_fin))
+                d_prec = dist_km
+                a_prec = alt_dep
+                for d_b in bornes:
+                    # Altitude de la courbe à la borne : celle du point
+                    # réel s'il existe, sinon l'altitude interpolée de
+                    # fin de tranche.
+                    a_b = alt_arr
+                    for d_pc, a_pc in self.points_courbe:
+                        if abs(d_pc - d_b) < 1e-9:
+                            a_b = a_pc
+                            break
+                    Color(*couleur)
+                    Triangle(points=[x_km(d_prec), gy, x_km(d_prec), y_alt(a_prec),
+                                     x_km(d_b), y_alt(a_b)])
+                    Triangle(points=[x_km(d_prec), gy, x_km(d_b), y_alt(a_b), x_km(d_b), gy])
+                    d_prec, a_prec = d_b, a_b
+                # Valeur de la pente inscrite au-dessus de la courbe,
+                # si elle tient horizontalement. MASQUABLE par l'onglet
+                # temp (afficher_valeurs_pentes = False) ; les
+                # Statistiques la gardent par défaut.
+                if getattr(self, "afficher_valeurs_pentes", True):
+                    texte = f"{pente:+.1f}"
+                    tex = self._texte_texture(texte, taille_sp=8, gras=False)
+                    w_barre = x1 - x0
+                    if tex.width < w_barre - dp(2):
+                        Color(*self.GRIS_TEXTE)
+                        KivyRectangle(texture=tex,
+                                     pos=(x0 + (w_barre - tex.width) / 2, y_alt(max(alt_dep, alt_arr)) + dp(1)),
+                                     size=tex.size)
+
+            # Courbe d'altitude : tracée à partir des TOUS les points
+            # GPS réels (self.points_courbe) pour être EXACTEMENT la
+            # même que sur le profil d'altitude — BLEUE, comme
+            # GrapheProfil (onglet 4). Repli sur les bornes de
+            # tranches si les points réels n'ont pas été fournis.
+            if self.points_courbe:
+                pts_courbe = []
+                for d_pc, a_pc in self.points_courbe:
+                    pts_courbe.append(x_km(min(d_pc, dist_fin)))
+                    pts_courbe.append(y_alt(a_pc))
+            else:
+                pts_courbe = []
+                for dist_km, pente, alt_dep, alt_arr in self.tranches:
+                    pts_courbe.append(x_km(dist_km))
+                    pts_courbe.append(y_alt(alt_dep))
+                dernier = self.tranches[-1]
+                pts_courbe.append(x_km(min(dernier[0] + 0.5, dist_fin)))
+                pts_courbe.append(y_alt(dernier[3]))
+            Color(*self.BLEU)
+            Line(points=pts_courbe, width=1.6)
+
+            # Curseur de sélection interconnecté : ligne verticale
+            # pointillée rouge, même graphisme que GrapheProfil.
+            if self.distance_selection is not None:
+                cx = x_km(self.distance_selection)
+                Color(*self.couleur_curseur)
+                longueur_trait = dp(5)
+                longueur_espace = dp(4)
+                y = gy
+                while y < gy + gh:
+                    y_fin = min(y + longueur_trait, gy + gh)
+                    Line(points=[cx, y, cx, y_fin], width=1.4)
+                    y += longueur_trait + longueur_espace
+
+        # Légendes d'axes — mêmes positions/couleurs que GrapheProfil.
+        self._poser_texte("Distance (km)", zx + zw / 2, self.y, self.GRIS_TEXTE,
+                          taille_sp=10, centre_h=True)
+        self._poser_texte("Altitude (m)", zx, zy + zh + dp(4), self.BLEU, taille_sp=9)
+        # Titre « Pentes sur 500 m ... » : affiché par défaut (onglet
+        # Statistiques), MASQUABLE par l'onglet « temp » qui le retire
+        # pour alléger l'affichage (afficher_titre = False).
+        if getattr(self, "afficher_titre", True):
+            nb_montees = sum(1 for t in self.tranches if t[1] > 0)
+            nb_descentes = sum(1 for t in self.tranches if t[1] < 0)
+            self._poser_texte(
+                f"Pentes sur 500 m   ·   {nb_montees} en pentes positives   ·   {nb_descentes} en pentes négatives",
+                gx + gw / 2, gy + gh + dp(8),
+                (0.16, 0.2, 0.26, 1), taille_sp=11, centre_h=True, gras=True)
 
 
 # ----------------------------------------------------------------------
@@ -1978,13 +2358,10 @@ KV = """
                 size_hint_y: None
                 height: dp(175)
 
-            # Bloc découpe : n'apparaît qu'une fois la trace chargée
-            # (même comportement que le graphique ci-dessus).
             Label:
                 text: "Decoupe de trace"
                 size_hint_y: None
-                height: (dp(26) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
+                height: dp(26)
                 color: 0, 0, 0, 1
                 bold: True
 
@@ -1994,8 +2371,7 @@ KV = """
                 multiline: False
                 input_filter: "int"
                 size_hint_y: None
-                height: (dp(44) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
+                height: dp(44)
                 disabled: not root.trace_chargee
                 text: root.point_coupure_text
                 on_text: root.point_coupure_text = self.text
@@ -2003,7 +2379,7 @@ KV = """
             Label:
                 text: root.status_text
                 size_hint_y: None
-                height: (max(dp(30), self.texture_size[1] + dp(10)) if root.status_text else 0)
+                height: max(dp(30), self.texture_size[1] + dp(10))
                 color: root.status_color
                 text_size: self.width, None
                 halign: "left"
@@ -2012,8 +2388,7 @@ KV = """
             Button:
                 text: "Couper ici"
                 size_hint_y: None
-                height: (dp(56) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
+                height: dp(56)
                 disabled: not root.trace_chargee or root.en_cours
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer_decoupe()
@@ -2081,29 +2456,10 @@ KV = """
 
         ScrollView:
             BoxLayout:
-                # Conteneur défilant : le tableau ( vidé/rafraîchi par
-                # clear_widgets à chaque chargement) puis le graphique
-                # des pentes, FRÈRE du tableau pour survivre à son
-                # clear_widgets.
+                id: tableau_stats
                 orientation: "vertical"
-                spacing: dp(14)
                 size_hint_y: None
                 height: self.minimum_height
-
-                BoxLayout:
-                    id: tableau_stats
-                    orientation: "vertical"
-                    size_hint_y: None
-                    height: self.minimum_height
-
-                # Graphique des pentes par tranches de 500 m (tons
-                # rouges = montées, tons bleus = descentes), DANS la
-                # zone défilante : il suit l'ascenseur avec le tableau
-                # et ne masque pas ses dernières lignes.
-                GraphePentes:
-                    id: pentes_trace
-                    size_hint_y: None
-                    height: dp(0)
 
 <NettoyageScreen>:
     ScrollView:
@@ -2811,6 +3167,12 @@ KV = """
                             size: self.texture_size
                             font_size: "12sp"
                             color: 0, 0, 0, 1
+                        Label:
+                            text: root.info_point_pente
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
 
                     BoxLayout:
                         orientation: "vertical"
@@ -2831,23 +3193,41 @@ KV = """
                             font_size: "12sp"
                             color: 0, 0, 0, 1
                         Label:
+                            id: lbl_vit_temp
                             text: root.info_point_vit
                             size_hint: None, None
                             size: self.texture_size
                             font_size: "12sp"
                             color: 0, 0, 0, 1
+                        Label:
+                            # Label vide de même hauteur que les autres :
+                            # la colonne de droite compte alors 4 lignes
+                            # comme celle de gauche et reste alignée
+                            # ligne à ligne avec elle.
+                            text: ""
+                            size_hint: None, None
+                            size: 0, lbl_vit_temp.height
+                            font_size: "12sp"
 
             BoxLayout:
                 id: zone_graphique
                 size_hint_y: None
                 height: dp(175)
 
+            # Espace entre le graphique d'altitude et le graphique
+            # des pentes (sinon les deux se touchaient).
+            Widget:
+                size_hint_y: None
+                height: dp(10)
+
             # Graphique des pentes (même composant que l'onglet
             # Statistiques) : tranches de 500 m, classes de couleurs
             # bleu→beige→jaune/orange/rouge, courbe d'altitude bleue.
             GraphePentes:
+                afficher_valeurs_pentes: False
                 id: pentes_temp
                 size_hint_y: None
+                afficher_titre: False
                 height: dp(0)
 
 <PhotosScreen>:
@@ -2918,24 +3298,10 @@ KV = """
                 color: 0.4, 0.2, 0.5, 1
                 italic: True
 
-            Label:
-                text: root.status_text
-                size_hint_y: None
-                # Hauteur réduite à rien quand le statut est vide : ne
-                # pas laisser un espace vide entre le nom de la photo
-                # et le tableau (l'espace ne doit exister que pour un
-                # vrai message d'action).
-                height: (max(dp(30), self.texture_size[1] + dp(10)) if root.status_text else 0)
-                text_size: self.width, None
-                halign: "left"
-                valign: "top"
-                color: root.status_color
-
 # Ligne 1 : Date/Heure et Altitude
             BoxLayout:
                 size_hint_y: None
-                height: (dp(60) if root.photo_chargee else 0)
-                opacity: (1 if root.photo_chargee else 0)
+                height: dp(60)
                 spacing: dp(10)
 
                 BoxLayout:
@@ -2977,8 +3343,7 @@ KV = """
             # Ligne 2 : Latitude et Longitude
             BoxLayout:
                 size_hint_y: None
-                height: (dp(60) if root.photo_chargee else 0)
-                opacity: (1 if root.photo_chargee else 0)
+                height: dp(60)
                 spacing: dp(10)
 
                 BoxLayout:
@@ -3022,8 +3387,7 @@ KV = """
                 size_hint_x: 1
                 size_hint_y: None
                 # La hauteur s'adapte automatiquement à la largeur réelle du parent divisée par le ratio de l'image (4:3)
-                height: (self.width / (photo_img.image_ratio if photo_img.image_ratio else (4/3))) if root.photo_chargee else 0
-                opacity: (1 if root.photo_chargee else 0)
+                height: self.width / (photo_img.image_ratio if photo_img.image_ratio else (4/3))
                 
                 canvas.before:
                     Color:
@@ -3039,18 +3403,39 @@ KV = """
                     allow_stretch: True
                     keep_ratio: True
 
+            Button:
+                text: "Situer (Horodatage)"
+                size_hint_y: None
+                height: dp(48)
+                background_color: 0.16, 0.5, 0.73, 1
+                on_release: root.situer()
+
+            Button:
+                text: "Enregistrer EXIF"
+                size_hint_y: None
+                height: dp(48)
+                background_color: 0.90, 0.49, 0.13, 1
+                on_release: root.enregistrer_exif()
+
+            Label:
+                text: root.status_text
+                size_hint_y: None
+                height: max(dp(30), self.texture_size[1] + dp(10))
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                color: root.status_color
+
             Label:
                 text: root.titre_carte
                 size_hint_y: None
-                height: (dp(26) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
+                height: dp(26)
                 bold: True
                 color: root.titre_carte_color
 
             RelativeLayout:
                 size_hint_y: None
-                height: (dp(220) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
+                height: dp(220)
 
                 BoxLayout:
                     id: map_container
@@ -3094,24 +3479,6 @@ KV = """
                         Ellipse:
                             pos: self.pos
                             size: self.size
-
-            Button:
-                text: "Situer (Horodatage)"
-                size_hint_y: None
-                height: (dp(48) if (root.photo_chargee and root.trace_chargee) else 0)
-                opacity: (1 if (root.photo_chargee and root.trace_chargee) else 0)
-                disabled: not (root.photo_chargee and root.trace_chargee)
-                background_color: 0.16, 0.5, 0.73, 1
-                on_release: root.situer()
-
-            Button:
-                text: "Enregistrer EXIF"
-                size_hint_y: None
-                height: (dp(48) if (root.photo_chargee and root.trace_chargee) else 0)
-                opacity: (1 if (root.photo_chargee and root.trace_chargee) else 0)
-                disabled: not (root.photo_chargee and root.trace_chargee)
-                background_color: 0.90, 0.49, 0.13, 1
-                on_release: root.enregistrer_exif()
 
 <LiveScreen>:
     ScrollView:
@@ -3358,372 +3725,6 @@ KV = """
                 size_hint_y: None
                 height: dp(175)
 """
-
-
-class GraphePentes(Widget):
-    """Graphique des pentes de l'onglet Statistiques : la trace est
-    découpée en tranches de 500 m ; chaque tranche est dessinée comme
-    un rectangle vertical (barre) partant du ZÉRO de l'axe des
-    abscisses (base du graphique) et montant jusqu'à la courbe
-    d'altitude. La couleur suit des CLASSES de pente fixes : descentes
-    en TONS BLEUS de plus en plus sombres (bleu clair #8DA9C4 de
-    -10 à 0 % jusqu'au bleu marine très sombre #0A0F24 au-delà de
-    -30 %), PLAT beige/blanc cassé (#EEEDE9) autour de 0, montées du
-    JAUNE ORANGÉ (#F4A261, 0 à +10 %) à l'ORANGE (#E76F51), au
-    ROUGE (#D62828) puis au MARRON BORDEAUX (#4A0E0E) au-delà de
-    +30 %. La valeur de la pente (ex. « +12.4 ») est inscrite
-    au-dessus de la courbe, et le titre affiche le nombre de tranches
-    en montée et en descente. Reproduit le style des profils « pentes
-    sur 500 m » des applis de rando."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.tranches = []  # [(dist_km_debut, pente_pct, alt_debut, alt_fin)]
-        # Altitudes min/max réelles de la trace (sur tous les points) :
-        # servent d'échelle au graphique pour rester cohérent avec le
-        # tableau de statistiques (le sommet réel peut se trouver ENTRE
-        # deux bornes de tranches interpolées).
-        self.alt_min_pts = float("inf")
-        self.alt_max_pts = float("-inf")
-        # Sélection interconnectée (onglet « temp ») : distance (km)
-        # du point sélectionné — dessinée comme une ligne verticale
-        # pointillée rouge, comme le curseur de GrapheProfil.
-        self.distance_selection = None
-        # Distance cumulée TOTALE de la trace (km) : borne exacte de
-        # l'axe X. Sans elle, l'axe s'arrêterait à « début de la
-        # dernière tranche + 0,5 km », ce qui allonge artificiellement
-        # l'axe (trace de 10,3 km → axe jusqu'à 10,5 km) et décale le
-        # curseur de sélection avec un retard croissant en fin de trace.
-        self.dist_fin_km = None
-        # Points RÉELS de la courbe d'altitude : liste (distance_km,
-        # altitude) de tous les points GPS dotés d'une altitude. La
-        # courbe est tracée à partir d'eux (et non des seules bornes
-        # de tranches interpolées tous les 500 m) pour être
-        # EXACTEMENT identique à celle du profil d'altitude — sans
-        # cela, elle paraît « lissée » par l'échantillonnage.
-        self.points_courbe = []
-        # Callback appelé au tap dans la zone du graphique, avec la
-        # distance (km) tapée — même contrat que GrapheProfil.
-        self.callback_clic = None
-        # Couleur de la ligne pointillée de sélection : rouge par
-        # défaut ; l'onglet « temp » la passe en rose.
-        self.couleur_curseur = (0.85, 0.1, 0.1, 0.9)
-        self.bind(size=self._redessiner, pos=self._redessiner)
-
-    def set_selection(self, distance_km):
-        """Déplace (ou retire si None) le curseur vertical de
-        sélection, puis redessine."""
-        self.distance_selection = distance_km
-        self._redessiner()
-
-    def _distance_depuis_touch(self, touch):
-        """Distance (km) correspondant à la position tapée, en
-        replaçant les marges exactes de _redessiner (renvoie None si
-        le tap est hors zone utile)."""
-        marge_g, marge_d, marge_h, marge_b = dp(48), dp(48), dp(22), dp(38)
-        zx, zy = self.x + marge_g, self.y + marge_b
-        zw, zh = max(1.0, self.width - marge_g - marge_d), max(1.0, self.height - marge_h - marge_b)
-        gx, gw = zx + dp(42), max(1.0, zw - dp(42))
-        if not (gx <= touch.x <= gx + gw and zy <= touch.y <= zy + zh):
-            return None
-        if not self.tranches:
-            return None
-        # Même borne d'axe que _redessiner : vraie longueur de trace
-        # si fournie, sinon dernière tranche + 0,5 km.
-        dist_fin = self.dist_fin_km if self.dist_fin_km else self.tranches[-1][0] + 0.5
-        ratio = max(0.0, min(1.0, (touch.x - gx) / gw))
-        return ratio * dist_fin
-
-    def on_touch_down(self, touch):
-        """Appui dans le graphique des pentes : sélectionne la
-        distance tapée et CAPTURE le toucher pour suivre le
-        glissement (même mécanisme que GrapheProfil : le curseur
-        suit le doigt en temps réel). Ne consomme l'événement que si
-        le tap est dans la zone utile."""
-        if self.callback_clic is None or touch.grab_current is not None:
-            return False
-        distance = self._distance_depuis_touch(touch)
-        if distance is None:
-            return False
-        touch.grab(self)
-        self.set_selection(distance)
-        self.callback_clic(distance)
-        return True
-
-    def on_touch_move(self, touch):
-        """Glissement : le curseur suit le doigt et la sélection est
-        mise à jour en temps réel (carte, graphique d'altitude, bloc
-        d'infos) — même comportement que GrapheProfil."""
-        if touch.grab_current is self:
-            distance = self._distance_depuis_touch(touch)
-            if distance is not None:
-                self.set_selection(distance)
-                self.callback_clic(distance)
-            return True
-        return super().on_touch_move(touch)
-
-    def on_touch_up(self, touch):
-        """Fin du toucher : relâche la capture."""
-        if touch.grab_current is self:
-            touch.ungrab(self)
-            return True
-        return super().on_touch_up(touch)
-
-    # Couleurs/textes locaux (BLEU/GRIS_TEXTE de GrapheProfil sont des
-    # variables LOCALES à son _redessiner : on redéfinit ici).
-    BLEU = (0.12, 0.53, 0.90, 1)
-    GRIS_TEXTE = (0.25, 0.25, 0.25, 1)
-
-    @staticmethod
-    def _texte_texture(texte, taille_sp=10, gras=True):
-        core_lbl = CoreLabel(text=texte, font_size=dp(taille_sp), bold=gras)
-        core_lbl.refresh()
-        return core_lbl.texture
-
-    def _poser_texte(self, texte, x, y, couleur, taille_sp=10, centre_h=False, centre_v=False,
-                     gras=True, aligne_droite=False):
-        tex = self._texte_texture(texte, taille_sp=taille_sp, gras=gras)
-        if aligne_droite:
-            px = x - tex.width
-        elif centre_h:
-            px = x - tex.width / 2
-        else:
-            px = x
-        py = y - tex.height / 2 if centre_v else y
-        from kivy.graphics import Color, Rectangle as KivyRect
-        with self.canvas:
-            Color(*couleur)
-            KivyRect(texture=tex, pos=(px, py), size=tex.size)
-
-    def set_tranches(self, tranches, alt_min_pts=None, alt_max_pts=None, dist_fin_km=None,
-                     points_courbe=None):
-        """Alimente le graphique : liste de tranches de 500 m, chacune
-        (distance_debut_km, pente_pct, altitude_debut, altitude_fin).
-        alt_min_pts / alt_max_pts : altitudes min/max RÉELLES de la
-        trace (calculées sur tous les points, comme le tableau), car
-        le sommet peut se trouver entre deux bornes de tranches
-        interpolées. dist_fin_km : distance cumulée TOTALE de la trace
-        (borne exacte de l'axe X, pour que le curseur de sélection
-        soit aligné avec le graphique d'altitude, dont l'axe
-        s'arrête à la vraie fin de trace). points_courbe : liste
-        (distance_km, altitude) de TOUS les points GPS avec altitude
-        — la courbe d'altitude est tracée à partir d'eux pour être
-        identique à celle du profil d'altitude (sinon, échantillonnée
-        toutes les bornes de 500 m, elle paraît lissée). Déclenche le
-        redessin."""
-        self.tranches = tranches or []
-        if alt_min_pts is not None:
-            self.alt_min_pts = alt_min_pts
-        if alt_max_pts is not None:
-            self.alt_max_pts = alt_max_pts
-        if dist_fin_km is not None:
-            self.dist_fin_km = dist_fin_km
-        if points_courbe is not None:
-            self.points_courbe = list(points_courbe)
-        self._redessiner()
-
-    # Palette de classes de pente (couleurs fixes par palier) :
-    DESC_TRES_FORTE = (0.039, 0.059, 0.141, 1)   # < -30 %   : bleu marine très sombre #0A0F24
-    DESC_FORTE = (0.043, 0.145, 0.271, 1)       # -30 à -20 : bleu profond #0B2545
-    DESC_MARQUEE = (0.075, 0.251, 0.455, 1)     # -20 à -10 : bleu vif/moyen #134074
-    DESC_MODEREE = (0.553, 0.663, 0.769, 1)     # -10 à 0   : bleu clair #8DA9C4
-    PLAT = (0.933, 0.929, 0.914, 1)             # autour de 0 : beige/blanc cassé #EEEDE9
-    MONT_LEGERE = (0.957, 0.635, 0.380, 1)      # 0 à +10   : jaune orangé #F4A261
-    MONT_MODEREE = (0.906, 0.435, 0.318, 1)    # +10 à +20 : orange vif #E76F51
-    MONT_RAIDE = (0.839, 0.157, 0.157, 1)       # +20 à +30 : rouge #D62828
-    MONT_MUR = (0.290, 0.055, 0.055, 1)         # > +30     : marron/bordeaux #4A0E0E
-
-    def _couleur_pente(self, pente):
-        """Couleur d'une tranche selon sa classe de pente :
-        DESCENTES en BLEUS de plus en plus sombres (bleu clair #8DA9C4
-        de -10 à 0 %, jusqu'au bleu marine #0A0F24 au-delà de -30 %),
-        PLAT beige (#EEEDE9) uniquement autour de 0, MONTÉES du jaune
-        orangé (#F4A261, 0 à +10 %) au marron bordeaux (#4A0E0E)
-        au-delà de +30 %. Les bornes sont EXACTEMENT celles de la
-        légende : descente modérée de -10 à 0 %, montée légère de
-        0 à +10 %, le beige ne s'appliquant qu'à une pente
-        strictement quasi nulle (±0,1 %)."""
-        if pente < -30.0:
-            return self.DESC_TRES_FORTE
-        if pente < -20.0:
-            return self.DESC_FORTE
-        if pente < -10.0:
-            return self.DESC_MARQUEE
-        if pente < -0.1:
-            return self.DESC_MODEREE
-        if pente <= 0.1:
-            return self.PLAT
-        if pente < 10.0:
-            return self.MONT_LEGERE
-        if pente < 20.0:
-            return self.MONT_MODEREE
-        if pente <= 30.0:
-            return self.MONT_RAIDE
-        return self.MONT_MUR
-
-    @staticmethod
-    def _graduations(v_min, v_max, nb=4):
-        if nb <= 1 or v_max <= v_min:
-            return [v_min]
-        pas = (v_max - v_min) / (nb - 1)
-        return [v_min + i * pas for i in range(nb)]
-
-    def _redessiner(self, *args):
-        self.canvas.clear()
-        if not self.tranches or self.width < dp(30) or self.height < dp(30):
-            return
-        from kivy.graphics import Color, Line, Rectangle as KivyRectangle, Triangle
-
-        # Mêmes couleurs que GrapheProfil (onglet 4) pour un visuel
-        # identique : axes, courbe d'altitude et altitudes min/max.
-        ROUGE = (0.8, 0.1, 0.1, 1)
-
-        # Marges identiques à GrapheProfil._zone_graphique().
-        marge_g, marge_d, marge_h, marge_b = dp(48), dp(48), dp(22), dp(38)
-        zx, zy = self.x + marge_g, self.y + marge_b
-        zw, zh = max(1.0, self.width - marge_g - marge_d), max(1.0, self.height - marge_h - marge_b)
-
-        # Décalage horizontal (en pixels) pour laisser place aux labels
-        # min/max rouges à gauche de la courbe — comme GrapheProfil.
-        decalage_x = dp(42)
-        gx, gy = zx + decalage_x, zy
-        gw, gh = max(1.0, zw - decalage_x), zh
-
-        dists = [t[0] for t in self.tranches]
-        # Borne de l'axe X : distance TOTALE réelle de la trace si
-        # fournie, sinon repli sur « dernière tranche + 0,5 km ».
-        dist_fin = self.dist_fin_km if self.dist_fin_km else dists[-1] + 0.5
-        alt_min = min(self.alt_min_pts, min(t[2] for t in self.tranches))
-        alt_max = max(self.alt_max_pts, max(t[3] for t in self.tranches))
-        marge_alt = max((alt_max - alt_min) * 0.12, 10.0)
-        a_bas, a_haut = alt_min - marge_alt, alt_max + marge_alt
-        a_span = max(a_haut - a_bas, 1e-6)
-
-        def x_km(d):
-            return gx + d / dist_fin * gw
-
-        def y_alt(a):
-            return gy + (a - a_bas) / a_span * gh
-
-        with self.canvas:
-            Color(1, 1, 1, 1)
-            KivyRectangle(pos=(zx, zy), size=(zw, zh))
-
-            # Quadrillage d'altitude et valeurs sur l'axe Y (bleu),
-            # comme GrapheProfil.
-            for valeur in self._graduations(a_bas, a_haut, 5):
-                gyv = y_alt(valeur)
-                Color(0.88, 0.88, 0.88, 1)
-                Line(points=[zx, gyv, zx + zw, gyv], width=1)
-                self._poser_texte(f"{int(round(valeur))}", zx - dp(4), gyv, self.BLEU,
-                                  taille_sp=9, centre_v=True, gras=False, aligne_droite=True)
-
-            # Altitudes min et max (en ROUGE) placées dans l'espace
-            # décalé à gauche de la courbe — comme GrapheProfil.
-            for valeur in (alt_min, alt_max):
-                self._poser_texte(f"{int(round(valeur))}", zx + dp(4), y_alt(valeur), ROUGE,
-                                  taille_sp=9, centre_v=True, gras=True)
-
-            # Cadre gris du graphique — comme GrapheProfil.
-            Color(0.55, 0.55, 0.55, 1)
-            Line(points=[zx, zy, zx + zw, zy, zx + zw, zy + zh, zx, zy + zh], width=1.2)
-
-            # Graduations de l'axe X des distances (gris) — comme
-            # GrapheProfil.
-            for valeur in self._graduations(0.0, dist_fin, 5):
-                gxv = x_km(valeur)
-                Color(0.88, 0.88, 0.88, 1)
-                Line(points=[gxv, zy, gxv, zy + zh], width=1)
-                self._poser_texte(f"{valeur:.1f}", gxv, zy - dp(16), self.GRIS_TEXTE,
-                                  taille_sp=9, centre_h=True, gras=False)
-
-            # Barres : une par tranche de 500 m, partant du ZÉRO de
-            # l'axe des abscisses (gy, base du graphique) et montant
-            # jusqu'à la courbe d'altitude. Pour épouser EXACTEMENT
-            # la courbe (tracée sur les points GPS réels) sans vides
-            # ni débordements, chaque tranche est découpée en BANDES
-            # VERTICALES aux points réels qu'elle contient : la couleur
-            # reste celle de la classe de pente de la tranche, mais le
-            # sommet de chaque bande suit la courbe point à point.
-            for dist_km, pente, alt_dep, alt_arr in self.tranches:
-                x0, x1 = x_km(dist_km), x_km(min(dist_km + 0.5, dist_fin))
-                couleur = self._couleur_pente(pente)
-                # Bornes verticales internes : les points réels situés
-                # STRICTEMENT à l'intérieur de la tranche.
-                bornes = [d_pc for d_pc, a_pc in self.points_courbe
-                          if dist_km < d_pc < dist_km + 0.5]
-                bornes.append(min(dist_km + 0.5, dist_fin))
-                d_prec = dist_km
-                a_prec = alt_dep
-                for d_b in bornes:
-                    # Altitude de la courbe à la borne : celle du point
-                    # réel s'il existe, sinon l'altitude interpolée de
-                    # fin de tranche.
-                    a_b = alt_arr
-                    for d_pc, a_pc in self.points_courbe:
-                        if abs(d_pc - d_b) < 1e-9:
-                            a_b = a_pc
-                            break
-                    Color(*couleur)
-                    Triangle(points=[x_km(d_prec), gy, x_km(d_prec), y_alt(a_prec),
-                                     x_km(d_b), y_alt(a_b)])
-                    Triangle(points=[x_km(d_prec), gy, x_km(d_b), y_alt(a_b), x_km(d_b), gy])
-                    d_prec, a_prec = d_b, a_b
-                # Valeur de la pente inscrite au-dessus de la courbe,
-                # si elle tient horizontalement.
-                texte = f"{pente:+.1f}"
-                tex = self._texte_texture(texte, taille_sp=8, gras=False)
-                w_barre = x1 - x0
-                if tex.width < w_barre - dp(2):
-                    Color(*self.GRIS_TEXTE)
-                    KivyRectangle(texture=tex,
-                                 pos=(x0 + (w_barre - tex.width) / 2, y_alt(max(alt_dep, alt_arr)) + dp(1)),
-                                 size=tex.size)
-
-            # Courbe d'altitude : tracée à partir des TOUS les points
-            # GPS réels (self.points_courbe) pour être EXACTEMENT la
-            # même que sur le profil d'altitude — BLEUE, comme
-            # GrapheProfil (onglet 4). Repli sur les bornes de
-            # tranches si les points réels n'ont pas été fournis.
-            if self.points_courbe:
-                pts_courbe = []
-                for d_pc, a_pc in self.points_courbe:
-                    pts_courbe.append(x_km(min(d_pc, dist_fin)))
-                    pts_courbe.append(y_alt(a_pc))
-            else:
-                pts_courbe = []
-                for dist_km, pente, alt_dep, alt_arr in self.tranches:
-                    pts_courbe.append(x_km(dist_km))
-                    pts_courbe.append(y_alt(alt_dep))
-                dernier = self.tranches[-1]
-                pts_courbe.append(x_km(min(dernier[0] + 0.5, dist_fin)))
-                pts_courbe.append(y_alt(dernier[3]))
-            Color(*self.BLEU)
-            Line(points=pts_courbe, width=1.6)
-
-            # Curseur de sélection interconnecté : ligne verticale
-            # pointillée rouge, même graphisme que GrapheProfil.
-            if self.distance_selection is not None:
-                cx = x_km(self.distance_selection)
-                Color(*self.couleur_curseur)
-                longueur_trait = dp(5)
-                longueur_espace = dp(4)
-                y = gy
-                while y < gy + gh:
-                    y_fin = min(y + longueur_trait, gy + gh)
-                    Line(points=[cx, y, cx, y_fin], width=1.4)
-                    y += longueur_trait + longueur_espace
-
-        # Légendes d'axes — mêmes positions/couleurs que GrapheProfil.
-        self._poser_texte("Distance (km)", zx + zw / 2, self.y, self.GRIS_TEXTE,
-                          taille_sp=10, centre_h=True)
-        self._poser_texte("Altitude (m)", zx, zy + zh + dp(4), self.BLEU, taille_sp=9)
-        nb_montees = sum(1 for t in self.tranches if t[1] > 0)
-        nb_descentes = sum(1 for t in self.tranches if t[1] < 0)
-        self._poser_texte(
-            f"Pentes sur 500 m   ·   {nb_montees} en pentes positives   ·   {nb_descentes} en pentes négatives",
-            gx + gw / 2, gy + gh + dp(8),
-            (0.16, 0.2, 0.26, 1), taille_sp=11, centre_h=True, gras=True)
 
 
 class ConversionScreen(Screen):
@@ -4514,7 +4515,7 @@ class LiveScreen(Screen):
     info_fichier = StringProperty("Aucune trace à suivre chargée.")
     # Icone du bouton "Cam" (ouverture de l'appareil photo). L'image est
     # cherchee a cote de main.py : images/Camera.png (meme principe que
-    # les anciennes icones, fonctionnel sur PC comme dans l'APK).
+    # CHEMIN_BLUE_DOT, fonctionnel sur PC comme dans l'APK).
     CHEMIN_ICONE_CAM = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "images", "Camera.png")
     info_point_text = StringProperty("")
@@ -4656,11 +4657,6 @@ class LiveScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
-        # Le curseur mobile (disque rose) suit aussi le zoom depuis
-        # qu'il est passé sur la même formule de taille que les
-        # disques jaunes/rouges (plus de cote_dp fixe).
-        if getattr(self, "marqueur_curseur", None) is not None:
-            self.marqueur_curseur.maj_taille(zoom)
 
     def dezoomer_carte(self):
         if not CARTE_DISPONIBLE or self.map_view is None:
@@ -4768,7 +4764,10 @@ class LiveScreen(Screen):
         self.trace_layer = TraceLayer()
         self.trace_layer.set_points(liste_coords)
 
-        # Gestion des points de départ et d'arrivée (inchangée)
+        # Gestion des points de départ et d'arrivée : mêmes triangles
+        # que les onglets Carte/Nettoyage (vert départ, rouge arrivée,
+        # orange unique si boucle fermée <= 20 m) - affichage uniquement,
+        # aucune incidence sur la mécanique d'enregistrement du live.
         dist_dep_arr = gps_logic.calculer_distance_haversine(
             points[0]['lat'], points[0]['lon'], points[-1]['lat'], points[-1]['lon']
         )
@@ -4783,15 +4782,14 @@ class LiveScreen(Screen):
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
-        # Waypoints : disque jaune dessiné (MarqueurWaypoint), comme
-        # dans l'onglet Photos ; sa taille suit le zoom de la carte.
+        # Waypoints : disques jaunes dessinés (MarqueurWaypoint),
+        # comme dans les onglets Carte/Nettoyage ; leur taille suit le
+        # zoom de la carte. « Point de passage 1/2 » traités à part
+        # (triangles) juste après la boucle.
         for wpt in (waypoints or []):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
                 continue
-            # « Point de passage 1/2 » : ce sont le départ et l'arrivée,
-            # traités à part (triangles) juste après la boucle — pas
-            # de disque jaune pour eux.
             nom_w = (wpt.get('name') or '').strip()
             if nom_w in ("Point de passage 1", "Point de passage 2"):
                 continue
@@ -4803,13 +4801,19 @@ class LiveScreen(Screen):
             self.marqueurs_waypoints.append(mw)
 
         # Triangles départ/arrivée pour « Point de passage 1/2 »
-        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
+        # (vert / rouge, orange unique si boucle fermée <= 20 m),
+        # même règle que Carte/Nettoyage.
         _poser_triangles_points_passage(self, waypoints)
 
         # Ajout du calque de trace EN DERNIER (après tous les
         # marqueurs) pour qu'il s'affiche par-dessus les curseurs
-        # bleus des waypoints.
+        # des waypoints.
         self.map_view.add_layer(self.trace_layer)
+
+        # REMONTÉE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE (même
+        # mécanique que Carte/Nettoyage/temp) : sans elle, les disques
+        # jaunes et les triangles passent SOUS la trace chargée.
+        self._remonte_calque_marqueurs()
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
@@ -4822,6 +4826,31 @@ class LiveScreen(Screen):
             zoom = int(12 - math.log2(max_delta * 10))
             self.map_view.zoom = max(2, min(zoom, 18))
         
+    def _remonte_calque_marqueurs(self):
+        """Remonte le calque des marqueurs AU-DESSUS du calque de trace
+        (même mécanique que les onglets Carte/Nettoyage/temp) : retirer
+        puis re-poser le calque de marqueurs via l'API PUBLIQUE de
+        MapView (remove_layer/add_layer) le renvoie en fin de pile,
+        au-dessus de tout. AFFICHAGE uniquement : cette méthode n'a
+        AUCUNE incidence sur la mécanique d'enregistrement du live
+        (points, fichier, service, arrêt). À appeler après TOUTE pose
+        de marqueurs suivant un add_layer."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        couche = getattr(self.map_view, "_marker_layer", None)
+        if couche is None:
+            for l in getattr(self.map_view, "_layers", []) or []:
+                if isinstance(l, MarkerMapLayer):
+                    couche = l
+                    break
+        if couche is None:
+            return
+        try:
+            self.map_view.remove_layer(couche)
+            self.map_view.add_layer(couche)
+        except Exception:
+            pass
+
     def _trouver_dernier_gpx_gpslogger(self):
         """Trouve le fichier .gpx le plus récemment modifié dans les
         dossiers de sortie habituels de GPSLogger, sans présumer s'il
@@ -5580,67 +5609,12 @@ class LiveScreen(Screen):
         if self.pause_traitement_live:
             return
 
-        # ABSORPTION D'ABORD : au réveil d'une mise en veille, la file
-        # contient déjà le point « frais » du GPS natif (heure =
-        # maintenant) déposé par son thread de sondage pendant que
-        # Clock était gelé. Si on vidait la file avant d'absorber le
-        # fichier du service, ce point frais serait accepté le PREMIER,
-        # puis toute la salve (plus ancienne) du service serait rejetée
-        # par la garde chronologique de _ajouter_point_live : il ne
-        # resterait à l'écran que les points postérieurs au réveil. On
-        # absorbe donc le fichier AVANT de vider la file, puis on trie
-        # la salve par heure pour la traiter dans l'ordre.
-        #
-        # DIAGNOSTIC DE RÉVEIL : ce cycle tourne normalement toutes les
-        # secondes. Si l'écart avec le cycle précédent dépasse 45 s,
-        # l'horloge de l'appli était GELÉE (écran éteint / veille). On
-        # mémorise ce fait : après l'absorption, s'il n'y avait RIEN de
-        # nouveau dans le fichier du service, c'est que le service de
-        # premier plan n'a pas enregistré pendant l'absence (tué par
-        # MIUI, jamais démarré, ou APK sans le service) — il faut le
-        # DIRE à l'utilisateur au lieu de reprendre en silence.
-        heure_cycle_precedent = getattr(self, "_heure_dernier_cycle", None)
-        self._heure_dernier_cycle = datetime.now()
-        gel_detecte = (
-            heure_cycle_precedent is not None
-            and (datetime.now() - heure_cycle_precedent).total_seconds() > 45.0
-        )
-
-        if self.en_cours_live:
-            try:
-                bilan_absorption = self._absorber_points_service()
-            except Exception:
-                bilan_absorption = None
-            if gel_detecte and self.en_cours_live:
-                nb_deposes = bilan_absorption[0] if bilan_absorption else 0
-                duree_absence = (datetime.now() - heure_cycle_precedent).total_seconds()
-                if nb_deposes == 0:
-                    message_echec = (
-                        f"Réveil après {int(round(duree_absence / 60.0))} min d'arrêt : "
-                        f"le service d'arrière-plan n'a rien enregistré "
-                        f"(trace trouée). Vérifier la notification "
-                        f"« Bubu GPS » pendant l'écran éteint."
-                    )
-                    print(f"[Live service] {message_echec}")
-                    self._maj_statut_live(message_echec, (0.776, 0.157, 0.157, 1))  # rouge
-
         nouveaux_points = []
         try:
             while True:
                 nouveaux_points.append(self.file_points_live.get_nowait())
         except queue.Empty:
             pass
-
-        # Tri chronologique (stable) : la file est FIFO, mais le point
-        # frais du GPS natif peut y être entré AVANT les points du
-        # service déposés juste après par l'absorption ci-dessus.
-        def _cle_chrono(p):
-            t = p.get('time')
-            try:
-                return t.timestamp() if isinstance(t, datetime) else float('inf')
-            except Exception:
-                return float('inf')
-        nouveaux_points.sort(key=_cle_chrono)
 
         for point in nouveaux_points:
             try:
@@ -5664,9 +5638,19 @@ class LiveScreen(Screen):
                          + gps_natif.heure_dernier_fix() + "), points en attente de traitement.")
             self._maj_statut_live(texte, (0.937, 0.424, 0.0, 1))  # #EF6C00
 
-        # (L'absorption du fichier du service se fait maintenant EN
-        # DÉBUT de cycle, avant de vider la file — voir plus haut.)
+        # Absorption des points du service de premier plan (écrits pendant
+        # un écran éteint ou un arrière-plan prolongé) : le service tourne
+        # dans son propre processus et dépose ses points dans un fichier.
+        # UNIQUEMENT pendant un live actif : après « Terminer » (Oui ou
+        # Non), tout doit s'arrêter — si le service tarde à mourir ou
+        # redémarre (MIUI), ses derniers points ne doivent PAS revenir
+        # s'afficher ni être « à rattraper » : « Terminer » est le seul
+        # chemin qui purge et clôt la session.
         if self.en_cours_live:
+            try:
+                self._absorber_points_service()
+            except Exception:
+                pass
 
             # BATTEMENT DE STATUT : pendant un live actif avec des
             # points, le compteur se rafraîchit chaque seconde. Sans
@@ -5797,61 +5781,8 @@ class LiveScreen(Screen):
             except Exception:
                 pass
             print("[Live service] Service tracker lancé (premier plan).")
-            # VÉRIFICATION DIFFÉRÉE (6 s) : le service écrit une ligne
-            # « debut_session » dans le fichier dès son démarrage. Si
-            # rien de nouveau n'y apparaît, le service n'a PAS tourné
-            # (classe absente de l'APK, MIUI qui bloque...) : au lieu de
-            # laisser croire que l'écran éteint est couvert, on affiche
-            # un avertissement explicite dans le statut de l'onglet.
-            heure_lancement_service = datetime.now()
-            Clock.schedule_once(
-                lambda dt: self._verifier_service_demarre(heure_lancement_service), 6.0)
         except Exception as e:
             print(f"[Live service] Impossible de lancer le service tracker : {e}")
-            # ÉCHEC VISIBLE : sans service, RIEN n'est enregistré écran
-            # éteint (le GPS natif de l'appli gèle avec elle). L'erreur
-            # était jusqu'ici noyée dans la console : on l'affiche.
-            Clock.schedule_once(
-                lambda dt: self._maj_statut_live(
-                    f"Service d'arrière-plan indisponible ({e}) : "
-                    f"les points ne seront pas enregistrés écran éteint.",
-                    (0.937, 0.424, 0.0, 1)),  # #EF6C00
-                4.0,
-            )
-
-    def _verifier_service_demarre(self, heure_lancement):
-        """6 s après le lancement du service tracker : vérifie dans
-        live_service_points.json qu'une ligne (debut_session, battement
-        ou point) plus récente que le lancement a bien été écrite. Si
-        non, le service n'a pas démarré : avertissement visible (l'APK
-        doit être reconstruit avec, dans buildozer.spec :
-        services = Tracker:tracker_service.py:foreground). Ne lève
-        jamais ; ne fait rien si le live a été arrêté entre-temps."""
-        if not getattr(self, "en_cours_live", False):
-            return
-        try:
-            derniere_ligne = None
-            with open(self.CHEMIN_POINTS_SERVICE, "r", encoding="utf-8") as f:
-                for ligne in f:
-                    if ligne.strip():
-                        derniere_ligne = ligne
-            if derniere_ligne:
-                try:
-                    heure_ligne = datetime.fromisoformat(
-                        json.loads(derniere_ligne).get("time", ""))
-                except Exception:
-                    heure_ligne = None
-                if heure_ligne is not None and heure_ligne >= heure_lancement:
-                    print("[Live service] Service opérationnel "
-                          "(ligne récente détectée dans le fichier).")
-                    return  # Le service écrit : tout va bien.
-        except Exception:
-            pass
-        self._maj_statut_live(
-            "Service d'arrière-plan non démarré : les points ne seront "
-            "pas enregistrés écran éteint (APK à reconstruire avec le "
-            "service, ou MIUI le bloque).",
-            (0.937, 0.424, 0.0, 1))  # #EF6C00
 
     def _arreter_service_tracker(self):
         """Arrête le service de premier plan ET CLÔT la session (le
@@ -5906,16 +5837,15 @@ class LiveScreen(Screen):
         rattrapage du flux live normal."""
         chemin = self.CHEMIN_POINTS_SERVICE
         if not os.path.exists(chemin):
-            return (0, 0)
+            return
         if not hasattr(self, "_lignes_service_lues"):
             self._lignes_service_lues = 0
         try:
             with open(chemin, "r", encoding="utf-8") as f:
                 lignes = f.readlines()
         except OSError:
-            return (0, 0)
+            return
         nb_absorbes = 0
-        nb_deposes = 0
         for ligne in lignes[self._lignes_service_lues:]:
             self._lignes_service_lues += 1
             ligne = ligne.strip()
@@ -5939,7 +5869,6 @@ class LiveScreen(Screen):
                 "name": None,
                 "source": donnees.get("source", "service"),
             })
-            nb_deposes += 1
             # RATTRAPAGE = seulement les points ANCIENS (> 20 s) : ceux
             # enregistrés pendant une absence (écran éteint, arrière-
             # plan, pause). Les points récents (< 20 s) sont des doublons
@@ -5965,20 +5894,19 @@ class LiveScreen(Screen):
             self._journaliser_evenement_live(
                 f"rattrapage : {nb_absorbes} point(s) absorbé(s) du service "
                 f"(salve : {self._rattrapage_points})")
-        # Bilan pour l'appelant : (points déposés dans la file,
-        # points comptés comme rattrapage). Permet au cycle de
-        # traitement de DISTINGUER « rien à absorber » (service
-        # silencieux/tué : à signaler après un gel de l'écran) de
-        # « salve absorbée » (cas normal, déjà affiché en bleu).
-        return (nb_deposes, nb_absorbes)
 
     def _journaliser_evenement_live(self, texte):
-        """Anciennement, ajoutait une ligne d'EVENEMENT au journal de
-        post-mortem écrit dans debug_points_*.txt à l'arrêt du Live.
-        Ce fichier n'est plus produit (choix utilisateur) : la
-        méthode ne fait plus rien, conservée pour ne pas toucher les
-        nombreux appelants silencieux."""
-        pass
+        """Ajoute une ligne d'EVENEMENT au journal de post-mortem des
+        points live (debug_points_*.txt, voir _arreter_gpslogger) :
+        clic "Live" avec l'état détecté, chemin de reprise emprunté,
+        nombre de points lus au rechargement, etc. Permet de
+        reconstituer une reprise problématique (ex. compteur reparti
+        de zéro alors que le fichier GPX contenait déjà des points)."""
+        try:
+            self._journal_points_live.append(
+                ("EVENT", datetime.now().strftime("%H:%M:%S.%f")[:-3], texte))
+        except Exception:
+            pass
 
     def _ajouter_point_live(self, point):
         """Ajoute un nouveau point reçu en direct à la trace de cet
@@ -5986,9 +5914,19 @@ class LiveScreen(Screen):
         d'altitude sur le graphique (rouge, superposée à celle de la
         trace chargée en bleu — voir set_donnees_secondaires), et met à
         jour le bloc d'informations avec ce dernier point."""
-        # (Le journal de post-mortem en mémoire a été retiré en même
-        # temps que le fichier debug_points_*.txt : il n'était écrit
-        # nulle part ailleurs et n'était jamais relu.)
+        # Journal de post-mortem (silencieux) : chaque point recu en
+        # direct, accepte OU rejete, avec son horodatage de RECEPTION.
+        # Ecrit dans debug_points_*.txt a l'arret du live (voir
+        # _arreter_gpslogger) : permet de reconstituer exactement ce
+        # qui s'est passe lors d'une reprise problematique (ordre
+        # d'arrivee des points apres un reveil d'ecran, etc.).
+        try:
+            self._journal_points_live.append(
+                (datetime.now().strftime("%H:%M:%S.%f")[:-3],
+                 point['lat'], point['lon'], point.get('ele'),
+                 point.get('source', 'inconnue')))
+        except Exception:
+            pass
 
         if self.points_trace_live:
             dernier = self.points_trace_live[-1]
@@ -6091,12 +6029,12 @@ class LiveScreen(Screen):
 
         # Marqueur de position actuelle / départ
         if len(points) > 0:
-            m_depart = MarqueurFlag(couleur=COULEUR_FLAG_DEPART, lat=points[0]['lat'], lon=points[0]['lon'])
+            m_depart = MarqueurTexte(texte="D", lat=points[0]['lat'], lon=points[0]['lon'])
             self.map_view.add_marker(m_depart)
             self.marqueurs_actifs_live.append(m_depart)
             
         if len(points) > 1:
-            m_actuel = MarqueurFlag(couleur=COULEUR_FLAG_ARRIVEE, lat=points[-1]['lat'], lon=points[-1]['lon'])
+            m_actuel = MarqueurTexte(texte="A", lat=points[-1]['lat'], lon=points[-1]['lon'])
             self.map_view.add_marker(m_actuel)
             self.marqueurs_actifs_live.append(m_actuel)
 
@@ -6174,37 +6112,6 @@ class LiveScreen(Screen):
         # de figer la trace qui sera proposée à l'enregistrement.
         try:
             self._absorber_points_service()
-        except Exception:
-            pass
-
-        # INTÉGRER LA SALVE RATTRAPÉE AVANT LA PAUSE : l'absorption ne
-        # fait que DÉPOSER les points dans la file. Or la pause posée
-        # juste après gèle le traitement (la boucle ne vide plus la
-        # file), et _arreter_gpslogger purge la file sans la traiter :
-        # les points enregistrés pendant l'écran éteint étaient donc
-        # perdus à « Terminer » — ni affichés, ni exportés dans le GPX.
-        # On draine donc la file ICI, point par point, pour que
-        # points_trace_live contienne TOUTE la trace avant l'export.
-        # (Tri chronologique comme dans _traiter_file_points_live : le
-        # point « frais » du GPS natif peut précéder la salve du service.)
-        try:
-            points_a_integrer = []
-            try:
-                while True:
-                    points_a_integrer.append(self.file_points_live.get_nowait())
-            except Exception:
-                pass
-
-            def _cle_chrono(p):
-                t = p.get('time')
-                try:
-                    return t.timestamp() if isinstance(t, datetime) else float('inf')
-                except Exception:
-                    return float('inf')
-            points_a_integrer.sort(key=_cle_chrono)
-
-            for point in points_a_integrer:
-                self._ajouter_point_live(point)
         except Exception:
             pass
 
@@ -6355,11 +6262,22 @@ class LiveScreen(Screen):
         try:
             dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
             os.makedirs(dossier_cible, exist_ok=True)
-            # PLUS DE FICHIERS log_*.txt NI debug_points_*.txt : ces
-            # deux fichiers informatifs (jamais relus par l'appli)
-            # n'étaient écrits qu'ici, à l'arrêt du Live. Ils ne sont
-            # plus demandés — la sortie ne contient que la trace GPX
-            # et le fichier temporaire des annotations (live_temp_*).
+            nom_log = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            chemin_log = os.path.join(dossier_cible, nom_log)
+            with open(chemin_log, "w", encoding="utf-8") as f:
+                for source, nb in sorted(self.compteur_sources_live.items()):
+                    f.write(f"{source} : {nb}\n")
+
+            if self._journal_points_live:
+                nom_debug = f"debug_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                chemin_debug = os.path.join(dossier_cible, nom_debug)
+                with open(chemin_debug, "w", encoding="utf-8") as f:
+                    f.write("TYPE;HEURE;LAT/TEXTE;LON;ELE;SOURCE\n")
+                    for entree in self._journal_points_live:
+                        if entree and entree[0] == "EVENT":
+                            f.write(f"EVENT;{entree[1]};{entree[2]}\n")
+                        else:
+                            f.write("POINT;" + ";".join(str(v) for v in entree) + "\n")
         except Exception:
             pass
         finally:
@@ -7143,28 +7061,6 @@ class CarteScreen(Screen):
         self.graphe.set_donnees(*self.profil)
         self._afficher_trace_sur_carte(points, waypoints=vrais_wpts)
 
-    def _remonte_calque_marqueurs(self):
-        """Remonte le calque des marqueurs AU-DESSUS du calque de trace,
-        via l'API publique de MapView (remove_layer/add_layer). Voir la
-        version commentée identique dans NettoyageScreen. Nécessaire dès
-        qu'une trace est re-posée alors que le calque de marqueurs
-        existe déjà (re-chargement d'une trace dans l'onglet)."""
-        if not CARTE_DISPONIBLE or self.map_view is None:
-            return
-        couche = getattr(self.map_view, "_marker_layer", None)
-        if couche is None:
-            for l in getattr(self.map_view, "_layers", []) or []:
-                if isinstance(l, MarkerMapLayer):
-                    couche = l
-                    break
-        if couche is None:
-            return
-        try:
-            self.map_view.remove_layer(couche)
-            self.map_view.add_layer(couche)
-        except Exception:
-            pass
-
     def _afficher_trace_sur_carte(self, points, waypoints=None):
         """Equivalent de afficher_trace_sur_carte() dans la version
         desktop : trace la polyligne, place les marqueurs D/A, centre
@@ -7191,16 +7087,12 @@ class CarteScreen(Screen):
             return
 
         liste_coords = [(p['lat'], p['lon']) for p in points]
-        # Le calque de la trace est posé AVANT les marqueurs : dans
-        # mapview, les marqueurs vivent dans un calque distinct et tout
-        # calque ajouté après les recouvre TOUS. Posé en premier, le
-        # calque de trace passe sous les marqueurs — le disque rouge du
-        # curseur de sélection (et les curseurs de waypoints) s'affichent
-        # donc PAR-DESSUS la trace, comme demandé (même choix que
-        # l'onglet Nettoyage).
+        # Le calque de la trace est posé APRÈS les marqueurs (D/A et
+        # waypoints) : ajouté en dernier, il s'affiche par-dessus eux,
+        # comme sur l'onglet Live (7). Sinon les curseurs bleus des
+        # waypoints passaient par-dessus la trace.
         self.trace_layer = TraceLayer()
         self.trace_layer.set_points(liste_coords)
-        self.map_view.add_layer(self.trace_layer)
 
         for wpt in (waypoints or []):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
@@ -7208,7 +7100,7 @@ class CarteScreen(Screen):
                 continue
             # « Point de passage 1/2 » : ce sont le départ et l'arrivée,
             # traités à part (triangles) juste après la boucle — pas
-            # de disque jaune pour eux.
+            # de disque jaune pour eux (même règle que Nettoyage).
             nom_w = (wpt.get('name') or '').strip()
             if nom_w in ("Point de passage 1", "Point de passage 2"):
                 continue
@@ -7220,7 +7112,8 @@ class CarteScreen(Screen):
             self.marqueurs_waypoints.append(mw)
 
         # Triangles départ/arrivée pour « Point de passage 1/2 »
-        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
+        # (vert / rouge, orange unique si boucle fermée ≤ 20 m),
+        # même règle que Nettoyage.
         _poser_triangles_points_passage(self, waypoints)
 
         dist_dep_arr = gps_logic.calculer_distance_haversine(
@@ -7237,10 +7130,12 @@ class CarteScreen(Screen):
             self.map_view.add_marker(m_arrivee)
             self.marqueurs_actifs.extend([m_depart, m_arrivee])
 
+        self.map_view.add_layer(self.trace_layer)
+
         # REMONTÉE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE (même
-        # correction que l'onglet Nettoyage, via l'API publique
-        # remove_layer/add_layer de MapView — voir là-bas la méthode
-        # _remonte_calque_marqueurs pour l'explication complète).
+        # mécanique que les onglets Nettoyage et temp) : sans elle,
+        # les disques jaunes et les triangles D/A passent SOUS la
+        # trace dès qu'un add_layer de trace suit la pose des marqueurs.
         self._remonte_calque_marqueurs()
 
         lats = [c[0] for c in liste_coords]
@@ -7254,14 +7149,40 @@ class CarteScreen(Screen):
             zoom = int(12 - math.log2(max_delta * 10))
             self.map_view.zoom = max(2, min(zoom, 18))
 
+    def _remonte_calque_marqueurs(self):
+        """Remonte le calque des marqueurs AU-DESSUS du calque de trace
+        (même mécanique que les onglets Nettoyage et temp) : retirer
+        puis re-poser le calque de marqueurs via l'API PUBLIQUE de
+        MapView (remove_layer/add_layer) le renvoie en fin de pile,
+        au-dessus de tout. À appeler après TOUTE pose de marqueurs
+        suivant un add_layer."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        couche = getattr(self.map_view, "_marker_layer", None)
+        if couche is None:
+            for l in getattr(self.map_view, "_layers", []) or []:
+                if isinstance(l, MarkerMapLayer):
+                    couche = l
+                    break
+        if couche is None:
+            return
+        try:
+            self.map_view.remove_layer(couche)
+            self.map_view.add_layer(couche)
+        except Exception:
+            pass
+
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
-        # Le curseur mobile (disque rose) suit aussi le zoom depuis
-        # qu'il est passé sur la même formule de taille que les
-        # disques jaunes/rouges (plus de cote_dp fixe).
+
+        # Le curseur mobile (disque rose, comme l'onglet Nettoyage)
+        # suit aussi le zoom (même formule de taille que les disques).
         if getattr(self, "marqueur_curseur", None) is not None:
-            self.marqueur_curseur.maj_taille(zoom)
+            try:
+                self.marqueur_curseur.maj_taille(zoom)
+            except Exception:
+                pass
 
     def _debut_touch_carte(self, window, touch):
         """Mémorise la position de l'appui si le toucher démarre sur la
@@ -7327,8 +7248,10 @@ class CarteScreen(Screen):
         if CARTE_DISPONIBLE and self.map_view is not None:
             if self.marqueur_curseur is not None:
                 self.map_view.remove_marker(self.marqueur_curseur)
-            # Même curseur que l'onglet Nettoyage : disque ROSE dessiné,
-            # sans le carré blanc du MapMarker standard.
+            # Curseur de sélection : disque ROSE exactement comme
+            # l'onglet Nettoyage (MarqueurDisqueRouge : texture du
+            # MapMarker neutralisée, disque dessiné, taille suivant le
+            # zoom via maj_taille).
             self.marqueur_curseur = MarqueurDisqueRouge(
                 zoom=self.map_view.zoom,
                 couleur=COULEUR_ROSE_CURSEUR,
@@ -7479,98 +7402,7 @@ class StatistiquesScreen(Screen):
         # Transmission des waypoints uniques vers la logique de calcul
         stats = gps_logic.calculer_statistiques(points, waypoints)
         self._afficher_tableau(stats)
-
-        # Graphique des pentes : tranches de 500 m le long de la trace.
-        self._afficher_pentes(points)
         
-    def _calculer_tranches_pentes(self, points, pas_m=500.0):
-        """Découpe la trace en tranches de 500 m (dernière tronquée).
-        Pour chaque tranche : distance cumulée de début (km), pente
-        MOYENNE (%, = (alt_fin - alt_début) / distance réelle), altitude
-        de début et de fin. Les points sans altitude sont ignorés en
-        bornes (on prend les altitudes des points les plus proches des
-        extrémités de tranche). Retourne une liste
-        [(dist_debut_km, pente_pct, alt_dep, alt_arr), ...]."""
-        # Points avec altitude, distances cumulées.
-        pts = []
-        dist_cum = 0.0
-        precedent = None
-        for p in points:
-            if precedent is not None:
-                dist_cum += gps_logic.calculer_distance_haversine(
-                    precedent['lat'], precedent['lon'], p['lat'], p['lon'])
-            precedent = p
-            if p.get('ele') is not None:
-                pts.append((dist_cum, p['ele']))
-        if len(pts) < 2:
-            return []
-
-        def _alt_a(distance_m):
-            """Altitude interpolée au mètre donné (recherche binaire
-            approximative par balayage — les traces ont peu de points,
-            un balayage simple suffit)."""
-            for i in range(1, len(pts)):
-                if pts[i][0] >= distance_m:
-                    d0, a0 = pts[i - 1]
-                    d1, a1 = pts[i]
-                    if d1 > d0:
-                        ratio = (distance_m - d0) / (d1 - d0)
-                        return a0 + (a1 - a0) * ratio
-                    return a0
-            return pts[-1][1]
-
-        tranches = []
-        dist_fin = pts[-1][0]
-        nb_tranches = max(1, int(dist_fin // pas_m) + (1 if dist_fin % pas_m > 1.0 else 0))
-        for i in range(nb_tranches):
-            d0 = i * pas_m
-            d1 = min((i + 1) * pas_m, dist_fin)
-            if d1 - d0 < 1.0:
-                break
-            a0 = _alt_a(d0)
-            a1 = _alt_a(d1)
-            pente = (a1 - a0) / (d1 - d0) * 100.0
-            tranches.append((d0 / 1000.0, round(pente, 1), round(a0, 1), round(a1, 1)))
-        return tranches
-
-    def _afficher_pentes(self, points):
-        """Calcule les tranches de 500 m et alimente le GraphePentes
-        de l'écran (ids.pentes_trace). Masqué si la trace est trop
-        courte (< 1 km) ou sans altitudes."""
-        graphe = self.ids.pentes_trace
-        tranches = self._calculer_tranches_pentes(points, pas_m=500.0)
-        # Altitudes min/max réelles sur TOUS les points de la trace
-        # (cohérence avec le tableau de statistiques).
-        altitudes = [p['ele'] for p in points if p.get('ele') is not None]
-        alt_min = min(altitudes) if altitudes else None
-        alt_max = max(altitudes) if altitudes else None
-        # Distance cumulée TOTALE de la trace (km) : borne exacte de
-        # l'axe X du graphique, pour que le curseur de sélection reste
-        # aligné avec le graphique d'altitude (la dernière tranche est
-        # le plus souvent tronquée : 10,3 km de trace ≠ axe de 10,5 km).
-        # En même temps : liste (distance_km, altitude) de TOUS les
-        # points GPS avec altitude — la courbe du graphique des pentes
-        # est tracée à partir d'eux pour être identique au profil
-        # (sinon, échantillonnée aux bornes de 500 m, elle paraît lissée).
-        dist_totale = 0.0
-        points_courbe = []
-        precedent = None
-        for p in points:
-            if precedent is not None:
-                dist_totale += gps_logic.calculer_distance_haversine(
-                    precedent['lat'], precedent['lon'], p['lat'], p['lon'])
-            precedent = p
-            if p.get('ele') is not None:
-                points_courbe.append((dist_totale / 1000.0, p['ele']))
-        if len(tranches) < 2:
-            graphe.height = dp(0)
-            graphe.set_tranches([])
-            return
-        graphe.height = dp(230)
-        graphe.set_tranches(tranches, alt_min_pts=alt_min, alt_max_pts=alt_max,
-                            dist_fin_km=dist_totale / 1000.0,
-                            points_courbe=points_courbe)
-
     def _afficher_tableau(self, valeurs):
         conteneur = self.ids.tableau_stats
         conteneur.clear_widgets()
@@ -8696,14 +8528,16 @@ class TempScreen(Screen):
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     en_cours = BooleanProperty(False)
     info_point_text = StringProperty("")
-    # Bloc "Informations du point sélectionné" (grille 3 lignes x 2
-    # colonnes : Point/GPS, Distance/Altitude, Heure/Vitesse).
+    # Bloc "Informations du point sélectionné" (grille 2 colonnes :
+    # Point, Distance, Heure et Pente à gauche ; GPS, Altitude,
+    # et Vitesse à droite.)
     info_point_num = StringProperty("")
     info_point_gps = StringProperty("")
     info_point_dist = StringProperty("")
     info_point_alt = StringProperty("")
     info_point_heure = StringProperty("")
     info_point_vit = StringProperty("")
+    info_point_pente = StringProperty("")
 
     # Libellés du tableau de statistiques (mêmes clés que l'onglet
     # Statistiques) : 10 lignes, affichées en 2 colonnes de 5.
@@ -8881,6 +8715,7 @@ class TempScreen(Screen):
         self.info_point_alt = ""
         self.info_point_heure = ""
         self.info_point_vit = ""
+        self.info_point_pente = ""
         # Statistiques de la trace (mêmes calculs que l'onglet
         # Statistiques), affichées dans le tableau 2 colonnes x 5
         # lignes au-dessus de la carte.
@@ -8906,8 +8741,18 @@ class TempScreen(Screen):
         from kivy.uix.label import Label as LabelKv
 
         stats = gps_logic.calculer_statistiques(points, waypoints)
-        valeurs = [(libelle, str(stats.get(cle, "-")))
-                   for cle, libelle in self.LIBELLES_STATS]
+        # Le kilomètre-effort est renvoyé par gps_logic sous la forme
+        # « 38.36 km-effort » : on garde le nombre et on abrège
+        # l'unité en KE (affichage : Kilomètre-Effort : 38.36 KE).
+        valeurs = []
+        for cle, libelle in self.LIBELLES_STATS:
+            val = str(stats.get(cle, "-"))
+            if cle == "km_effort" and val != "-":
+                try:
+                    val = f"{float(val.split()[0]):.2f} KE"
+                except (ValueError, IndexError):
+                    val = val + " KE"
+            valeurs.append((libelle, val))
         # 5 premières stats à gauche, 5 suivantes à droite.
         for colonne_id, trio in zip(
             ("stats_temp_gauche", "stats_temp_droite"),
@@ -8936,6 +8781,7 @@ class TempScreen(Screen):
         courte (< 1 km) ou sans altitudes."""
         graphe = self.ids.pentes_temp
         tranches = self._calculer_tranches_pentes(points, pas_m=500.0)
+        self._tranches_pentes = tranches
         # Altitudes min/max réelles sur TOUS les points de la trace
         # (cohérence avec le graphique d'altitude au-dessus).
         altitudes = [p['ele'] for p in points if p.get('ele') is not None]
@@ -8963,7 +8809,7 @@ class TempScreen(Screen):
             graphe.height = dp(0)
             graphe.set_tranches([])
             return
-        graphe.height = dp(230)
+        graphe.height = dp(175)
         graphe.set_tranches(tranches, alt_min_pts=alt_min, alt_max_pts=alt_max,
                             dist_fin_km=dist_totale / 1000.0,
                             points_courbe=points_courbe)
@@ -9243,6 +9089,20 @@ class TempScreen(Screen):
         self.info_point_alt = f"Altitude: {ele_txt}"
         self.info_point_heure = f"Heure: {heure}"
         self.info_point_vit = f"Vitesse: {vit} km/h"
+        # Pente du point sélectionné : celle de la tranche de 500 m du
+        # graphique des pentes qui contient ce point.
+        pente_txt = "-"
+        tranches_p = getattr(self, "_tranches_pentes", None)
+        if tranches_p:
+            pente_val = None
+            for t in tranches_p:
+                if t[0] <= dist + 1e-9:
+                    pente_val = t[1]
+                else:
+                    break
+            if pente_val is not None:
+                pente_txt = f"{pente_val:+.1f} %"
+        self.info_point_pente = f"Pente: {pente_txt}"
         # Interconnexion : le curseur de sélection apparaît AUSSI sur
         # le graphique des pentes, à la même distance cumulée.
         self.graphe.set_selection(dist)
@@ -9267,11 +9127,6 @@ class PhotosScreen(Screen):
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     titre_carte = StringProperty("Emplacement de la photo sur la trace")
     titre_carte_color = ListProperty([0, 0, 0, 1])
-    # Affichage progressif : le tableau n'apparaît qu'avec une photo,
-    # la carte qu'avec une trace, et les boutons Situer/EXIF exigent
-    # les DEUX (voir le KV de <PhotosScreen>).
-    photo_chargee = BooleanProperty(False)
-    trace_chargee = BooleanProperty(False)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -9302,11 +9157,6 @@ class PhotosScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
-        # Le curseur mobile (disque rose) suit aussi le zoom depuis
-        # qu'il est passé sur la même formule de taille que les
-        # disques jaunes/rouges (plus de cote_dp fixe).
-        if getattr(self, "marqueur_curseur", None) is not None:
-            self.marqueur_curseur.maj_taille(zoom)
 
     def dezoomer_carte(self):
         """Réduit le niveau de zoom de la carte (bouton "-", même
@@ -9367,7 +9217,6 @@ class PhotosScreen(Screen):
 
         self.points_trace = points
         self.info_trace = f"Trace : {os.path.basename(chemin)}."
-        self.trace_chargee = True
 
         # Waypoints de la trace : mêmes « vrais » waypoints que dans l'onglet
         # Statistiques (ni n° de points, ni waypoints superposés au
@@ -9395,13 +9244,7 @@ class PhotosScreen(Screen):
 
         self.fichier_photo = chemin
         self.info_photo = f"Photo : {os.path.basename(chemin)}"
-        self.photo_chargee = True
         self.status_text = ""
-        # Réinitialise le titre de la carte : il ne doit pas garder
-        # l'état (« Position non trouvée... » ou localisation) de la
-        # photo précédemment testée.
-        self.titre_carte = "Emplacement de la photo sur la trace"
-        self.titre_carte_color = [0, 0, 0, 1]
 
         exif_data = gps_logic.get_exif_data(chemin)
         self.champ_date = exif_data["datetime"] or ""
@@ -9420,17 +9263,8 @@ class PhotosScreen(Screen):
         EXIF saisie et pré-remplit latitude/longitude/altitude,
         équivalent de situer_exif_edite() dans la version desktop."""
         if not self.champ_date.strip():
-            # Photo sans EXIF (tableau vide au chargement) : même
-            # message que la recherche infructueuse. On remet aussi le
-            # titre de la carte à zéro, sinon il gardait l'état de la
-            # photo précédente (non réactif).
-            self.status_text = "Position non trouvée sur la trace"
+            self.status_text = "Renseigne une date/heure pour la photo."
             self.status_color = [0.8, 0.1, 0.1, 1]
-            self.titre_carte = "Position non trouvée sur la trace"
-            self.titre_carte_color = [0.8, 0.1, 0.1, 1]
-            if CARTE_DISPONIBLE and self.map_view is not None and self.marqueur_photo is not None:
-                self.map_view.remove_marker(self.marqueur_photo)
-                self.marqueur_photo = None
             return
         if not self.points_trace:
             self.status_text = "Charge d'abord une trace pour y chercher l'horodatage."
@@ -9520,12 +9354,6 @@ class PhotosScreen(Screen):
             lat_w, lon_w = wpt.get('lat'), wpt.get('lon')
             if lat_w is None or lon_w is None:
                 continue
-            # « Point de passage 1/2 » : ce sont le départ et l'arrivée,
-            # traités à part (triangles) juste après la boucle — pas
-            # de disque jaune pour eux.
-            nom_w = (wpt.get('name') or '').strip()
-            if nom_w in ("Point de passage 1", "Point de passage 2"):
-                continue
             mw = MarqueurWaypoint(
                 zoom=self.map_view.zoom, lat=lat_w, lon=lon_w,
                 nom=wpt.get('name'), description=wpt.get('description'),
@@ -9533,11 +9361,12 @@ class PhotosScreen(Screen):
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
 
-        # Triangles départ/arrivée pour « Point de passage 1/2 »
-        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
-        _poser_triangles_points_passage(self, waypoints)
-
         self.map_view.add_layer(self.trace_layer)
+
+        # REMONTÉE DU CALQUE DE MARQUEURS AU-DESSUS DE LA TRACE (même
+        # mécanique que les onglets Nettoyage et temp) : sans elle,
+        # les disques jaunes des waypoints passent SOUS la trace.
+        self._remonte_calque_marqueurs()
 
         lats = [c[0] for c in liste_coords]
         lons = [c[1] for c in liste_coords]
@@ -9548,6 +9377,29 @@ class PhotosScreen(Screen):
         if max_delta > 0:
             zoom = int(12 - math.log2(max_delta * 10))
             self.map_view.zoom = max(2, min(zoom, 18))
+
+    def _remonte_calque_marqueurs(self):
+        """Remonte le calque des marqueurs AU-DESSUS du calque de trace
+        (même mécanique que les onglets Nettoyage et temp) : retirer
+        puis re-poser le calque de marqueurs via l'API PUBLIQUE de
+        MapView (remove_layer/add_layer) le renvoie en fin de pile,
+        au-dessus de tout. À appeler après TOUTE pose de marqueurs
+        suivant un add_layer."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        couche = getattr(self.map_view, "_marker_layer", None)
+        if couche is None:
+            for l in getattr(self.map_view, "_layers", []) or []:
+                if isinstance(l, MarkerMapLayer):
+                    couche = l
+                    break
+        if couche is None:
+            return
+        try:
+            self.map_view.remove_layer(couche)
+            self.map_view.add_layer(couche)
+        except Exception:
+            pass
 
 
 class EcranAVenir(Screen):
@@ -9634,8 +9486,6 @@ class OutilsTracesApp(App):
         self.sm.add_widget(NettoyageScreen(name="nettoyage"))
         self.sm.add_widget(PhotosScreen(name="photos"))
         self.sm.add_widget(LiveScreen(name="Live"))
-        # Onglet "temp" : copie de travail de l'onglet Nettoyage,
-        # placée en DERNIÈRE position (banc d'essai).
         self.sm.add_widget(TempScreen(name="temp"))
 
         # --- Barre du haut : menu déroulant (gauche) + titre + Quitter (droite) ---
