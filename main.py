@@ -837,7 +837,7 @@ if CARTE_DISPONIBLE:
         images/blue_dot.png n'est plus utilisé). Centré sur le point.
         Un tap dessus ouvre un popup avec son nom (<name>) et sa
         description (<desc>). Si un callback on_waypoint_clic est
-        branché (onglet « temp »), le tap SÉLECTIONNE AUSSI le point
+        branché (onglet Statistiques), le tap SÉLECTIONNE AUSSI le point
         de trace le plus proche (curseurs des graphiques + bloc
         d'infos), tout en ouvrant le popup comme avant."""
 
@@ -846,7 +846,7 @@ if CARTE_DISPONIBLE:
             self.nom = nom
             self.description = description
             # Callback optionnel (lat, lon) appelé au tap AVANT le
-            # popup : utilisé par l'onglet « temp » pour sélectionner
+            # popup : utilisé par l'onglet Statistiques pour sélectionner
             # le point de trace le plus proche du waypoint. None
             # partout ailleurs : comportement inchangé.
             self.on_waypoint_clic = on_waypoint_clic
@@ -908,7 +908,7 @@ if CARTE_DISPONIBLE:
                 touch.ungrab(self)
                 if self.collide_point(*touch.pos):
                     # Sélection du point de trace le plus proche
-                    # (onglet « temp » uniquement) AVANT le popup.
+                    # (onglet Statistiques uniquement) AVANT le popup.
                     if self.on_waypoint_clic is not None:
                         try:
                             self.on_waypoint_clic(self.lat, self.lon)
@@ -1057,11 +1057,11 @@ class GrapheProfil(Widget):
         self.freeze_actif = False
         self.afficher_courbe_vitesse = True  # <--- AJOUT ICI
         # Axe/graduations/légende de vitesse : masquables séparément
-        # de la courbe (utilisé par l'onglet « temp »).
+        # de la courbe (utilisé par l'onglet Statistiques).
         self.afficher_axe_vitesse = True
         self.afficher_curseur = True
         # Couleur de la ligne pointillée de sélection : rouge par
-        # défaut ; l'onglet « temp » la passe en rose
+        # défaut ; l'onglet Statistiques la passe en rose
         # (COULEUR_ROSE_CURSEUR) pour ses deux graphiques.
         self.couleur_curseur = (0.85, 0.1, 0.1, 0.9)
         self.bind(pos=self._redessiner, size=self._redessiner)
@@ -1379,7 +1379,7 @@ class GraphePentes(Widget):
         # deux bornes de tranches interpolées).
         self.alt_min_pts = float("inf")
         self.alt_max_pts = float("-inf")
-        # Sélection interconnectée (onglet « temp ») : distance (km)
+        # Sélection interconnectée (onglet Statistiques) : distance (km)
         # du point sélectionné — dessinée comme une ligne verticale
         # pointillée rouge, comme le curseur de GrapheProfil.
         self.distance_selection = None
@@ -1400,7 +1400,7 @@ class GraphePentes(Widget):
         # distance (km) tapée — même contrat que GrapheProfil.
         self.callback_clic = None
         # Couleur de la ligne pointillée de sélection : rouge par
-        # défaut ; l'onglet « temp » la passe en rose.
+        # défaut ; l'onglet Statistiques la passe en rose.
         self.couleur_curseur = (0.85, 0.1, 0.1, 0.9)
         self.bind(size=self._redessiner, pos=self._redessiner)
 
@@ -1721,7 +1721,7 @@ class GraphePentes(Widget):
         self._poser_texte("Distance (km)", zx + zw / 2, self.y, self.GRIS_TEXTE,
                           taille_sp=10, centre_h=True)
         # Titre « Pentes sur 500 m ... » : optionnel, masquable
-        # (afficher_titre = False, utilisé par l'onglet temp).
+        # (afficher_titre = False, utilisé par l'onglet Statistiques).
         if getattr(self, "afficher_titre", True):
             nb_montees = sum(1 for t in self.tranches if t[1] > 0)
             nb_descentes = sum(1 for t in self.tranches if t[1] < 0)
@@ -2633,7 +2633,7 @@ KV = """
                 disabled: not root.trace_nettoyee
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.enregistrer_trace_nettoyee()
-<TempScreen>:
+<StatistiquesScreen>:
     ScrollView:
         do_scroll_x: False
         BoxLayout:
@@ -2644,7 +2644,7 @@ KV = """
             spacing: dp(8)
 
             Label:
-                text: "temp"
+                text: "Statistiques"
                 font_size: "20sp"
                 bold: True
                 size_hint_y: None
@@ -2706,25 +2706,25 @@ KV = """
             AnchorLayout:
                 anchor_x: "center"
                 size_hint_y: None
-                height: (stats_temp_lignes.height if root.trace_chargee else 0)
+                height: (stats_lignes.height if root.trace_chargee else 0)
                 opacity: (1 if root.trace_chargee else 0)
 
                 BoxLayout:
-                    id: stats_temp_lignes
+                    id: stats_lignes
                     orientation: "horizontal"
                     size_hint: None, None
                     size: self.minimum_size
                     spacing: dp(16)
 
                     GridLayout:
-                        id: stats_temp_gauche
+                        id: stats_gauche
                         cols: 1
                         size_hint: None, None
                         size: self.minimum_size
                         spacing: dp(2)
 
                     GridLayout:
-                        id: stats_temp_droite
+                        id: stats_droite
                         cols: 1
                         size_hint: None, None
                         size: self.minimum_size
@@ -2863,7 +2863,7 @@ KV = """
                             font_size: "12sp"
                             color: 0, 0, 0, 1
                         Label:
-                            id: lbl_vit_temp
+                            id: lbl_vit_stats
                             text: root.info_point_vit
                             size_hint: None, None
                             size: self.texture_size
@@ -2876,7 +2876,7 @@ KV = """
                             # ligne à ligne avec elle.
                             text: ""
                             size_hint: None, None
-                            size: 0, lbl_vit_temp.height
+                            size: 0, lbl_vit_stats.height
                             font_size: "12sp"
 
             BoxLayout:
@@ -2895,7 +2895,7 @@ KV = """
             # bleu→beige→jaune/orange/rouge, courbe d'altitude bleue.
             GraphePentes:
                 afficher_valeurs_pentes: False
-                id: pentes_temp
+                id: pentes_stats
                 size_hint_y: None
                 afficher_titre: False
                 height: dp(0)
@@ -5996,6 +5996,20 @@ class LiveScreen(Screen):
             pass
         self._rattrapage_points = 0
         self._rattrapage_heure = None
+
+        # Purge du fichier de points du service (live_service_points.json)
+        # après « Terminer » (Oui ou Non) : la session étant clôturée
+        # (marqueur supprimé), ce fichier n'a plus d'usage — le prochain
+        # « Live » repartira d'un fichier vierge créé par le service.
+        # Seul « Terminer » passe ici : « Annuler » (reprise du live) et
+        # la reprise de session interrompue (appli tuée sans Terminer)
+        # ne doivent PAS le supprimer.
+        try:
+            if os.path.exists(self.CHEMIN_POINTS_SERVICE):
+                os.remove(self.CHEMIN_POINTS_SERVICE)
+        except OSError:
+            pass
+        self._lignes_service_lues = 0
         return True, True, " / ".join(details)
 
     def _reinitialiser_onglet7_vierge(self):
@@ -8098,8 +8112,8 @@ class NettoyageScreen(Screen):
                 pass
 
 
-class TempScreen(Screen):
-    """Onglet « temp » : copie de travail de l'onglet Découpe,
+class StatistiquesScreen(Screen):
+    """Onglet Statistiques : copie de travail de l'onglet Découpe,
     SANS le bloc de découpe de trace (zone de saisie + bouton
     « Couper ici »). Le reste est identique : carte, graphique
     d'altitude + vitesse, infos du point sélectionné."""
@@ -8193,8 +8207,8 @@ class TempScreen(Screen):
         # Interconnexion : un tap sur le graphique des pentes
         # sélectionne le point le plus proche (même handler que le
         # graphique d'altitude).
-        self.ids.pentes_temp.callback_clic = self._sur_clic_graphique
-        self.ids.pentes_temp.couleur_curseur = COULEUR_ROSE_CURSEUR
+        self.ids.pentes_stats.callback_clic = self._sur_clic_graphique
+        self.ids.pentes_stats.couleur_curseur = COULEUR_ROSE_CURSEUR
 
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
@@ -8306,7 +8320,7 @@ class TempScreen(Screen):
         self._afficher_trace_sur_carte(points, waypoints=vrais_wpts)
         # Nouvelle trace : retire l'éventuel curseur de sélection du
         # graphique des pentes avant de recalculer ses tranches.
-        self.ids.pentes_temp.set_selection(None)
+        self.ids.pentes_stats.set_selection(None)
         # Graphique des pentes (composant GraphePentes, indépendant
         # de tout onglet) : tranches de 500 m, altitudes min/max
         # réelles. Masqué si trace trop courte ou sans altitudes.
@@ -8336,7 +8350,7 @@ class TempScreen(Screen):
             valeurs.append((libelle, val))
         # 5 premières stats à gauche, 5 suivantes à droite.
         for colonne_id, trio in zip(
-            ("stats_temp_gauche", "stats_temp_droite"),
+            ("stats_gauche", "stats_droite"),
             (valeurs[:5], valeurs[5:]),
         ):
             colonne = self.ids[colonne_id]
@@ -8358,9 +8372,9 @@ class TempScreen(Screen):
 
     def _afficher_pentes(self, points):
         """Calcule les tranches de 500 m et alimente le GraphePentes
-        de l'onglet (ids.pentes_temp). Masqué si la trace est trop
+        de l'onglet (ids.pentes_stats). Masqué si la trace est trop
         courte (< 1 km) ou sans altitudes."""
-        graphe = self.ids.pentes_temp
+        graphe = self.ids.pentes_stats
         tranches = self._calculer_tranches_pentes(points, pas_m=500.0)
         self._tranches_pentes = tranches
         # Altitudes min/max réelles sur TOUS les points de la trace
@@ -8687,7 +8701,7 @@ class TempScreen(Screen):
         # Interconnexion : le curseur de sélection apparaît AUSSI sur
         # le graphique des pentes, à la même distance cumulée.
         self.graphe.set_selection(dist)
-        self.ids.pentes_temp.set_selection(dist)
+        self.ids.pentes_stats.set_selection(dist)
 
 
 class PhotosScreen(Screen):
@@ -9066,6 +9080,7 @@ class OutilsTracesApp(App):
         Builder.load_string(KV)
 
         self.sm = ScreenManager()
+        self.sm.add_widget(StatistiquesScreen(name="statistiques"))
         self.sm.add_widget(ConversionScreen(name="conversion"))
         self.sm.add_widget(NumerotationScreen(name="numerotation"))
         self.sm.add_widget(FusionScreen(name="fusion"))
@@ -9073,13 +9088,12 @@ class OutilsTracesApp(App):
         self.sm.add_widget(NettoyageScreen(name="nettoyage"))
         self.sm.add_widget(PhotosScreen(name="photos"))
         self.sm.add_widget(LiveScreen(name="Live"))
-        self.sm.add_widget(TempScreen(name="temp"))
 
         # --- Barre du haut : menu déroulant (gauche) + titre + Quitter (droite) ---
         barre = BoxLayout(size_hint_y=None, height=dp(60), padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
-        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Découpe"), ("nettoyage", "Nettoyage"), ("photos", "Photos"), ("Live", "Live"), ("temp", "temp")]
+        self._ecrans_menu = [("statistiques", "Statistiques"), ("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Découpe"), ("nettoyage", "Nettoyage"), ("photos", "Photos"), ("Live", "Live")]
         self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
         self._boutons_menu = {}
         for nom_ecran, libelle in self._ecrans_menu:
