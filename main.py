@@ -5938,22 +5938,26 @@ class LiveScreen(Screen):
         try:
             dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
             os.makedirs(dossier_cible, exist_ok=True)
-            nom_log = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            chemin_log = os.path.join(dossier_cible, nom_log)
-            with open(chemin_log, "w", encoding="utf-8") as f:
-                for source, nb in sorted(self.compteur_sources_live.items()):
-                    f.write(f"{source} : {nb}\n")
+            # Journal « log_YYYYMMDD_HHMMSS.txt » désactivé (demande
+            # explicite : ce fichier ne doit plus être généré).
+            # nom_log = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            # chemin_log = os.path.join(dossier_cible, nom_log)
+            # with open(chemin_log, "w", encoding="utf-8") as f:
+            #     for source, nb in sorted(self.compteur_sources_live.items()):
+            #         f.write(f"{source} : {nb}\n")
 
-            if self._journal_points_live:
-                nom_debug = f"debug_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                chemin_debug = os.path.join(dossier_cible, nom_debug)
-                with open(chemin_debug, "w", encoding="utf-8") as f:
-                    f.write("TYPE;HEURE;LAT/TEXTE;LON;ELE;SOURCE\n")
-                    for entree in self._journal_points_live:
-                        if entree and entree[0] == "EVENT":
-                            f.write(f"EVENT;{entree[1]};{entree[2]}\n")
-                        else:
-                            f.write("POINT;" + ";".join(str(v) for v in entree) + "\n")
+            # Journal « debug_points_YYYYMMDD_HHMMSS.txt » désactivé
+            # (demande explicite : ce fichier ne doit plus être généré).
+            # if self._journal_points_live:
+            #     nom_debug = f"debug_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            #     chemin_debug = os.path.join(dossier_cible, nom_debug)
+            #     with open(chemin_debug, "w", encoding="utf-8") as f:
+            #         f.write("TYPE;HEURE;LAT/TEXTE;LON;ELE;SOURCE\n")
+            #         for entree in self._journal_points_live:
+            #             if entree and entree[0] == "EVENT":
+            #                 f.write(f"EVENT;{entree[1]};{entree[2]}\n")
+            #             else:
+            #                 f.write("POINT;" + ";".join(str(v) for v in entree) + "\n")
         except Exception:
             pass
         finally:
