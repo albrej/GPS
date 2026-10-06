@@ -1059,6 +1059,13 @@ class GrapheProfil(Widget):
         # Axe/graduations/légende de vitesse : masquables séparément
         # de la courbe (utilisé par l'onglet Statistiques).
         self.afficher_axe_vitesse = True
+        # --- Pentes optionnelles (onglet Statistiques, case à cocher
+        # « Pentes ») : bandes de couleur par classe de pente dessinées
+        # sous la courbe d'altitude, alimentées par set_pentes() et
+        # visibles uniquement si afficher_pentes est True.
+        self.afficher_pentes = False
+        self.tranches_pentes = []
+        self.points_courbe_pentes = []
         self.afficher_curseur = True
         # Couleur de la ligne pointillée de sélection : rouge par
         # défaut ; l'onglet Statistiques la passe en rose
@@ -1090,6 +1097,73 @@ class GrapheProfil(Widget):
         self.distances_ele_secondaire = []
         self.altitudes_secondaire = []
         self._redessiner()
+
+    def set_pentes(self, tranches, points_courbe):
+        """Fournit les tranches de pente (liste [(dist_km_debut,
+        pente_pct, alt_debut, alt_fin)] calculée comme pour
+        GraphePentes) et les points réels (distance_km, altitude) de
+        la courbe : dessinées en bandes colorées SOUS la courbe
+        d'altitude, mais uniquement si afficher_pentes est True
+        (case à cocher « Pentes » de l'onglet Statistiques)."""
+        self.tranches_pentes = list(tranches)
+        self.points_courbe_pentes = list(points_courbe)
+        self._preparer_bandes_pentes()
+        self._redessiner()
+
+    def _preparer_bandes_pentes(self):
+        """Précalcule les bandes verticales des pentes UNE SEULE FOIS
+        (au set_pentes), en un parcours unique des points GPS triés
+        par distance (bisect) — au lieu de rescanner tous les points
+        pour chaque borne à chaque redessin (O(N²) : c'est ce qui
+        rendait l'onglet peu réactif). Le redessin n'a plus qu'à
+        projeter les bandes précalculées (O(nb bandes)).
+        Résultat : self._bandes_pentes = liste de
+        (couleur, d1, a1, d2, a2), distances en km / altitudes en m,
+        bornes incluses dans [début de tranche, fin réelle]."""
+        self._bandes_pentes = []
+        if not self.tranches_pentes or not self.points_courbe_pentes:
+            return
+        from bisect import bisect_right
+        debut_tranches = [t[0] for t in self.tranches_pentes]
+        # Fin réelle de l'axe X : dernière distance du profil
+        # (set_donnees précède toujours set_pentes au chargement),
+        # sinon dernière distance de la courbe des pentes.
+        if self.distances_km:
+            dist_fin = max(self.distances_km)
+        else:
+            dist_fin = max(d for d, _ in self.points_courbe_pentes)
+        # Points de la courbe rangés par tranche (parcours unique :
+        # les points sont déjà triés par distance croissante).
+        par_tranche = [[] for _ in self.tranches_pentes]
+        for d_pc, a_pc in self.points_courbe_pentes:
+            i = bisect_right(debut_tranches, d_pc) - 1
+            if i >= 0 and d_pc < debut_tranches[i] + 0.5:
+                par_tranche[i].append((d_pc, a_pc))
+        # Bandes de chaque tranche : de (début, alt_dep) jusqu'à
+        # (fin réelle, alt_arr), en suivant les points intermédiaires.
+        # DÉCIMATION : au-delà de 12 points dans une tranche, on
+        # échantillonne régulièrement — le rendu reste identique à
+        # l'œil (500 m de large), mais le nombre d'instructions
+        # graphiques (2 triangles + 1 Color PAR point) n'explose
+        # plus : c'est lui qui rendait le glissement du curseur
+        # irréactif sur les traces denses (toutes les instructions
+        # sont reconstruites à chaque frame du glissement).
+        MAX_PTS_PAR_TRANCHE = 12
+        for i, (dist_km, pente, alt_dep, alt_arr) in enumerate(self.tranches_pentes):
+            couleur = GraphePentes._couleur_pente(pente)
+            d_fin = min(dist_km + 0.5, dist_fin)
+            pts = par_tranche[i]
+            if len(pts) > MAX_PTS_PAR_TRANCHE:
+                pas = (len(pts) - 1) / (MAX_PTS_PAR_TRANCHE - 1)
+                pts = [pts[int(round(j * pas))] for j in range(MAX_PTS_PAR_TRANCHE)]
+            d_prec, a_prec = dist_km, alt_dep
+            for d_pc, a_pc in pts:
+                if d_pc > d_fin:
+                    break
+                self._bandes_pentes.append((couleur, d_prec, a_prec, d_pc, a_pc))
+                d_prec, a_prec = d_pc, a_pc
+            if d_prec < d_fin:
+                self._bandes_pentes.append((couleur, d_prec, a_prec, d_fin, alt_arr))
 
     def set_selection(self, distance_km):
         self.distance_selection = distance_km
@@ -1233,6 +1307,21 @@ class GrapheProfil(Widget):
                 self._poser_texte(f"{valeur:.1f}", gx, zy - dp(16), GRIS_TEXTE,
                                    taille_sp=9, centre_h=True, gras=False)
 
+            # --- Bandes de pentes optionnelles (case « Pentes » de
+            # l'onglet Statistiques) : mêmes classes de couleurs que
+            # le graphique des pentes (GraphePentes). Les bandes sont
+            # PRÉCALCULÉES par _preparer_bandes_pentes (set_pentes) :
+            # le redessin ne fait que les projeter à l'écran — rapide
+            # même sur les longues traces (le calcul O(N²) par
+            # redessin rendait l'onglet peu réactif).
+            if self.afficher_pentes and getattr(self, "_bandes_pentes", None) and a_ele:
+                from kivy.graphics import Triangle
+                for couleur, d1, a1, d2, a2 in self._bandes_pentes:
+                    Color(*couleur)
+                    Triangle(points=[x_ecran(d1), zy, x_ecran(d1), y_alt(a1),
+                                     x_ecran(d2), y_alt(a2)])
+                    Triangle(points=[x_ecran(d1), zy, x_ecran(d2), y_alt(a2),
+                                     x_ecran(d2), zy])
             if a_ele:
                 # Tracé de la courbe d'altitude (trace chargée, bleu)
                 points_ligne = []
@@ -1360,12 +1449,12 @@ class GraphePentes(Widget):
     un rectangle vertical (barre) partant du ZÉRO de l'axe des
     abscisses (base du graphique) et montant jusqu'à la courbe
     d'altitude. La couleur suit des CLASSES de pente fixes : descentes
-    en TONS BLEUS de plus en plus sombres (bleu clair #8DA9C4 de
-    -10 à 0 % jusqu'au bleu marine très sombre #0A0F24 au-delà de
+    en TONS BLEUS de plus en plus sombres (bleu céleste clair #9EE0FF
+    de -10 à 0 % jusqu'au bleu nuit profond #00264D au-delà de
     -30 %), PLAT beige/blanc cassé (#EEEDE9) autour de 0, montées du
-    JAUNE ORANGÉ (#F4A261, 0 à +10 %) à l'ORANGE (#E76F51), au
-    ROUGE (#D62828) puis au MARRON BORDEAUX (#4A0E0E) au-delà de
-    +30 %. La valeur de la pente (ex. « +12.4 ») est inscrite
+    ROSE CORAIL CLAIR (#FF9E9E, 0 à +10 %) au ROUGE VIF (#D90429),
+    au ROUGE FONCÉ (#990000) puis au ROUGE PROFOND (#660000) au-delà
+    de +30 %. La valeur de la pente (ex. « +12.4 ») est inscrite
     au-dessus de la courbe, et le titre affiche le nombre de tranches
     en montée et en descente. Reproduit le style des profils « pentes
     sur 500 m » des applis de rando."""
@@ -1524,43 +1613,48 @@ class GraphePentes(Widget):
         self._redessiner()
 
     # Palette de classes de pente (couleurs fixes par palier) :
-    DESC_TRES_FORTE = (0.039, 0.059, 0.141, 1)   # < -30 %   : bleu marine très sombre #0A0F24
-    DESC_FORTE = (0.043, 0.145, 0.271, 1)       # -30 à -20 : bleu profond #0B2545
-    DESC_MARQUEE = (0.075, 0.251, 0.455, 1)     # -20 à -10 : bleu vif/moyen #134074
-    DESC_MODEREE = (0.553, 0.663, 0.769, 1)     # -10 à 0   : bleu clair #8DA9C4
+    DESC_TRES_FORTE = (0.0, 0.149, 0.302, 1)     # < -30 %   : bleu nuit profond #00264D
+    DESC_FORTE = (0.0, 0.298, 0.6, 1)          # -30 à -20 : bleu foncé #004C99
+    DESC_MARQUEE = (0.0, 0.502, 1.0, 1)         # -20 à -10 : bleu vif #0080FF
+    DESC_MODEREE = (0.620, 0.878, 1.0, 1)      # -10 à 0   : bleu céleste clair #9EE0FF
     PLAT = (0.933, 0.929, 0.914, 1)             # autour de 0 : beige/blanc cassé #EEEDE9
-    MONT_LEGERE = (0.957, 0.635, 0.380, 1)      # 0 à +10   : jaune orangé #F4A261
-    MONT_MODEREE = (0.906, 0.435, 0.318, 1)    # +10 à +20 : orange vif #E76F51
-    MONT_RAIDE = (0.839, 0.157, 0.157, 1)       # +20 à +30 : rouge #D62828
-    MONT_MUR = (0.290, 0.055, 0.055, 1)         # > +30     : marron/bordeaux #4A0E0E
+    MONT_LEGERE = (1.0, 0.620, 0.620, 1)      # 0 à +10   : rose corail clair #FF9E9E
+    MONT_MODEREE = (0.851, 0.016, 0.161, 1)   # +10 à +20 : rouge vif #D90429
+    MONT_RAIDE = (0.6, 0.0, 0.0, 1)           # +20 à +30 : rouge foncé #990000
+    MONT_MUR = (0.4, 0.0, 0.0, 1)             # > +30     : rouge profond #660000
 
-    def _couleur_pente(self, pente):
+    # Classmethod : appelée aussi par GrapheProfil (bandes de pentes
+    # optionnelles du graphique d'altitude, case « Pentes » de
+    # l'onglet Statistiques).
+    @classmethod
+    def _couleur_pente(cls, pente):
         """Couleur d'une tranche selon sa classe de pente :
-        DESCENTES en BLEUS de plus en plus sombres (bleu clair #8DA9C4
-        de -10 à 0 %, jusqu'au bleu marine #0A0F24 au-delà de -30 %),
-        PLAT beige (#EEEDE9) uniquement autour de 0, MONTÉES du jaune
-        orangé (#F4A261, 0 à +10 %) au marron bordeaux (#4A0E0E)
+        DESCENTES en BLEUS de plus en plus sombres (bleu céleste
+        clair #9EE0FF de -10 à 0 %, jusqu'au bleu nuit profond
+        #00264D au-delà de -30 %), PLAT beige (#EEEDE9)
+        uniquement autour de 0, MONTÉES du rose corail clair
+        (#FF9E9E, 0 à +10 %) au rouge profond (#660000)
         au-delà de +30 %. Les bornes sont EXACTEMENT celles de la
         légende : descente modérée de -10 à 0 %, montée légère de
         0 à +10 %, le beige ne s'appliquant qu'à une pente
         strictement quasi nulle (±0,1 %)."""
         if pente < -30.0:
-            return self.DESC_TRES_FORTE
+            return cls.DESC_TRES_FORTE
         if pente < -20.0:
-            return self.DESC_FORTE
+            return cls.DESC_FORTE
         if pente < -10.0:
-            return self.DESC_MARQUEE
+            return cls.DESC_MARQUEE
         if pente < -0.1:
-            return self.DESC_MODEREE
+            return cls.DESC_MODEREE
         if pente <= 0.1:
-            return self.PLAT
+            return cls.PLAT
         if pente < 10.0:
-            return self.MONT_LEGERE
+            return cls.MONT_LEGERE
         if pente < 20.0:
-            return self.MONT_MODEREE
+            return cls.MONT_MODEREE
         if pente <= 30.0:
-            return self.MONT_RAIDE
-        return self.MONT_MUR
+            return cls.MONT_RAIDE
+        return cls.MONT_MUR
 
     @staticmethod
     def _graduations(v_min, v_max, nb=4):
@@ -1664,7 +1758,6 @@ class GraphePentes(Widget):
                     for d_pc, a_pc in self.points_courbe:
                         if abs(d_pc - d_b) < 1e-9:
                             a_b = a_pc
-                            break
                     Color(*couleur)
                     Triangle(points=[x_km(d_prec), gy, x_km(d_prec), y_alt(a_prec),
                                      x_km(d_b), y_alt(a_b)])
@@ -2884,21 +2977,67 @@ KV = """
                 size_hint_y: None
                 height: dp(175)
 
-            # Espace entre le graphique d'altitude et le graphique
-            # des pentes (sinon les deux se touchaient).
-            Widget:
+            # Options du graphique d'altitude : deux cases à cocher
+            # (décochées par défaut) sur une même ligne, même design
+            # que l'onglet Conversion (case 24x24 dp à cadre carré
+            # noir). « Vitesses » rajoute la courbe de vitesse avec
+            # son axe et sa légende ; « Pentes » rajoute les bandes
+            # de pente par classes de couleurs.
+            # Centrées horizontalement comme le bloc « Statistiques
+            # générales » (AnchorLayout + contenu à taille minimum).
+            AnchorLayout:
+                anchor_x: "center"
                 size_hint_y: None
-                height: dp(10)
+                height: dp(48)
 
-            # Graphique des pentes (composant GraphePentes) :
-            # tranches de 500 m, classes de couleurs
-            # bleu→beige→jaune/orange/rouge, courbe d'altitude bleue.
-            GraphePentes:
-                afficher_valeurs_pentes: False
-                id: pentes_stats
-                size_hint_y: None
-                afficher_titre: False
-                height: dp(0)
+                BoxLayout:
+                    size_hint: None, None
+                    size: self.minimum_size
+                    spacing: dp(24)
+
+                    BoxLayout:
+                        size_hint: None, None
+                        size: self.minimum_size
+                        spacing: dp(8)
+                        CheckBox:
+                            size_hint: None, None
+                            size: dp(24), dp(24)
+                            pos_hint: {"center_y": 0.5}
+                            on_active: root._basculer_vitesses(self.active)
+                            canvas.before:
+                                Color:
+                                    rgba: 0, 0, 0, 1
+                                Line:
+                                    width: 1.2
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                        Label:
+                            text: "Vitesses"
+                            color: 0, 0, 0, 1
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "16sp"
+
+                    BoxLayout:
+                        size_hint: None, None
+                        size: self.minimum_size
+                        spacing: dp(8)
+                        CheckBox:
+                            size_hint: None, None
+                            size: dp(24), dp(24)
+                            pos_hint: {"center_y": 0.5}
+                            on_active: root._basculer_pentes(self.active)
+                            canvas.before:
+                                Color:
+                                    rgba: 0, 0, 0, 1
+                                Line:
+                                    width: 1.2
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                        Label:
+                            text: "Pentes"
+                            color: 0, 0, 0, 1
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "16sp"
 
 <PhotosScreen>:
     ScrollView:
@@ -8199,16 +8338,15 @@ class StatistiquesScreen(Screen):
         self.graphe = GrapheProfil()
         self.graphe.callback_clic = self._sur_clic_graphique
         self.ids.zone_graphique.add_widget(self.graphe)
-        # Courbe de vitesse du graphique (avec son axe et sa
-        # légende), comme l'onglet Découpe.
+        # Courbe de vitesse (avec son axe et sa légende) et bandes
+        # de pentes : MASQUÉES par défaut sur le graphique
+        # d'altitude ; rajoutées par les cases à cocher
+        # « Vitesses » / « Pentes » placées juste en dessous.
+        self.graphe.afficher_courbe_vitesse = False
+        self.graphe.afficher_axe_vitesse = False
         # Lignes pointillées de sélection en ROSE (couleur du disque
         # curseur de la carte) sur les DEUX graphiques de cet onglet.
         self.graphe.couleur_curseur = COULEUR_ROSE_CURSEUR
-        # Interconnexion : un tap sur le graphique des pentes
-        # sélectionne le point le plus proche (même handler que le
-        # graphique d'altitude).
-        self.ids.pentes_stats.callback_clic = self._sur_clic_graphique
-        self.ids.pentes_stats.couleur_curseur = COULEUR_ROSE_CURSEUR
 
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
@@ -8265,6 +8403,22 @@ class StatistiquesScreen(Screen):
             return
         self.charger_trace(chemin)
 
+    def _basculer_vitesses(self, active):
+        """Case à cocher « Vitesses » : rajoute (ou enlève) la courbe
+        de vitesse, son axe et sa légende sur le graphique
+        d'altitude. Décochée par défaut : altitude seule."""
+        self.graphe.afficher_courbe_vitesse = bool(active)
+        self.graphe.afficher_axe_vitesse = bool(active)
+        self.graphe._redessiner()
+
+    def _basculer_pentes(self, active):
+        """Case à cocher « Pentes » : rajoute (ou enlève) les bandes
+        de pente — mêmes classes de couleurs que le graphique des
+        pentes — sous la courbe d'altitude du premier graphique.
+        Décochée par défaut."""
+        self.graphe.afficher_pentes = bool(active)
+        self.graphe._redessiner()
+
     def charger_trace(self, chemin):
         """Charge une trace GPX/KMZ/KML dans cet onglet. Utilisée à la
         fois par le sélecteur de fichier interne (_fichier_choisi
@@ -8318,12 +8472,6 @@ class StatistiquesScreen(Screen):
         self.profil = gps_logic.calculer_profil(points)
         self.graphe.set_donnees(*self.profil)
         self._afficher_trace_sur_carte(points, waypoints=vrais_wpts)
-        # Nouvelle trace : retire l'éventuel curseur de sélection du
-        # graphique des pentes avant de recalculer ses tranches.
-        self.ids.pentes_stats.set_selection(None)
-        # Graphique des pentes (composant GraphePentes, indépendant
-        # de tout onglet) : tranches de 500 m, altitudes min/max
-        # réelles. Masqué si trace trop courte ou sans altitudes.
         self._afficher_pentes(points)
 
     def _afficher_stats_trace(self, points, waypoints):
@@ -8369,12 +8517,11 @@ class StatistiquesScreen(Screen):
                 lbl.texture_update()
                 lbl.size = lbl.texture_size
                 colonne.add_widget(lbl)
-
     def _afficher_pentes(self, points):
-        """Calcule les tranches de 500 m et alimente le GraphePentes
-        de l'onglet (ids.pentes_stats). Masqué si la trace est trop
-        courte (< 1 km) ou sans altitudes."""
-        graphe = self.ids.pentes_stats
+
+        """Calcule les tranches de 500 m et alimente le PREMIER
+        graphique (option « Pentes » : bandes sous la courbe
+        d'altitude)."""
         tranches = self._calculer_tranches_pentes(points, pas_m=500.0)
         self._tranches_pentes = tranches
         # Altitudes min/max réelles sur TOUS les points de la trace
@@ -8400,14 +8547,10 @@ class StatistiquesScreen(Screen):
             precedent = p
             if p.get('ele') is not None:
                 points_courbe.append((dist_totale / 1000.0, p['ele']))
-        if len(tranches) < 2:
-            graphe.height = dp(0)
-            graphe.set_tranches([])
-            return
-        graphe.height = dp(175)
-        graphe.set_tranches(tranches, alt_min_pts=alt_min, alt_max_pts=alt_max,
-                            dist_fin_km=dist_totale / 1000.0,
-                            points_courbe=points_courbe)
+        # Mêmes tranches pour le PREMIER graphique (option
+        # « Pentes » : bandes sous la courbe d'altitude) : la
+        # case à cocher décide si elles sont dessinées ou non.
+        self.graphe.set_pentes(tranches, points_courbe)
 
     def _calculer_tranches_pentes(self, points, pas_m=500.0):
         """Découpe la trace en tranches de 500 m (dernière tronquée).
@@ -8698,10 +8841,7 @@ class StatistiquesScreen(Screen):
             if pente_val is not None:
                 pente_txt = f"{pente_val:+.1f} %"
         self.info_point_pente = f"Pente: {pente_txt}"
-        # Interconnexion : le curseur de sélection apparaît AUSSI sur
-        # le graphique des pentes, à la même distance cumulée.
         self.graphe.set_selection(dist)
-        self.ids.pentes_stats.set_selection(dist)
 
 
 class PhotosScreen(Screen):
