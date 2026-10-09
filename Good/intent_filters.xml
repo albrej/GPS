@@ -1,0 +1,45 @@
+<!--
+    Filtres d'intention ajoutés à l'activité principale via
+    buildozer.spec (android.manifest_intent_filters = intent_filters.xml)
+    pour que "Bubu GPS" apparaisse dans le menu "Ouvrir avec" (une fois /
+    toujours) d'Android quand on clique sur un fichier .gpx, .kml ou
+    .kmz — que ce fichier soit ouvert via un chemin direct (file://,
+    certains gestionnaires de fichiers) ou via un fournisseur de
+    contenu (content://, la majorité des gestionnaires modernes et
+    Google Drive). Voir OutilsTracesApp._sur_nouvel_intent dans main.py
+    pour le traitement côté Python.
+
+    Deux blocs distincts (plutôt qu'un seul avec plusieurs <data>) pour
+    éviter les combinaisons croisées non voulues entre schéma et type
+    MIME, comme recommandé par la documentation Android.
+-->
+
+<!-- 1) Ouverture par extension de fichier (file://), quel que soit le
+     type MIME rapporté (souvent absent ou générique pour ces formats). -->
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <category android:name="android.intent.category.BROWSABLE" />
+    <data android:scheme="file" />
+    <data android:mimeType="*/*" />
+    <data android:pathPattern=".*\\.gpx" />
+    <data android:pathPattern=".*\\.kml" />
+    <data android:pathPattern=".*\\.kmz" />
+</intent-filter>
+
+<!-- 2) Ouverture via un fournisseur de contenu (content://), où le nom
+     de fichier réel n'apparaît pas forcément dans l'URI (pathPattern
+     inefficace) : on s'appuie ici sur les types MIME les plus
+     couramment associés à ces formats par les gestionnaires de
+     fichiers et les stockages cloud. -->
+<intent-filter>
+    <action android:name="android.intent.action.VIEW" />
+    <category android:name="android.intent.category.DEFAULT" />
+    <data android:scheme="content" />
+    <data android:mimeType="application/gpx+xml" />
+    <data android:mimeType="application/octet-stream" />
+    <data android:mimeType="application/xml" />
+    <data android:mimeType="text/xml" />
+    <data android:mimeType="application/vnd.google-earth.kml+xml" />
+    <data android:mimeType="application/vnd.google-earth.kmz" />
+</intent-filter>

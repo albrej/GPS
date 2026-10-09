@@ -13,7 +13,7 @@
    1. au lancement : notification de premier plan (obligatoire, sinon
       Android 8+ tue le service) — avec le TYPE location sur Android 14+
       (startForeground(id, notif, FOREGROUND_SERVICE_TYPE_LOCATION)) ;
-   2. requestLocationUpdates (gps + network, Looper principal) force
+   2. requestLocationUpdates (gps, Looper principal) force
       Android à calculer des positions ;
    3. un thread Python sonde getLastKnownLocation() chaque seconde
       (même technique éprouvée que gps_natif.py v5 — aucun callback
@@ -106,10 +106,23 @@ def _passer_premier_plan():
 def _boucle(contexte, gestionnaire):
     """Thread de sondage : même logique que gps_natif.py v5."""
     dernier = None
+    tours = 0
     while _etat["actif"]:
+        # Battement de cœur (une ligne toutes les 60 s) : permet de
+        # vérifier dans le fichier que le service a SURVÉCU à l'écran
+        # éteint (l'appli ignore ces lignes, cf. _absorber_points_service).
+        tours += 1
+        if tours % 60 == 0:
+            try:
+                with open(CHEMIN_POINTS, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(
+                        {"battement": tours // 60,
+                         "time": datetime.now().isoformat()}) + "\n")
+            except Exception:
+                pass
         try:
             meilleur = None
-            for nom_fournisseur in ("fused", "gps", "network", "passive"):
+            for nom_fournisseur in ("fused", "gps", "passive"):
                 try:
                     loc = gestionnaire.getLastKnownLocation(nom_fournisseur)
                 except Exception:
@@ -118,6 +131,15 @@ def _boucle(contexte, gestionnaire):
                     continue
                 if meilleur is None or loc.getTime() > meilleur.getTime():
                     meilleur = loc
+            # Fournisseur "network" ignoré : position de cache
+            # toujours identique (Redmi/MIUI), très éloignée de la
+            # trace réelle -> points parasites dans le GPX.
+            if meilleur is not None:
+                try:
+                    if str(meilleur.getProvider() or "") == "network":
+                        meilleur = None
+                except Exception:
+                    pass
             if meilleur is not None:
                 lat = float(meilleur.getLatitude())
                 lon = float(meilleur.getLongitude())
@@ -189,14 +211,21 @@ def main():
 
     listener = ListenerFactice()
     try:
-        for essai in (LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER):
-            try:
-                if gestionnaire.isProviderEnabled(essai):
-                    gestionnaire.requestLocationUpdates(
-                        essai, 1000, 0.0, listener, Looper.getMainLooper())
-            except Exception:
-                continue
+        # Seul le fournisseur GPS est enregistré : le fournisseur
+        # "network" renvoie une position de cache grossière et toujours
+        # identique sur ce téléphone (points parasites dans la trace).
+        # Les fixes "fused" restent lus par le sondage (dernier fix
+        # calculé par Google Play Services, rafraîchi en continu).
+        # Mode « PAR DISTANCE » (5 m) : voir le commentaire détaillé de
+        # gps_natif.py — comportement le plus propre pour la randonnée.
+        essai = LocationManager.GPS_PROVIDER
+        if gestionnaire.isProviderEnabled(essai):
+            gestionnaire.requestLocationUpdates(
+                essai, 1000, 5.0, listener, Looper.getMainLooper())
     except Exception:
+        # Même si l'enregistrement échoue (p.ex. GPS désactivé au
+        # démarrage), le service continue : le sondage getLastKnown-
+        # Location reste la source principale des points.
         pass
 
     _passer_premier_plan()

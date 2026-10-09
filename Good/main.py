@@ -5,10 +5,10 @@
  Réécriture de start.py (tkinter) pour fonctionner en APK autonome.
 
  - Onglets "Conversion" et "Numérotation" : entièrement fonctionnels.
- - Les 5 autres fonctionnalités (Fusion, Carte/Découpe, Statistiques,
-   Photos, Live) sont déjà présentes dans le menu déroulant mais
-   affichent un écran "à venir" tant que leur code n'est pas fourni et
-   intégré. Voir SCREENS_A_VENIR ci-dessous.
+ - Les 4 autres fonctionnalités (Fusion, Carte/Découpe, Photos, Live)
+   sont déjà présentes dans le menu déroulant mais affichent un écran
+   "à venir" tant que leur code n'est pas fourni et intégré. Voir
+   SCREENS_A_VENIR ci-dessous.
 ============================================================================
 """
 
@@ -837,7 +837,7 @@ if CARTE_DISPONIBLE:
         images/blue_dot.png n'est plus utilisé). Centré sur le point.
         Un tap dessus ouvre un popup avec son nom (<name>) et sa
         description (<desc>). Si un callback on_waypoint_clic est
-        branché (onglet « temp »), le tap SÉLECTIONNE AUSSI le point
+        branché (onglet Statistiques), le tap SÉLECTIONNE AUSSI le point
         de trace le plus proche (curseurs des graphiques + bloc
         d'infos), tout en ouvrant le popup comme avant."""
 
@@ -846,7 +846,7 @@ if CARTE_DISPONIBLE:
             self.nom = nom
             self.description = description
             # Callback optionnel (lat, lon) appelé au tap AVANT le
-            # popup : utilisé par l'onglet « temp » pour sélectionner
+            # popup : utilisé par l'onglet Statistiques pour sélectionner
             # le point de trace le plus proche du waypoint. None
             # partout ailleurs : comportement inchangé.
             self.on_waypoint_clic = on_waypoint_clic
@@ -908,7 +908,7 @@ if CARTE_DISPONIBLE:
                 touch.ungrab(self)
                 if self.collide_point(*touch.pos):
                     # Sélection du point de trace le plus proche
-                    # (onglet « temp » uniquement) AVANT le popup.
+                    # (onglet Statistiques uniquement) AVANT le popup.
                     if self.on_waypoint_clic is not None:
                         try:
                             self.on_waypoint_clic(self.lat, self.lon)
@@ -1057,11 +1057,18 @@ class GrapheProfil(Widget):
         self.freeze_actif = False
         self.afficher_courbe_vitesse = True  # <--- AJOUT ICI
         # Axe/graduations/légende de vitesse : masquables séparément
-        # de la courbe (utilisé par l'onglet « temp »).
+        # de la courbe (utilisé par l'onglet Statistiques).
         self.afficher_axe_vitesse = True
+        # --- Pentes optionnelles (onglet Statistiques, case à cocher
+        # « Pentes ») : bandes de couleur par classe de pente dessinées
+        # sous la courbe d'altitude, alimentées par set_pentes() et
+        # visibles uniquement si afficher_pentes est True.
+        self.afficher_pentes = False
+        self.tranches_pentes = []
+        self.points_courbe_pentes = []
         self.afficher_curseur = True
         # Couleur de la ligne pointillée de sélection : rouge par
-        # défaut ; l'onglet « temp » la passe en rose
+        # défaut ; l'onglet Statistiques la passe en rose
         # (COULEUR_ROSE_CURSEUR) pour ses deux graphiques.
         self.couleur_curseur = (0.85, 0.1, 0.1, 0.9)
         self.bind(pos=self._redessiner, size=self._redessiner)
@@ -1090,6 +1097,73 @@ class GrapheProfil(Widget):
         self.distances_ele_secondaire = []
         self.altitudes_secondaire = []
         self._redessiner()
+
+    def set_pentes(self, tranches, points_courbe):
+        """Fournit les tranches de pente (liste [(dist_km_debut,
+        pente_pct, alt_debut, alt_fin)] calculée comme pour
+        GraphePentes) et les points réels (distance_km, altitude) de
+        la courbe : dessinées en bandes colorées SOUS la courbe
+        d'altitude, mais uniquement si afficher_pentes est True
+        (case à cocher « Pentes » de l'onglet Statistiques)."""
+        self.tranches_pentes = list(tranches)
+        self.points_courbe_pentes = list(points_courbe)
+        self._preparer_bandes_pentes()
+        self._redessiner()
+
+    def _preparer_bandes_pentes(self):
+        """Précalcule les bandes verticales des pentes UNE SEULE FOIS
+        (au set_pentes), en un parcours unique des points GPS triés
+        par distance (bisect) — au lieu de rescanner tous les points
+        pour chaque borne à chaque redessin (O(N²) : c'est ce qui
+        rendait l'onglet peu réactif). Le redessin n'a plus qu'à
+        projeter les bandes précalculées (O(nb bandes)).
+        Résultat : self._bandes_pentes = liste de
+        (couleur, d1, a1, d2, a2), distances en km / altitudes en m,
+        bornes incluses dans [début de tranche, fin réelle]."""
+        self._bandes_pentes = []
+        if not self.tranches_pentes or not self.points_courbe_pentes:
+            return
+        from bisect import bisect_right
+        debut_tranches = [t[0] for t in self.tranches_pentes]
+        # Fin réelle de l'axe X : dernière distance du profil
+        # (set_donnees précède toujours set_pentes au chargement),
+        # sinon dernière distance de la courbe des pentes.
+        if self.distances_km:
+            dist_fin = max(self.distances_km)
+        else:
+            dist_fin = max(d for d, _ in self.points_courbe_pentes)
+        # Points de la courbe rangés par tranche (parcours unique :
+        # les points sont déjà triés par distance croissante).
+        par_tranche = [[] for _ in self.tranches_pentes]
+        for d_pc, a_pc in self.points_courbe_pentes:
+            i = bisect_right(debut_tranches, d_pc) - 1
+            if i >= 0 and d_pc < debut_tranches[i] + 0.5:
+                par_tranche[i].append((d_pc, a_pc))
+        # Bandes de chaque tranche : de (début, alt_dep) jusqu'à
+        # (fin réelle, alt_arr), en suivant les points intermédiaires.
+        # DÉCIMATION : au-delà de 12 points dans une tranche, on
+        # échantillonne régulièrement — le rendu reste identique à
+        # l'œil (500 m de large), mais le nombre d'instructions
+        # graphiques (2 triangles + 1 Color PAR point) n'explose
+        # plus : c'est lui qui rendait le glissement du curseur
+        # irréactif sur les traces denses (toutes les instructions
+        # sont reconstruites à chaque frame du glissement).
+        MAX_PTS_PAR_TRANCHE = 12
+        for i, (dist_km, pente, alt_dep, alt_arr) in enumerate(self.tranches_pentes):
+            couleur = GraphePentes._couleur_pente(pente)
+            d_fin = min(dist_km + 0.5, dist_fin)
+            pts = par_tranche[i]
+            if len(pts) > MAX_PTS_PAR_TRANCHE:
+                pas = (len(pts) - 1) / (MAX_PTS_PAR_TRANCHE - 1)
+                pts = [pts[int(round(j * pas))] for j in range(MAX_PTS_PAR_TRANCHE)]
+            d_prec, a_prec = dist_km, alt_dep
+            for d_pc, a_pc in pts:
+                if d_pc > d_fin:
+                    break
+                self._bandes_pentes.append((couleur, d_prec, a_prec, d_pc, a_pc))
+                d_prec, a_prec = d_pc, a_pc
+            if d_prec < d_fin:
+                self._bandes_pentes.append((couleur, d_prec, a_prec, d_fin, alt_arr))
 
     def set_selection(self, distance_km):
         self.distance_selection = distance_km
@@ -1233,6 +1307,21 @@ class GrapheProfil(Widget):
                 self._poser_texte(f"{valeur:.1f}", gx, zy - dp(16), GRIS_TEXTE,
                                    taille_sp=9, centre_h=True, gras=False)
 
+            # --- Bandes de pentes optionnelles (case « Pentes » de
+            # l'onglet Statistiques) : mêmes classes de couleurs que
+            # le graphique des pentes (GraphePentes). Les bandes sont
+            # PRÉCALCULÉES par _preparer_bandes_pentes (set_pentes) :
+            # le redessin ne fait que les projeter à l'écran — rapide
+            # même sur les longues traces (le calcul O(N²) par
+            # redessin rendait l'onglet peu réactif).
+            if self.afficher_pentes and getattr(self, "_bandes_pentes", None) and a_ele:
+                from kivy.graphics import Triangle
+                for couleur, d1, a1, d2, a2 in self._bandes_pentes:
+                    Color(*couleur)
+                    Triangle(points=[x_ecran(d1), zy, x_ecran(d1), y_alt(a1),
+                                     x_ecran(d2), y_alt(a2)])
+                    Triangle(points=[x_ecran(d1), zy, x_ecran(d2), y_alt(a2),
+                                     x_ecran(d2), zy])
             if a_ele:
                 # Tracé de la courbe d'altitude (trace chargée, bleu)
                 points_ligne = []
@@ -1355,17 +1444,17 @@ class GrapheProfil(Widget):
             return True
 
 class GraphePentes(Widget):
-    """Graphique des pentes de l'onglet Statistiques : la trace est
+    """Graphique des pentes (tranches de 500 m) : la trace est
     découpée en tranches de 500 m ; chaque tranche est dessinée comme
     un rectangle vertical (barre) partant du ZÉRO de l'axe des
     abscisses (base du graphique) et montant jusqu'à la courbe
     d'altitude. La couleur suit des CLASSES de pente fixes : descentes
-    en TONS BLEUS de plus en plus sombres (bleu clair #8DA9C4 de
-    -10 à 0 % jusqu'au bleu marine très sombre #0A0F24 au-delà de
+    en TONS BLEUS de plus en plus sombres (bleu céleste clair #9EE0FF
+    de -10 à 0 % jusqu'au bleu nuit profond #00264D au-delà de
     -30 %), PLAT beige/blanc cassé (#EEEDE9) autour de 0, montées du
-    JAUNE ORANGÉ (#F4A261, 0 à +10 %) à l'ORANGE (#E76F51), au
-    ROUGE (#D62828) puis au MARRON BORDEAUX (#4A0E0E) au-delà de
-    +30 %. La valeur de la pente (ex. « +12.4 ») est inscrite
+    ROSE CORAIL CLAIR (#FF9E9E, 0 à +10 %) au ROUGE VIF (#D90429),
+    au ROUGE FONCÉ (#990000) puis au ROUGE PROFOND (#660000) au-delà
+    de +30 %. La valeur de la pente (ex. « +12.4 ») est inscrite
     au-dessus de la courbe, et le titre affiche le nombre de tranches
     en montée et en descente. Reproduit le style des profils « pentes
     sur 500 m » des applis de rando."""
@@ -1379,7 +1468,7 @@ class GraphePentes(Widget):
         # deux bornes de tranches interpolées).
         self.alt_min_pts = float("inf")
         self.alt_max_pts = float("-inf")
-        # Sélection interconnectée (onglet « temp ») : distance (km)
+        # Sélection interconnectée (onglet Statistiques) : distance (km)
         # du point sélectionné — dessinée comme une ligne verticale
         # pointillée rouge, comme le curseur de GrapheProfil.
         self.distance_selection = None
@@ -1400,7 +1489,7 @@ class GraphePentes(Widget):
         # distance (km) tapée — même contrat que GrapheProfil.
         self.callback_clic = None
         # Couleur de la ligne pointillée de sélection : rouge par
-        # défaut ; l'onglet « temp » la passe en rose.
+        # défaut ; l'onglet Statistiques la passe en rose.
         self.couleur_curseur = (0.85, 0.1, 0.1, 0.9)
         self.bind(size=self._redessiner, pos=self._redessiner)
 
@@ -1434,11 +1523,18 @@ class GraphePentes(Widget):
         glissement (même mécanisme que GrapheProfil : le curseur
         suit le doigt en temps réel). Ne consomme l'événement que si
         le tap est dans la zone utile."""
-        if self.callback_clic is None or touch.grab_current is not None:
-            return False
+        # Même mécanisme que GrapheProfil : pas de garde sur
+        # grab_current (le ScrollView du parent capture déjà le
+        # toucher à l'appui — il faut RE-CAPTURER le toucher pour
+        # que le simple clic sélectionne, sinon seul le
+        # glissement fonctionne).
+        if self.callback_clic is None:
+            return super().on_touch_down(touch)
+        if not self.collide_point(*touch.pos):
+            return super().on_touch_down(touch)
         distance = self._distance_depuis_touch(touch)
         if distance is None:
-            return False
+            return super().on_touch_down(touch)
         touch.grab(self)
         self.set_selection(distance)
         self.callback_clic(distance)
@@ -1517,43 +1613,48 @@ class GraphePentes(Widget):
         self._redessiner()
 
     # Palette de classes de pente (couleurs fixes par palier) :
-    DESC_TRES_FORTE = (0.039, 0.059, 0.141, 1)   # < -30 %   : bleu marine très sombre #0A0F24
-    DESC_FORTE = (0.043, 0.145, 0.271, 1)       # -30 à -20 : bleu profond #0B2545
-    DESC_MARQUEE = (0.075, 0.251, 0.455, 1)     # -20 à -10 : bleu vif/moyen #134074
-    DESC_MODEREE = (0.553, 0.663, 0.769, 1)     # -10 à 0   : bleu clair #8DA9C4
+    DESC_TRES_FORTE = (0.0, 0.149, 0.302, 1)     # < -30 %   : bleu nuit profond #00264D
+    DESC_FORTE = (0.0, 0.298, 0.6, 1)          # -30 à -20 : bleu foncé #004C99
+    DESC_MARQUEE = (0.0, 0.502, 1.0, 1)         # -20 à -10 : bleu vif #0080FF
+    DESC_MODEREE = (0.620, 0.878, 1.0, 1)      # -10 à 0   : bleu céleste clair #9EE0FF
     PLAT = (0.933, 0.929, 0.914, 1)             # autour de 0 : beige/blanc cassé #EEEDE9
-    MONT_LEGERE = (0.957, 0.635, 0.380, 1)      # 0 à +10   : jaune orangé #F4A261
-    MONT_MODEREE = (0.906, 0.435, 0.318, 1)    # +10 à +20 : orange vif #E76F51
-    MONT_RAIDE = (0.839, 0.157, 0.157, 1)       # +20 à +30 : rouge #D62828
-    MONT_MUR = (0.290, 0.055, 0.055, 1)         # > +30     : marron/bordeaux #4A0E0E
+    MONT_LEGERE = (1.0, 0.620, 0.620, 1)      # 0 à +10   : rose corail clair #FF9E9E
+    MONT_MODEREE = (0.851, 0.016, 0.161, 1)   # +10 à +20 : rouge vif #D90429
+    MONT_RAIDE = (0.6, 0.0, 0.0, 1)           # +20 à +30 : rouge foncé #990000
+    MONT_MUR = (0.4, 0.0, 0.0, 1)             # > +30     : rouge profond #660000
 
-    def _couleur_pente(self, pente):
+    # Classmethod : appelée aussi par GrapheProfil (bandes de pentes
+    # optionnelles du graphique d'altitude, case « Pentes » de
+    # l'onglet Statistiques).
+    @classmethod
+    def _couleur_pente(cls, pente):
         """Couleur d'une tranche selon sa classe de pente :
-        DESCENTES en BLEUS de plus en plus sombres (bleu clair #8DA9C4
-        de -10 à 0 %, jusqu'au bleu marine #0A0F24 au-delà de -30 %),
-        PLAT beige (#EEEDE9) uniquement autour de 0, MONTÉES du jaune
-        orangé (#F4A261, 0 à +10 %) au marron bordeaux (#4A0E0E)
+        DESCENTES en BLEUS de plus en plus sombres (bleu céleste
+        clair #9EE0FF de -10 à 0 %, jusqu'au bleu nuit profond
+        #00264D au-delà de -30 %), PLAT beige (#EEEDE9)
+        uniquement autour de 0, MONTÉES du rose corail clair
+        (#FF9E9E, 0 à +10 %) au rouge profond (#660000)
         au-delà de +30 %. Les bornes sont EXACTEMENT celles de la
         légende : descente modérée de -10 à 0 %, montée légère de
         0 à +10 %, le beige ne s'appliquant qu'à une pente
         strictement quasi nulle (±0,1 %)."""
         if pente < -30.0:
-            return self.DESC_TRES_FORTE
+            return cls.DESC_TRES_FORTE
         if pente < -20.0:
-            return self.DESC_FORTE
+            return cls.DESC_FORTE
         if pente < -10.0:
-            return self.DESC_MARQUEE
+            return cls.DESC_MARQUEE
         if pente < -0.1:
-            return self.DESC_MODEREE
+            return cls.DESC_MODEREE
         if pente <= 0.1:
-            return self.PLAT
+            return cls.PLAT
         if pente < 10.0:
-            return self.MONT_LEGERE
+            return cls.MONT_LEGERE
         if pente < 20.0:
-            return self.MONT_MODEREE
+            return cls.MONT_MODEREE
         if pente <= 30.0:
-            return self.MONT_RAIDE
-        return self.MONT_MUR
+            return cls.MONT_RAIDE
+        return cls.MONT_MUR
 
     @staticmethod
     def _graduations(v_min, v_max, nb=4):
@@ -1657,16 +1758,14 @@ class GraphePentes(Widget):
                     for d_pc, a_pc in self.points_courbe:
                         if abs(d_pc - d_b) < 1e-9:
                             a_b = a_pc
-                            break
                     Color(*couleur)
                     Triangle(points=[x_km(d_prec), gy, x_km(d_prec), y_alt(a_prec),
                                      x_km(d_b), y_alt(a_b)])
                     Triangle(points=[x_km(d_prec), gy, x_km(d_b), y_alt(a_b), x_km(d_b), gy])
                     d_prec, a_prec = d_b, a_b
                 # Valeur de la pente inscrite au-dessus de la courbe,
-                # si elle tient horizontalement. MASQUABLE par l'onglet
-                # temp (afficher_valeurs_pentes = False) ; les
-                # Statistiques la gardent par défaut.
+                # si elle tient horizontalement. Optionnelle
+                # (afficher_valeurs_pentes = False la retire).
                 if getattr(self, "afficher_valeurs_pentes", True):
                     texte = f"{pente:+.1f}"
                     tex = self._texte_texture(texte, taille_sp=8, gras=False)
@@ -1714,10 +1813,8 @@ class GraphePentes(Widget):
         # Légendes d'axes — mêmes positions/couleurs que GrapheProfil.
         self._poser_texte("Distance (km)", zx + zw / 2, self.y, self.GRIS_TEXTE,
                           taille_sp=10, centre_h=True)
-        self._poser_texte("Altitude (m)", zx, zy + zh + dp(4), self.BLEU, taille_sp=9)
-        # Titre « Pentes sur 500 m ... » : affiché par défaut (onglet
-        # Statistiques), MASQUABLE par l'onglet « temp » qui le retire
-        # pour alléger l'affichage (afficher_titre = False).
+        # Titre « Pentes sur 500 m ... » : optionnel, masquable
+        # (afficher_titre = False, utilisé par l'onglet Statistiques).
         if getattr(self, "afficher_titre", True):
             nb_montees = sum(1 for t in self.tranches if t[1] > 0)
             nb_descentes = sum(1 for t in self.tranches if t[1] < 0)
@@ -2191,7 +2288,7 @@ KV = """
             spacing: dp(8)
 
             Label:
-                text: "Carte / Découpe"
+                text: "Découpe"
                 font_size: "20sp"
                 bold: True
                 size_hint_y: None
@@ -2358,23 +2455,6 @@ KV = """
                 size_hint_y: None
                 height: dp(175)
 
-            Label:
-                text: "Decoupe de trace"
-                size_hint_y: None
-                height: dp(26)
-                color: 0, 0, 0, 1
-                bold: True
-
-            TextInput:
-                id: entree_coupure
-                hint_text: "Numero du point de coupure (ex: 42)"
-                multiline: False
-                input_filter: "int"
-                size_hint_y: None
-                height: dp(44)
-                disabled: not root.trace_chargee
-                text: root.point_coupure_text
-                on_text: root.point_coupure_text = self.text
 
             Label:
                 text: root.status_text
@@ -2386,80 +2466,14 @@ KV = """
                 valign: "top"
 
             Button:
-                text: "Couper ici"
-                size_hint_y: None
-                height: dp(56)
+                # Bouton visible uniquement une fois la trace chargée
+                # (même règle que le graphique et les blocs de
+                # l'onglet Nettoyage).
+                height: (dp(56) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
                 disabled: not root.trace_chargee or root.en_cours
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer_decoupe()
-
-<LigneStatistique>:
-    size_hint_y: None
-    height: dp(38)
-    canvas.before:
-        Color:
-            rgba: self.couleur_fond
-        Rectangle:
-            pos: self.pos
-            size: self.size
-    Label:
-        text: root.libelle
-        bold: True
-        color: 0.2, 0.2, 0.2, 1
-        font_size: "13sp"
-        text_size: self.width, self.height
-        halign: "left"
-        valign: "middle"
-        padding_x: dp(8)
-    Label:
-        text: root.valeur
-        bold: True
-        color: 0.0, 0.48, 0.8, 1
-        font_size: "13sp"
-        text_size: self.width, self.height
-        halign: "right"
-        valign: "middle"
-        padding_x: dp(8)
-
-<StatistiquesScreen>:
-    BoxLayout:
-        orientation: "vertical"
-        padding: dp(16)
-        spacing: dp(8)
-
-        Label:
-            text: "Statistiques"
-            font_size: "20sp"
-            bold: True
-            size_hint_y: None
-            height: dp(36)
-            color: 0, 0, 0, 1
-
-        BoxLayout:
-            size_hint_y: None
-            height: dp(48)
-            spacing: dp(6)
-            Button:
-                text: "Charger une trace"
-                background_color: 0.2, 0.6, 0.86, 1
-                on_release: root.ouvrir_selecteur_fichier()
-
-        Label:
-            text: root.info_fichier
-            size_hint_y: None
-            height: max(dp(30), self.texture_size[1] + dp(8))
-            text_size: self.width, None
-            halign: "left"
-            valign: "top"
-            color: 0.2, 0.5, 0.2, 1
-            italic: True
-
-        ScrollView:
-            BoxLayout:
-                id: tableau_stats
-                orientation: "vertical"
-                size_hint_y: None
-                height: self.minimum_height
 
 <NettoyageScreen>:
     ScrollView:
@@ -2712,6 +2726,7 @@ KV = """
                 disabled: not root.trace_nettoyee
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.enregistrer_trace_nettoyee()
+<StatistiquesScreen>:
     ScrollView:
         do_scroll_x: False
         BoxLayout:
@@ -2722,259 +2737,7 @@ KV = """
             spacing: dp(8)
 
             Label:
-                text: "Nettoyage"
-                font_size: "20sp"
-                bold: True
-                size_hint_y: None
-                height: dp(36)
-                color: 0, 0, 0, 1
-
-            BoxLayout:
-                size_hint_y: None
-                height: dp(48)
-                spacing: dp(6)
-                Button:
-                    text: "Charger une trace"
-                    background_color: 0.2, 0.6, 0.86, 1
-                    on_release: root.ouvrir_selecteur_fichier()
-                Button:
-                    id: btn_layer
-                    size_hint_x: None
-                    width: dp(48)
-                    padding: 0, 0
-                    on_release: root.ouvrir_menu_fonds(self)
-                    Image:
-                        source: app.CHEMIN_ICONE_LAYER
-                        size_hint: None, None
-                        size: dp(48), dp(48)
-                        center_x: self.parent.center_x
-                        center_y: self.parent.center_y
-                        allow_stretch: True
-                        keep_ratio: True
-
-            Label:
-                text: root.info_fichier
-                size_hint_y: None
-                height: max(dp(30), self.texture_size[1] + dp(8))
-                text_size: self.width, None
-                halign: "left"
-                valign: "top"
-                color: 0.2, 0.5, 0.2, 1
-                italic: True
-
-            RelativeLayout:
-                size_hint_y: None
-                height: dp(220)
-
-                BoxLayout:
-                    id: map_container
-                    pos_hint: {"x": 0, "y": 0}
-                    size_hint: 1, 1
-
-                Button:
-                    text: "-"
-                    font_size: "24sp"
-                    bold: True
-                    color: 0, 0, 0, 1
-                    size_hint: None, None
-                    size: dp(36), dp(36)
-                    pos_hint: {"x": 0.03, "top": 0.95}
-                    background_normal: ""
-                    background_color: 0, 0, 0, 0
-                    on_release: root.dezoomer_carte()
-
-                    canvas.before:
-                        Color:
-                            rgba: 1, 1, 1, 1
-                        Ellipse:
-                            pos: self.pos
-                            size: self.size
-
-                Button:
-                    text: "+"
-                    font_size: "24sp"
-                    bold: True
-                    color: 0, 0, 0, 1
-                    size_hint: None, None
-                    size: dp(36), dp(36)
-                    pos_hint: {"right": 0.97, "top": 0.95}
-                    background_normal: ""
-                    background_color: 0, 0, 0, 0
-                    on_release: root.zoomer_carte()
-
-                    canvas.before:
-                        Color:
-                            rgba: 1, 1, 1, 1
-                        Ellipse:
-                            pos: self.pos
-                            size: self.size
-
-            Label:
-                text: root.info_point_text
-                size_hint_y: None
-                height: (max(dp(20), self.texture_size[1] + dp(4)) if root.info_point_text else 0)
-                text_size: self.width, None
-                halign: "left"
-                valign: "top"
-                font_size: "12sp"
-                color: 0, 0, 0, 1
-
-            AnchorLayout:
-                anchor_x: "center"
-                size_hint_y: None
-                height: ligne_info_point_nettoyage.height
-
-                BoxLayout:
-                    id: ligne_info_point_nettoyage
-                    orientation: "horizontal"
-                    size_hint: None, None
-                    size: self.minimum_size
-                    spacing: dp(16)
-
-                    BoxLayout:
-                        orientation: "vertical"
-                        size_hint: None, None
-                        size: self.minimum_size
-                        spacing: dp(2)
-
-                        Label:
-                            text: root.info_point_num
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-                        Label:
-                            text: root.info_point_dist
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-                        Label:
-                            text: root.info_point_heure
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-
-                    BoxLayout:
-                        orientation: "vertical"
-                        size_hint: None, None
-                        size: self.minimum_size
-                        spacing: dp(2)
-
-                        Label:
-                            text: root.info_point_gps
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-                        Label:
-                            text: root.info_point_alt
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-                        Label:
-                            text: root.info_point_vit
-                            size_hint: None, None
-                            size: self.texture_size
-                            font_size: "12sp"
-                            color: 0, 0, 0, 1
-
-            Label:
-                text: "Vitesse (km/h) au-dessus de laquelle un point est considéré comme aberrant :"
-                size_hint_y: None
-                height: (dp(28) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
-                color: 0, 0, 0, 1
-                bold: True
-                font_size: "15sp"
-                text_size: self.width, None
-                halign: "center"
-
-            # Les blocs suivants (zone de saisie + Détecter, compteur
-            # + Supprimer de la trace, Enregistrer) sont centrés
-            # horizontalement et bornés à dp(350).
-            BoxLayout:
-                size_hint_y: None
-                height: (dp(44) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
-                size_hint_x: None
-                width: dp(350)
-                pos_hint: {"center_x": 0.5}
-                spacing: dp(8)
-                TextInput:
-                    id: entree_seuil_nettoyage
-                    hint_text: "Seuil en km/h (ex: 10)"
-                    multiline: False
-                    input_filter: "float"
-                    font_size: "18sp"
-                    halign: "center"
-                    padding: [dp(4), dp(8), dp(4), dp(8)]
-                    text: root.seuil_text
-                    on_text: root.changer_seuil(self.text)
-                Button:
-                    text: "Détecter"
-                    size_hint_x: None
-                    width: dp(110)
-                    background_color: 0.15, 0.68, 0.38, 1
-                    on_release: root.appliquer_detection()
-
-            # Graphique visible uniquement une fois la trace chargée
-            # (comme le bloc compteur et le bouton Enregistrer).
-            BoxLayout:
-                id: zone_graphique
-                size_hint_y: None
-                height: (dp(175) if root.trace_chargee else 0)
-
-            BoxLayout:
-                size_hint_y: None
-                height: (dp(40) if root.trace_chargee else 0)
-                size_hint_x: None
-                width: dp(350)
-                pos_hint: {"center_x": 0.5}
-                opacity: (1 if root.trace_chargee else 0)
-                disabled: not root.trace_chargee
-                Label:
-                    text: root.compteur_aberrants_text
-                    size_hint_x: 1
-                    color: 0, 0, 0, 1
-                    bold: True
-                    font_size: "15sp"
-                    text_size: self.width, None
-                    valign: "middle"
-                Button:
-                    text: "Supprimer de la trace"
-                    size_hint_x: None
-                    width: dp(160)
-                    disabled: not root.aberrants_present
-                    background_color: 0.776, 0.157, 0.157, 1
-                    on_release: root.supprimer_aberrants()
-
-            Button:
-                text: "Enregistrer la trace nettoyée"
-                size_hint_y: None
-                height: (dp(52) if root.trace_chargee else 0)
-                size_hint_x: None
-                width: dp(350)
-                pos_hint: {"center_x": 0.5}
-                opacity: (1 if root.trace_chargee else 0)
-                disabled: not root.trace_nettoyee
-                background_color: 0.15, 0.68, 0.38, 1
-                on_release: root.enregistrer_trace_nettoyee()
-
-<TempScreen>:
-    ScrollView:
-        do_scroll_x: False
-        BoxLayout:
-            orientation: "vertical"
-            size_hint_y: None
-            height: self.minimum_height
-            padding: dp(16)
-            spacing: dp(8)
-
-            Label:
-                text: "temp"
+                text: "Statistiques"
                 font_size: "20sp"
                 bold: True
                 size_hint_y: None
@@ -3017,8 +2780,8 @@ KV = """
                 color: 0.2, 0.5, 0.2, 1
                 italic: True
 
-            # Statistiques de la trace (mêmes calculs que l'onglet
-            # Statistiques), mise en forme du bloc « Informations du
+            # Statistiques de la trace (calculs de
+            # gps_logic.calculer_statistiques), mise en forme du bloc
             # point sélectionné » : libellé + valeur sur la même ligne
             # (ex. « Altitude de départ : 1250 m »), police 12sp,
             # 2 colonnes de 5 lignes. Centré horizontalement comme le
@@ -3036,25 +2799,25 @@ KV = """
             AnchorLayout:
                 anchor_x: "center"
                 size_hint_y: None
-                height: (stats_temp_lignes.height if root.trace_chargee else 0)
+                height: (stats_lignes.height if root.trace_chargee else 0)
                 opacity: (1 if root.trace_chargee else 0)
 
                 BoxLayout:
-                    id: stats_temp_lignes
+                    id: stats_lignes
                     orientation: "horizontal"
                     size_hint: None, None
                     size: self.minimum_size
                     spacing: dp(16)
 
                     GridLayout:
-                        id: stats_temp_gauche
+                        id: stats_gauche
                         cols: 1
                         size_hint: None, None
                         size: self.minimum_size
                         spacing: dp(2)
 
                     GridLayout:
-                        id: stats_temp_droite
+                        id: stats_droite
                         cols: 1
                         size_hint: None, None
                         size: self.minimum_size
@@ -3193,7 +2956,7 @@ KV = """
                             font_size: "12sp"
                             color: 0, 0, 0, 1
                         Label:
-                            id: lbl_vit_temp
+                            id: lbl_vit_stats
                             text: root.info_point_vit
                             size_hint: None, None
                             size: self.texture_size
@@ -3206,7 +2969,7 @@ KV = """
                             # ligne à ligne avec elle.
                             text: ""
                             size_hint: None, None
-                            size: 0, lbl_vit_temp.height
+                            size: 0, lbl_vit_stats.height
                             font_size: "12sp"
 
             BoxLayout:
@@ -3214,21 +2977,67 @@ KV = """
                 size_hint_y: None
                 height: dp(175)
 
-            # Espace entre le graphique d'altitude et le graphique
-            # des pentes (sinon les deux se touchaient).
-            Widget:
+            # Options du graphique d'altitude : deux cases à cocher
+            # (décochées par défaut) sur une même ligne, même design
+            # que l'onglet Conversion (case 24x24 dp à cadre carré
+            # noir). « Vitesses » rajoute la courbe de vitesse avec
+            # son axe et sa légende ; « Pentes » rajoute les bandes
+            # de pente par classes de couleurs.
+            # Centrées horizontalement comme le bloc « Statistiques
+            # générales » (AnchorLayout + contenu à taille minimum).
+            AnchorLayout:
+                anchor_x: "center"
                 size_hint_y: None
-                height: dp(10)
+                height: dp(48)
 
-            # Graphique des pentes (même composant que l'onglet
-            # Statistiques) : tranches de 500 m, classes de couleurs
-            # bleu→beige→jaune/orange/rouge, courbe d'altitude bleue.
-            GraphePentes:
-                afficher_valeurs_pentes: False
-                id: pentes_temp
-                size_hint_y: None
-                afficher_titre: False
-                height: dp(0)
+                BoxLayout:
+                    size_hint: None, None
+                    size: self.minimum_size
+                    spacing: dp(24)
+
+                    BoxLayout:
+                        size_hint: None, None
+                        size: self.minimum_size
+                        spacing: dp(8)
+                        CheckBox:
+                            size_hint: None, None
+                            size: dp(24), dp(24)
+                            pos_hint: {"center_y": 0.5}
+                            on_active: root._basculer_vitesses(self.active)
+                            canvas.before:
+                                Color:
+                                    rgba: 0, 0, 0, 1
+                                Line:
+                                    width: 1.2
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                        Label:
+                            text: "Vitesses"
+                            color: 0, 0, 0, 1
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "16sp"
+
+                    BoxLayout:
+                        size_hint: None, None
+                        size: self.minimum_size
+                        spacing: dp(8)
+                        CheckBox:
+                            size_hint: None, None
+                            size: dp(24), dp(24)
+                            pos_hint: {"center_y": 0.5}
+                            on_active: root._basculer_pentes(self.active)
+                            canvas.before:
+                                Color:
+                                    rgba: 0, 0, 0, 1
+                                Line:
+                                    width: 1.2
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                        Label:
+                            text: "Pentes"
+                            color: 0, 0, 0, 1
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "16sp"
 
 <PhotosScreen>:
     ScrollView:
@@ -3301,7 +3110,8 @@ KV = """
 # Ligne 1 : Date/Heure et Altitude
             BoxLayout:
                 size_hint_y: None
-                height: dp(60)
+                height: (dp(60) if root.photo_chargee else 0)
+                opacity: (1 if root.photo_chargee else 0)
                 spacing: dp(10)
 
                 BoxLayout:
@@ -3343,7 +3153,8 @@ KV = """
             # Ligne 2 : Latitude et Longitude
             BoxLayout:
                 size_hint_y: None
-                height: dp(60)
+                height: (dp(60) if root.photo_chargee else 0)
+                opacity: (1 if root.photo_chargee else 0)
                 spacing: dp(10)
 
                 BoxLayout:
@@ -3387,7 +3198,7 @@ KV = """
                 size_hint_x: 1
                 size_hint_y: None
                 # La hauteur s'adapte automatiquement à la largeur réelle du parent divisée par le ratio de l'image (4:3)
-                height: self.width / (photo_img.image_ratio if photo_img.image_ratio else (4/3))
+                height: (self.width / (photo_img.image_ratio if photo_img.image_ratio else (4/3)) if root.photo_chargee else 0)
                 
                 canvas.before:
                     Color:
@@ -3403,39 +3214,18 @@ KV = """
                     allow_stretch: True
                     keep_ratio: True
 
-            Button:
-                text: "Situer (Horodatage)"
-                size_hint_y: None
-                height: dp(48)
-                background_color: 0.16, 0.5, 0.73, 1
-                on_release: root.situer()
-
-            Button:
-                text: "Enregistrer EXIF"
-                size_hint_y: None
-                height: dp(48)
-                background_color: 0.90, 0.49, 0.13, 1
-                on_release: root.enregistrer_exif()
-
-            Label:
-                text: root.status_text
-                size_hint_y: None
-                height: max(dp(30), self.texture_size[1] + dp(10))
-                text_size: self.width, None
-                halign: "left"
-                valign: "top"
-                color: root.status_color
-
             Label:
                 text: root.titre_carte
                 size_hint_y: None
-                height: dp(26)
+                height: (dp(26) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
                 bold: True
                 color: root.titre_carte_color
 
             RelativeLayout:
                 size_hint_y: None
-                height: dp(220)
+                height: (dp(220) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
 
                 BoxLayout:
                     id: map_container
@@ -3479,6 +3269,31 @@ KV = """
                         Ellipse:
                             pos: self.pos
                             size: self.size
+
+            Button:
+                text: "Situer (Horodatage)"
+                size_hint_y: None
+                height: (dp(48) if root.photo_chargee and root.trace_chargee else 0)
+                opacity: (1 if root.photo_chargee and root.trace_chargee else 0)
+                background_color: 0.16, 0.5, 0.73, 1
+                on_release: root.situer()
+
+            Button:
+                text: "Enregistrer EXIF"
+                size_hint_y: None
+                height: (dp(48) if root.photo_chargee and root.trace_chargee else 0)
+                opacity: (1 if root.photo_chargee and root.trace_chargee else 0)
+                background_color: 0.90, 0.49, 0.13, 1
+                on_release: root.enregistrer_exif()
+
+            Label:
+                text: root.status_text
+                size_hint_y: None
+                height: max(dp(30), self.texture_size[1] + dp(10))
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                color: root.status_color
 
 <LiveScreen>:
     ScrollView:
@@ -3859,7 +3674,7 @@ class NumerotationScreen(Screen):
                         nb_points_numerotes += 1
 
             # Calcul du nombre de waypoints présents
-            # Même règle que l'onglet Statistiques : ni n° de points (nom
+            # Même règle que les autres onglets : ni n° de points (nom
             # uniquement en chiffres), ni waypoints superposés au départ
             # ou à l'arrivée de la trace.
             nb_waypoints = len(gps_logic.vrais_waypoints(
@@ -4708,7 +4523,7 @@ class LiveScreen(Screen):
         try:
             points = gps_logic.lire_fichier_pour_conversion(chemin)
             # Waypoints de la trace : mêmes « vrais » waypoints que dans
-            # l'onglet Statistiques (ni n° de points, ni waypoints
+            # (même règle que les autres onglets : ni n° de points, ni waypoints
             # superposés au départ/à l'arrivée).
             waypoints_bruts = gps_logic.lire_waypoints_source(chemin, heure_locale=False)
         except Exception as e:
@@ -6262,22 +6077,26 @@ class LiveScreen(Screen):
         try:
             dossier_cible = DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE) else DOSSIER_RACINE
             os.makedirs(dossier_cible, exist_ok=True)
-            nom_log = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            chemin_log = os.path.join(dossier_cible, nom_log)
-            with open(chemin_log, "w", encoding="utf-8") as f:
-                for source, nb in sorted(self.compteur_sources_live.items()):
-                    f.write(f"{source} : {nb}\n")
+            # Journal « log_YYYYMMDD_HHMMSS.txt » désactivé (demande
+            # explicite : ce fichier ne doit plus être généré).
+            # nom_log = f"log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            # chemin_log = os.path.join(dossier_cible, nom_log)
+            # with open(chemin_log, "w", encoding="utf-8") as f:
+            #     for source, nb in sorted(self.compteur_sources_live.items()):
+            #         f.write(f"{source} : {nb}\n")
 
-            if self._journal_points_live:
-                nom_debug = f"debug_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-                chemin_debug = os.path.join(dossier_cible, nom_debug)
-                with open(chemin_debug, "w", encoding="utf-8") as f:
-                    f.write("TYPE;HEURE;LAT/TEXTE;LON;ELE;SOURCE\n")
-                    for entree in self._journal_points_live:
-                        if entree and entree[0] == "EVENT":
-                            f.write(f"EVENT;{entree[1]};{entree[2]}\n")
-                        else:
-                            f.write("POINT;" + ";".join(str(v) for v in entree) + "\n")
+            # Journal « debug_points_YYYYMMDD_HHMMSS.txt » désactivé
+            # (demande explicite : ce fichier ne doit plus être généré).
+            # if self._journal_points_live:
+            #     nom_debug = f"debug_points_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            #     chemin_debug = os.path.join(dossier_cible, nom_debug)
+            #     with open(chemin_debug, "w", encoding="utf-8") as f:
+            #         f.write("TYPE;HEURE;LAT/TEXTE;LON;ELE;SOURCE\n")
+            #         for entree in self._journal_points_live:
+            #             if entree and entree[0] == "EVENT":
+            #                 f.write(f"EVENT;{entree[1]};{entree[2]}\n")
+            #             else:
+            #                 f.write("POINT;" + ";".join(str(v) for v in entree) + "\n")
         except Exception:
             pass
         finally:
@@ -6316,6 +6135,20 @@ class LiveScreen(Screen):
             pass
         self._rattrapage_points = 0
         self._rattrapage_heure = None
+
+        # Purge du fichier de points du service (live_service_points.json)
+        # après « Terminer » (Oui ou Non) : la session étant clôturée
+        # (marqueur supprimé), ce fichier n'a plus d'usage — le prochain
+        # « Live » repartira d'un fichier vierge créé par le service.
+        # Seul « Terminer » passe ici : « Annuler » (reprise du live) et
+        # la reprise de session interrompue (appli tuée sans Terminer)
+        # ne doivent PAS le supprimer.
+        try:
+            if os.path.exists(self.CHEMIN_POINTS_SERVICE):
+                os.remove(self.CHEMIN_POINTS_SERVICE)
+        except OSError:
+            pass
+        self._lignes_service_lues = 0
         return True, True, " / ".join(details)
 
     def _reinitialiser_onglet7_vierge(self):
@@ -6956,6 +6789,11 @@ class CarteScreen(Screen):
         self.graphe = GrapheProfil()
         self.graphe.callback_clic = self._sur_clic_graphique
         self.ids.zone_graphique.add_widget(self.graphe)
+        # Onglet Découpe : PAS de courbe de vitesse sur le
+        # graphique, ni son axe/graduations ni sa légende
+        # (altitude seule).
+        self.graphe.afficher_courbe_vitesse = False
+        self.graphe.afficher_axe_vitesse = False
 
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
@@ -7041,7 +6879,7 @@ class CarteScreen(Screen):
         self.point_coupure_text = ""
         self.status_text = ""
         
-        # Même règle que les onglets Statistiques/Photos/Live : ni n° de
+        # Même règle que les onglets Photos/Live : ni n° de
         # points (nom uniquement en chiffres), ni waypoints superposés au
         # départ ou à l'arrivée de la trace.
         nb_points = len(points)
@@ -7314,106 +7152,6 @@ def _nom_est_numero_point(nom):
         return False
     txt = str(nom).strip()
     return txt.isascii() and txt.isdigit()
-
-
-class LigneStatistique(BoxLayout):
-    libelle = StringProperty("")
-    valeur = StringProperty("")
-    couleur_fond = ListProperty([1, 1, 1, 1])
-
-
-class StatistiquesScreen(Screen):
-    info_fichier = StringProperty("Aucune trace chargée.")
-
-    LIBELLES = [
-        ("alt_depart", "Altitude de départ :"),
-        ("alt_max", "Altitude maximale :"),
-        ("distance", "Distance parcourue :"),
-        ("den_pos", "Dénivelé positif :"),
-        ("km_effort", "Kilomètre-Effort :"),
-        ("temps_total", "Temps total :"),
-        ("temps_marche", "Temps sans pauses :"),
-        ("vit_moy", "Vitesse moyenne :"),
-        ("allure", "Allure moyenne :"),
-        ("waypoints", "Waypoints :"),
-    ]
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self._afficher_tableau({cle: "-" for cle, _ in self.LIBELLES})
-
-    def ouvrir_selecteur_fichier(self):
-        contenu = _construire_selecteur_fichier(self._fichier_choisi)
-        if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
-
-    def _fichier_choisi(self, chemin):
-        if hasattr(self, '_popup'):
-            self._popup.dismiss()
-        if not chemin:
-            return
-        try:
-            # 1. Lecture de la trace (et éventuels waypoints si la fonction les renvoie)
-            resultat = gps_logic.lire_fichier_pour_conversion(chemin)
-            if isinstance(resultat, tuple):
-                points, waypoints = resultat
-            else:
-                points = resultat
-                waypoints = []
-
-            # 2. Si aucun waypoint n'a été renvoyé par la lecture globale, 
-            # on les extrait proprement selon le format sans faire de doublon.
-            if not waypoints:
-                extension = os.path.splitext(chemin)[1].lower()
-                if extension == ".gpx":
-                    with open(chemin, "r", encoding="utf-8") as f:
-                        gpx_parsed = gpxpy.parse(f)
-                        waypoints = [
-                            {'lat': w.latitude, 'lon': w.longitude, 'ele': w.elevation, 'name': w.name} 
-                            for w in gpx_parsed.waypoints
-                        ]
-                elif extension in [".kml", ".kmz"]:
-                    if extension == ".kmz":
-                        with zipfile.ZipFile(chemin, 'r') as z:
-                            kml_name = next((nom for nom in z.namelist() if nom.lower().endswith('.kml')), None)
-                            if kml_name:
-                                root = ET.fromstring(z.read(kml_name))
-                                waypoints = gps_logic.extraire_waypoints_kml_kmz_bruts(root)
-                    else:
-                        root = ET.parse(chemin).getroot()
-                        waypoints = gps_logic.extraire_waypoints_kml_kmz_bruts(root)
-
-            # 3. Les n° de points (<name> composé uniquement de chiffres) ne
-            # sont pas des waypoints : on ne compte que les vrais waypoints
-            # (nom contenant au moins une lettre, ou sans nom).
-            waypoints = [w for w in waypoints if not _nom_est_numero_point(w.get('name'))]
-
-        except Exception as e:
-            self.info_fichier = f"Erreur de lecture : {e}"
-            return
-
-        if not points:
-            self.info_fichier = "Aucun point GPS valide n'a pu être extrait de ce fichier."
-            return
-
-        self.info_fichier = f"Trace : {os.path.basename(chemin)}"
-      
-        # Transmission des waypoints uniques vers la logique de calcul
-        stats = gps_logic.calculer_statistiques(points, waypoints)
-        self._afficher_tableau(stats)
-        
-    def _afficher_tableau(self, valeurs):
-        conteneur = self.ids.tableau_stats
-        conteneur.clear_widgets()
-        couleurs = [(0.973, 0.976, 0.980, 1), (0.925, 0.933, 0.945, 1)]
-        for i, (cle, libelle) in enumerate(self.LIBELLES):
-            ligne = LigneStatistique(
-                libelle=libelle,
-                valeur=valeurs.get(cle, "-"),
-                couleur_fond=couleurs[i % 2],
-            )
-            conteneur.add_widget(ligne)
 
 
 class NettoyageScreen(Screen):
@@ -8513,13 +8251,11 @@ class NettoyageScreen(Screen):
                 pass
 
 
-class TempScreen(Screen):
-    """Onglet « temp » : copie de travail de l'onglet Carte/Découpe,
-    SANS la courbe de vitesse du graphique (ni son axe ni sa
-    légende : altitude seule) et SANS le bloc de découpe de
-    trace (zone de saisie + bouton « Couper ici »). Le reste est
-    identique : carte, graphique d'altitude, infos du point
-    sélectionné."""
+class StatistiquesScreen(Screen):
+    """Onglet Statistiques : copie de travail de l'onglet Découpe,
+    SANS le bloc de découpe de trace (zone de saisie + bouton
+    « Couper ici »). Le reste est identique : carte, graphique
+    d'altitude + vitesse, infos du point sélectionné."""
     fichier_source = StringProperty("")
     info_fichier = StringProperty("Aucune trace chargée.")
     trace_chargee = BooleanProperty(False)
@@ -8539,8 +8275,8 @@ class TempScreen(Screen):
     info_point_vit = StringProperty("")
     info_point_pente = StringProperty("")
 
-    # Libellés du tableau de statistiques (mêmes clés que l'onglet
-    # Statistiques) : 10 lignes, affichées en 2 colonnes de 5.
+    # Libellés du tableau de statistiques (mêmes clés que
+    # gps_logic.calculer_statistiques) : 10 lignes, 2 colonnes de 5.
     LIBELLES_STATS = [
         ("alt_depart", "Altitude de départ :"),
         ("alt_max", "Altitude maximale :"),
@@ -8602,18 +8338,15 @@ class TempScreen(Screen):
         self.graphe = GrapheProfil()
         self.graphe.callback_clic = self._sur_clic_graphique
         self.ids.zone_graphique.add_widget(self.graphe)
-        # Onglet « temp » : PAS de courbe de vitesse sur le graphique,
-        # ni son axe/graduations ni sa légende (altitude seule).
+        # Courbe de vitesse (avec son axe et sa légende) et bandes
+        # de pentes : MASQUÉES par défaut sur le graphique
+        # d'altitude ; rajoutées par les cases à cocher
+        # « Vitesses » / « Pentes » placées juste en dessous.
         self.graphe.afficher_courbe_vitesse = False
         self.graphe.afficher_axe_vitesse = False
         # Lignes pointillées de sélection en ROSE (couleur du disque
         # curseur de la carte) sur les DEUX graphiques de cet onglet.
         self.graphe.couleur_curseur = COULEUR_ROSE_CURSEUR
-        # Interconnexion : un tap sur le graphique des pentes
-        # sélectionne le point le plus proche (même handler que le
-        # graphique d'altitude).
-        self.ids.pentes_temp.callback_clic = self._sur_clic_graphique
-        self.ids.pentes_temp.couleur_curseur = COULEUR_ROSE_CURSEUR
 
         if CARTE_DISPONIBLE:
             self.map_view = MapViewMolette(zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
@@ -8670,6 +8403,22 @@ class TempScreen(Screen):
             return
         self.charger_trace(chemin)
 
+    def _basculer_vitesses(self, active):
+        """Case à cocher « Vitesses » : rajoute (ou enlève) la courbe
+        de vitesse, son axe et sa légende sur le graphique
+        d'altitude. Décochée par défaut : altitude seule."""
+        self.graphe.afficher_courbe_vitesse = bool(active)
+        self.graphe.afficher_axe_vitesse = bool(active)
+        self.graphe._redessiner()
+
+    def _basculer_pentes(self, active):
+        """Case à cocher « Pentes » : rajoute (ou enlève) les bandes
+        de pente — mêmes classes de couleurs que le graphique des
+        pentes — sous la courbe d'altitude du premier graphique.
+        Décochée par défaut."""
+        self.graphe.afficher_pentes = bool(active)
+        self.graphe._redessiner()
+
     def charger_trace(self, chemin):
         """Charge une trace GPX/KMZ/KML dans cet onglet. Utilisée à la
         fois par le sélecteur de fichier interne (_fichier_choisi
@@ -8699,7 +8448,7 @@ class TempScreen(Screen):
         self.point_coupure_text = ""
         self.status_text = ""
         
-        # Même règle que les onglets Statistiques/Photos/Live : ni n° de
+        # Même règle que les onglets Photos/Live : ni n° de
         # points (nom uniquement en chiffres), ni waypoints superposés au
         # départ ou à l'arrivée de la trace.
         nb_points = len(points)
@@ -8716,19 +8465,13 @@ class TempScreen(Screen):
         self.info_point_heure = ""
         self.info_point_vit = ""
         self.info_point_pente = ""
-        # Statistiques de la trace (mêmes calculs que l'onglet
-        # Statistiques), affichées dans le tableau 2 colonnes x 5
+        # Statistiques de la trace (calculs de gps_logic
+        # gps_logic.calculer_statistiques), tableau 2 colonnes x 5
         # lignes au-dessus de la carte.
         self._afficher_stats_trace(points, waypoints)
         self.profil = gps_logic.calculer_profil(points)
         self.graphe.set_donnees(*self.profil)
         self._afficher_trace_sur_carte(points, waypoints=vrais_wpts)
-        # Nouvelle trace : retire l'éventuel curseur de sélection du
-        # graphique des pentes avant de recalculer ses tranches.
-        self.ids.pentes_temp.set_selection(None)
-        # Graphique des pentes (même composant que l'onglet
-        # Statistiques) : tranches de 500 m, altitudes min/max
-        # réelles. Masqué si trace trop courte ou sans altitudes.
         self._afficher_pentes(points)
 
     def _afficher_stats_trace(self, points, waypoints):
@@ -8736,7 +8479,7 @@ class TempScreen(Screen):
         chaque ligne « libellé : valeur » reprenant EXACTEMENT la mise
         en forme du bloc « Informations du point sélectionné » (labels
         12sp, texte noir, taille ajustée au contenu). Mêmes calculs
-        que l'onglet Statistiques (gps_logic.calculer_statistiques)."""
+        gps_logic.calculer_statistiques)."""
         from kivy.uix.boxlayout import BoxLayout
         from kivy.uix.label import Label as LabelKv
 
@@ -8755,7 +8498,7 @@ class TempScreen(Screen):
             valeurs.append((libelle, val))
         # 5 premières stats à gauche, 5 suivantes à droite.
         for colonne_id, trio in zip(
-            ("stats_temp_gauche", "stats_temp_droite"),
+            ("stats_gauche", "stats_droite"),
             (valeurs[:5], valeurs[5:]),
         ):
             colonne = self.ids[colonne_id]
@@ -8774,12 +8517,11 @@ class TempScreen(Screen):
                 lbl.texture_update()
                 lbl.size = lbl.texture_size
                 colonne.add_widget(lbl)
-
     def _afficher_pentes(self, points):
-        """Calcule les tranches de 500 m et alimente le GraphePentes
-        de l'onglet (ids.pentes_temp). Masqué si la trace est trop
-        courte (< 1 km) ou sans altitudes."""
-        graphe = self.ids.pentes_temp
+
+        """Calcule les tranches de 500 m et alimente le PREMIER
+        graphique (option « Pentes » : bandes sous la courbe
+        d'altitude)."""
         tranches = self._calculer_tranches_pentes(points, pas_m=500.0)
         self._tranches_pentes = tranches
         # Altitudes min/max réelles sur TOUS les points de la trace
@@ -8805,14 +8547,10 @@ class TempScreen(Screen):
             precedent = p
             if p.get('ele') is not None:
                 points_courbe.append((dist_totale / 1000.0, p['ele']))
-        if len(tranches) < 2:
-            graphe.height = dp(0)
-            graphe.set_tranches([])
-            return
-        graphe.height = dp(175)
-        graphe.set_tranches(tranches, alt_min_pts=alt_min, alt_max_pts=alt_max,
-                            dist_fin_km=dist_totale / 1000.0,
-                            points_courbe=points_courbe)
+        # Mêmes tranches pour le PREMIER graphique (option
+        # « Pentes » : bandes sous la courbe d'altitude) : la
+        # case à cocher décide si elles sont dessinées ou non.
+        self.graphe.set_pentes(tranches, points_courbe)
 
     def _calculer_tranches_pentes(self, points, pas_m=500.0):
         """Découpe la trace en tranches de 500 m (dernière tronquée).
@@ -9103,10 +8841,7 @@ class TempScreen(Screen):
             if pente_val is not None:
                 pente_txt = f"{pente_val:+.1f} %"
         self.info_point_pente = f"Pente: {pente_txt}"
-        # Interconnexion : le curseur de sélection apparaît AUSSI sur
-        # le graphique des pentes, à la même distance cumulée.
         self.graphe.set_selection(dist)
-        self.ids.pentes_temp.set_selection(dist)
 
 
 class PhotosScreen(Screen):
@@ -9127,6 +8862,8 @@ class PhotosScreen(Screen):
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     titre_carte = StringProperty("Emplacement de la photo sur la trace")
     titre_carte_color = ListProperty([0, 0, 0, 1])
+    photo_chargee = BooleanProperty(False)
+    trace_chargee = BooleanProperty(False)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -9216,10 +8953,12 @@ class PhotosScreen(Screen):
             return
 
         self.points_trace = points
+        # La carte et la trace n'apparaissent qu'au chargement
+        # de la trace.
+        self.trace_chargee = True
         self.info_trace = f"Trace : {os.path.basename(chemin)}."
-
-        # Waypoints de la trace : mêmes « vrais » waypoints que dans l'onglet
-        # Statistiques (ni n° de points, ni waypoints superposés au
+        # Waypoints de la trace : mêmes « vrais » waypoints que dans les
+        # autres onglets (ni n° de points, ni waypoints superposés au
         # départ/à l'arrivée).
         try:
             waypoints = gps_logic.vrais_waypoints(
@@ -9257,14 +8996,17 @@ class PhotosScreen(Screen):
         # change pas).
         self.miniature_source = ""
         self.miniature_source = chemin
+        # Le tableau et le bloc photo (et plus tard les boutons)
+        # n'apparaissent qu'au chargement de la photo.
+        self.photo_chargee = True
 
     def situer(self):
         """Cherche dans la trace le point le plus proche de la date/heure
         EXIF saisie et pré-remplit latitude/longitude/altitude,
         équivalent de situer_exif_edite() dans la version desktop."""
         if not self.champ_date.strip():
-            self.status_text = "Renseigne une date/heure pour la photo."
-            self.status_color = [0.8, 0.1, 0.1, 1]
+            self.titre_carte = "Renseigne une date/heure pour la photo"
+            self.titre_carte_color = [0.8, 0.1, 0.1, 1]
             return
         if not self.points_trace:
             self.status_text = "Charge d'abord une trace pour y chercher l'horodatage."
@@ -9478,21 +9220,20 @@ class OutilsTracesApp(App):
         Builder.load_string(KV)
 
         self.sm = ScreenManager()
+        self.sm.add_widget(StatistiquesScreen(name="statistiques"))
         self.sm.add_widget(ConversionScreen(name="conversion"))
         self.sm.add_widget(NumerotationScreen(name="numerotation"))
         self.sm.add_widget(FusionScreen(name="fusion"))
         self.sm.add_widget(CarteScreen(name="carte"))
-        self.sm.add_widget(StatistiquesScreen(name="statistiques"))
         self.sm.add_widget(NettoyageScreen(name="nettoyage"))
         self.sm.add_widget(PhotosScreen(name="photos"))
         self.sm.add_widget(LiveScreen(name="Live"))
-        self.sm.add_widget(TempScreen(name="temp"))
 
         # --- Barre du haut : menu déroulant (gauche) + titre + Quitter (droite) ---
         barre = BoxLayout(size_hint_y=None, height=dp(60), padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
-        self._ecrans_menu = [("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Carte / Découpe"), ("statistiques", "Statistiques"), ("nettoyage", "Nettoyage"), ("photos", "Photos"), ("Live", "Live"), ("temp", "temp")]
+        self._ecrans_menu = [("statistiques", "Statistiques"), ("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Découpe"), ("nettoyage", "Nettoyage"), ("photos", "Photos"), ("Live", "Live")]
         self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
         self._boutons_menu = {}
         for nom_ecran, libelle in self._ecrans_menu:
