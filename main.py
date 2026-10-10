@@ -11046,17 +11046,23 @@ class OutilsTracesApp(App):
                 btn.background_color = BLEU_KIVY
             else:
                 btn.background_color = COULEUR_NORMAL
-        # FIX CRASH « Cannot add <DropDown> to window, it already has a
-        # parent » : Kivy détache le DropDown de la fenêtre en DIFFÉRÉ
-        # après un dismiss() (Clock.schedule_once) — si l'utilisateur
-        # re-tape « Menu » avant ce détachement, open() tente de
-        # ré-attacher un widget qui a encore un parent -> WidgetException
-        # -> crash de l'APK au changement d'onglet. Parade : si le menu
-        # est encore attaché (parent), on ne le ré-ouvre PAS — on le
-        # referme proprement (l'appui suivant l'ouvrira).
+        # FIX CRASH puis FIX « menu qui clignote » : le DropDown de Kivy
+        # se détache de la fenêtre en DIFFÉRÉ après un dismiss() (Clock
+        # différé). Si on re-tape « Menu » avant ce détachement :
+        #   - open() plantait (widget encore rattaché -> l'ancien
+        #     crash « already has a parent ») ;
+        #   - et si on le refermait (premier correctif), le détachement
+        #     différé en attente refermait aussi le menu VENANT d'être
+        #     rouvert -> le menu clignotait une fraction de seconde.
+        # Bonne parade : détacher IMMÉDIATEMENT le menu de son parent
+        # (sans dismiss, donc sans nouveau détachement différé), PUIS
+        # l'ouvrir. Un éventuel détachement différé encore en attente
+        # devient un no-op (plus de parent), il ne peut plus rien fermer.
         if self.dropdown.parent is not None:
-            self.dropdown.dismiss()
-            return
+            try:
+                self.dropdown.parent.remove_widget(self.dropdown)
+            except Exception:
+                return  # parent inconnu : on n'insiste pas
         self.dropdown.open(instance)
 
     def _quitter_application(self, *args):
