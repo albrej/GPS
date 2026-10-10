@@ -2097,6 +2097,110 @@ else:
 # Rétrocompatibilité si d'autres parties du code utilisent encore DOSSIER_RACINE
 DOSSIER_RACINE = DOSSIER_CHARGEMENT
 
+# ----------------------------------------------------------------------
+# DIAGNOSTIC DE CRASH : sans cela, une exception Python dans l'APK tue
+# l'application SANS rien montrer à l'écran (traceback visible uniquement
+# dans logcat, illisible sans adb). On installe donc DEUX filets :
+#   1. sys.excepthook : attrape les exceptions NON interceptées et
+#      enregistre la trace complète dans « crash_log.txt » (dans le
+#      dossier de sortie des traces, accessible au gestionnaire de
+#      fichiers) AVANT de laisser l'application s'arrêter ;
+#   2. un gestionnaire Kivy (ExceptionManager) : les exceptions levées
+#      DANS la boucle d'événements Kivy (touchers, dessin...) passent
+#      par lui et non par sys.excepthook — il enregistre la trace,
+#      l'affiche dans un POPUP à l'écran, puis laisse l'application
+#      CONTINUER (PASS) au lieu de planter : le crash devient visible
+#      et l'onglet reste utilisable.
+# Le popup n'apparaît qu'une fois par crash (anti-spam) ; le log est
+# écrit à chaque fois.
+# ----------------------------------------------------------------------
+import sys
+import traceback as _module_traceback
+
+
+def _chemin_crash_log():
+    """Fichier de log dans le dossier de sortie si accessible (il est
+    lisible depuis un gestionnaire de fichiers), sinon à côté de
+    main.py (dossier privé de l'appli)."""
+    try:
+        if os.path.isdir(DOSSIER_SORTIE):
+            return os.path.join(DOSSIER_SORTIE, "crash_log.txt")
+    except Exception:
+        pass
+    try:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "crash_log.txt")
+    except Exception:
+        return "crash_log.txt"
+
+
+def _rapport_crash(exc_type, exc_value, exc_tb):
+    """Écrit la trace complète du crash dans crash_log.txt, l'affiche
+    dans les logs, et (une seule fois par crash) dans un popup."""
+    texte = "".join(_module_traceback.format_exception(exc_type, exc_value, exc_tb))
+    print("[CRASH] " + texte)
+    try:
+        with open(_chemin_crash_log(), "w", encoding="utf-8") as f:
+            f.write(texte)
+    except Exception:
+        pass
+    # Popup anti-spam : un seul par crash (les exceptions peuvent être
+    # levées à chaque frame ; on ne spamme pas l'écran).
+    if getattr(_rapport_crash, "_popup_affiche", False):
+        return
+    _rapport_crash._popup_affiche = True
+
+    def _afficher(dt):
+        try:
+            contenu = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
+            lbl = Label(text="[b]Erreur interceptée[/b]\n\n"
+                             + escape_markup(texte[-1500:]),
+                        markup=True, size_hint_y=None,
+                        text_size=(dp(300), None), halign="left", valign="top")
+            lbl.bind(texture_size=lambda w, v: setattr(w, "height", v[1]))
+            scroll = ScrollView()
+            scroll.add_widget(lbl)
+            contenu.add_widget(scroll)
+            btn = Button(text="Fermer", size_hint_y=None, height=dp(44))
+            contenu.add_widget(btn)
+            pop = Popup(title="Détail de l'erreur (crash_log.txt)",
+                        content=contenu, size_hint=(0.95, 0.7))
+            btn.bind(on_release=pop.dismiss)
+            pop.open()
+        except Exception:
+            pass
+
+    try:
+        Clock.schedule_once(_afficher, 0)
+    except Exception:
+        pass
+
+
+def _excepthook(exc_type, exc_value, exc_tb):
+    _rapport_crash(exc_type, exc_value, exc_tb)
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _excepthook
+
+try:
+    from kivy.base import ExceptionManager, BaseExceptionHandler
+
+    class _GestionnaireCrash(BaseExceptionHandler):
+        """Filet Kivy : les exceptions de la boucle d'événements
+        (touchers, graphique, Clock...) passent ici. La trace est
+        enregistrée et affichée, puis l'application CONTINUE (PASS)
+        au lieu de mourir : le « crash au menu » devient lisible."""
+
+        def handle_exception(self, exception):
+            _rapport_crash(type(exception), exception,
+                           getattr(exception, "__traceback__", None))
+            return ExceptionManager.PASS
+
+    ExceptionManager.add_handler(_GestionnaireCrash())
+except Exception as e:
+    print("[CRASH] Gestionnaire Kivy indisponible : " + str(e))
+
 # Fonctionnalités qui restent à intégrer (affichées dans le menu déroulant
 # avec un écran "à venir" en attendant leur code Python).
 SCREENS_A_VENIR = [
@@ -10662,10 +10766,15 @@ class OutilsTracesApp(App):
         self.sm.add_widget(NumerotationScreen(name="numerotation"))
         self.sm.add_widget(FusionScreen(name="fusion"))
         self.sm.add_widget(CarteScreen(name="carte"))
-        self.sm.add_widget(AjoutScreen(name="ajout"))
         self.sm.add_widget(NettoyageScreen(name="nettoyage"))
+        # Onglet « Ajout » placé APRÈS « Nettoyage » : il s'affiche au
+        # démarrage via le sm.current ci-dessous, pas par sa position.
+        self.sm.add_widget(AjoutScreen(name="ajout"))
         self.sm.add_widget(PhotosScreen(name="photos"))
         self.sm.add_widget(LiveScreen(name="Live"))
+        # Écran d'accueil de l'APK : « Statistiques » (premier écran
+        # ajouté ci-dessus, forcé ici pour être explicite).
+        self.sm.current = "statistiques"
 
         # Démarrage de l'appli sur l'onglet « Statistiques » : sans
         # forçage, le ScreenManager affiche le PREMIER écran ajouté —
