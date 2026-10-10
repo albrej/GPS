@@ -35,10 +35,21 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # aucun disque n'est jamais créé. Les clics droits restent de vrais
 # événements (button == "right", utilisés par l'onglet Ajout pour la
 # suppression de points), la molette continue de défiler/déplacer la
-# carte. Aucun effet sur Android : cette configuration ne concerne
-# que le fournisseur d'entrée « souris » du poste de développement.
-from kivy.config import Config
-Config.set("input", "mouse", "mouse,disable_multitouch")
+# carte.
+#
+# ⚠️ GARDE « PC UNIQUEMENT » OBLIGATOIRE : sur Android, cette ligne
+# Config.set ENREGISTRAIT un fournisseur d'entrée « souris » dans la
+# configuration — fournisseur normalement absent sur téléphone. Sur
+# des ROM qui dispatchent déjà les touchers en double (MIUI/HyperOS),
+# il générait des touchers synthétiques DOUBLONS à chaque geste : Kivy
+# voyait alors deux doigts là où il n'y en avait qu'un (pincement
+# fantôme), et le déplacement de la carte (grab + suivi du glissement)
+# était bloqué sur TOUS les onglets. D'où le test de plateforme AVANT
+# toute inscription dans la configuration.
+from kivy.utils import platform as _plateforme
+if _plateforme != "android":
+    from kivy.config import Config
+    Config.set("input", "mouse", "mouse,disable_multitouch")
 
 from kivy.app import App
 from kivy.lang import Builder
@@ -10671,9 +10682,11 @@ class OutilsTracesApp(App):
         # balaye le canvas de la fenêtre toutes les 0,2 s pour retirer
         # tout disque du simulateur multitouch qui aurait malgré tout
         # été posé. Un disque éventuel disparaît donc en 0,2 s au
-        # maximum, quel que soit l'onglet affiché. Silencieux et sans
-        # aucun effet sur Android.
-        Clock.schedule_interval(_purger_disques_simulateur, 0.2)
+        # maximum, quel que soit l'onglet affiché. PC UNIQUEMENT :
+        # inutile sur Android (pas de simulateur souris) et l'on
+        # n'y touche à rien.
+        if platform != "android":
+            Clock.schedule_interval(_purger_disques_simulateur, 0.2)
 
         Builder.load_string(KV)
 
