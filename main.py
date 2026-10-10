@@ -11046,6 +11046,17 @@ class OutilsTracesApp(App):
                 btn.background_color = BLEU_KIVY
             else:
                 btn.background_color = COULEUR_NORMAL
+        # FIX CRASH « Cannot add <DropDown> to window, it already has a
+        # parent » : Kivy détache le DropDown de la fenêtre en DIFFÉRÉ
+        # après un dismiss() (Clock.schedule_once) — si l'utilisateur
+        # re-tape « Menu » avant ce détachement, open() tente de
+        # ré-attacher un widget qui a encore un parent -> WidgetException
+        # -> crash de l'APK au changement d'onglet. Parade : si le menu
+        # est encore attaché (parent), on ne le ré-ouvre PAS — on le
+        # referme proprement (l'appui suivant l'ouvrira).
+        if self.dropdown.parent is not None:
+            self.dropdown.dismiss()
+            return
         self.dropdown.open(instance)
 
     def _quitter_application(self, *args):
