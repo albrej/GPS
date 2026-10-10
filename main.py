@@ -424,9 +424,14 @@ if CARTE_DISPONIBLE:
 
     class MapViewMolette(MapView):
         """MapView identique, sauf que la molette/le défilement trackpad
-        (PC) DÉPLACE la carte au lieu de zoomer — le zoom ne se plus
-        que via les boutons +/- dédiés. Le glisser déplace la carte,
-        sans zoom tactile ni pincement."""
+        (PC) DÉPLACE la carte au lieu de zoomer — le zoom ne se fait plus
+        que via les boutons +/- dédiés. Le déplacement de la carte se
+        fait UNIQUEMENT par CLIC LONG PUIS GLISSER (maintenir le doigt
+        ~0,6 s sans bouger, puis glisser) : un simple glisser ne
+        déplace plus la carte (comportement voulu, identique sur TOUS
+        les onglets puisque cette classe est leur unique composante
+        carte commune — chaque onglet reste sinon indépendant). Pas de
+        zoom tactile ni pincement."""
     
         PAS_DEPLACEMENT_PX = 60
         freeze_callback = ObjectProperty(None, allownone=True)
@@ -509,6 +514,12 @@ if CARTE_DISPONIBLE:
             if touch.ud.get("appui_long_annule"):
                 return
             touch.ud["bascule_freeze_effectuee"] = True
+            # Le clic long est tenu : le glisser qui suit DEPLACERA la
+            # carte (systeme "clic long puis glisser"). Sur les onglets
+            # sans freeze_callback (tout sauf Live), seul cet armement
+            # a un effet visible ; sur Live, la bascule gel/degel a
+            # AUSSI lieu, comme avant.
+            touch.ud["pan_arme"] = True
             timer = touch.ud.get("timer_clic_long_freeze")
             if timer is not None:
                 timer.cancel()
@@ -573,7 +584,22 @@ if CARTE_DISPONIBLE:
                 # carte. Le timer de clic long (degel) reste actif.
                 return True
 
-            return super().on_touch_down(touch)
+            # CLIC LONG PUIS GLISSER : on NE PASSE PAS par super() —
+            # le Scatter interne de MapView ne doit surtout PAS
+            # "grabber" le toucher (c'est lui qui, sinon, deplacerait
+            # la carte au simple glisser). On laisse simplement les
+            # ENFANTS de la carte (marqueurs de waypoints, disques
+            # rouges, points orange draggables...) voir le toucher,
+            # puis on consomme : le pan sera fait A LA MAIN dans
+            # on_touch_move, uniquement si le clic long (timer de
+            # 0,6 s arme plus haut) a ete tenu sans bouger.
+            for enfant in self.children:
+                if enfant.dispatch("on_touch_down", touch):
+                    return True
+            touch.ud["pan_arme"] = False
+            touch.ud["pan_pos_prec"] = (touch.x, touch.y)
+            touch.ud["pan_effectue"] = False
+            return True
 
         def on_touch_move(self, touch):
             # Le doigt se deplace : au-dela du seuil, ce n'est plus un
@@ -589,18 +615,52 @@ if CARTE_DISPONIBLE:
             if getattr(self, 'freeze_actif', False):
                 return True
 
+            # PAN PAR CLIC LONG PUIS GLISSER : une fois le clic long
+            # tenu (0,6 s sans bouger -> touch.ud["pan_arme"]), chaque
+            # mouvement du doigt deplace la carte D'EXACTEMENT le
+            # meme delta (pixel ecran = unite mercator au zoom
+            # courant) : la carte suit le doigt, comme le faisait le
+            # Scatter — mais SEULEMENT apres le clic long. Le doigt
+            # deplace la carte dans son sens : le centre part a
+            # l'oppose du mouvement (carte vers la droite = on regarde
+            # plus a l'ouest).
+            if touch.ud.get("clic_long_carte_actif"):
+                if touch.ud.get("pan_arme"):
+                    precedent = touch.ud.get("pan_pos_prec")
+                    if precedent is not None:
+                        dx = touch.x - precedent[0]
+                        dy = touch.y - precedent[1]
+                        if dx != 0 or dy != 0:
+                            zoom = self.zoom
+                            cx, cy = gps_logic.projeter_mercator(
+                                self.lat, self.lon, zoom)
+                            nouvelle_lat, nouvelle_lon = (
+                                gps_logic.deprojeter_mercator(
+                                    cx - dx, cy - dy, zoom))
+                            self.center_on(nouvelle_lat, nouvelle_lon)
+                        touch.ud["pan_effectue"] = True
+                    touch.ud["pan_pos_prec"] = (touch.x, touch.y)
+                    return True
+                # Clic long pas encore tenu : on suit juste la
+                # position pour que le pan demarre precisement la ou
+                # le doigt se trouve quand le clic long arme.
+                touch.ud["pan_pos_prec"] = (touch.x, touch.y)
+
             # Empeche le zoom par pincement en neutralisant l'effet multi-touch de la carte
             if touch.grab_current is not self and len(getattr(self, 'touches', [])) > 1:
                 return True
             return super().on_touch_move(touch)
 
         def on_touch_up(self, touch):
-            if touch.ud.pop("clic_long_carte_actif", False):
+            depart_sur_carte = touch.ud.pop("clic_long_carte_actif", False)
+            if depart_sur_carte:
                 # Ce toucher avait demarre sur la carte : on annule le
                 # timer s'il pend encore (relachement avant 0.6 s), et
                 # s'il a dure au moins 0.6 s sans bouger et sans bascule
                 # deja effectuee, on bascule AU RELACHEMENT (repli
-                # independant du timer).
+                # independant du timer). Un GLISSER qui a deplace la
+                # carte (pan_effectue) ne doit PAS basculer le gel :
+                # c'etait un deplacement, pas un clic long "pur".
                 duree = Clock.get_time() - touch.ud.get("temps_depart_freeze", 0.0)
                 timer = touch.ud.get("timer_clic_long_freeze")
                 if timer is not None:
@@ -608,24 +668,30 @@ if CARTE_DISPONIBLE:
                     touch.ud["timer_clic_long_freeze"] = None
                 if (not touch.ud.get("bascule_freeze_effectuee")
                         and not touch.ud.get("appui_long_annule")
+                        and not touch.ud.get("pan_effectue")
                         and duree >= self.DUREE_CLIC_LONG_FREEZE):
                     self._bascule_freeze_clic_long(touch)
+                # Secours de "degrab" : si ce toucher avait ete "grabbe"
+                # par la classe de base MapView avant que le gel ne
+                # s'active (ex: gel declenche par le clic long pendant
+                # que le doigt est encore pose, ou gele pendant un
+                # glisser en cours), on la laisse le "degrabber"
+                # correctement (elle redescend _touch_count a 0 et
+                # repasse _pause a False) - sinon _pause resterait
+                # bloque a True pour toujours et load_tile_for_source()
+                # (kivy_garden.mapview) ne chargerait plus aucune
+                # nouvelle tuile ensuite.
+                if touch.grab_current is self:
+                    super().on_touch_up(touch)
+                # Le toucher a ete consomme par la carte des le down :
+                # le Scatter n'a jamais eu le toucher, rien a lui
+                # rendre — on renvoie toujours True.
+                return True
 
             if not self.collide_point(*touch.pos):
                 return super().on_touch_up(touch)
 
             if getattr(self, 'freeze_actif', False):
-                # Si ce toucher avait ete "grabbe" par la classe de base
-                # MapView avant que le gel ne s'active (ex: gel declenche
-                # par le clic long pendant que le doigt est encore pose,
-                # ou gele pendant un glisser en cours), on la laisse le
-                # "degrabber" correctement (elle redescend _touch_count
-                # a 0 et repasse _pause a False) - sinon _pause resterait
-                # bloque a True pour toujours et load_tile_for_source()
-                # (kivy_garden.mapview) ne chargerait plus aucune nouvelle
-                # tuile ensuite. On renvoie toujours True nous-memes.
-                if touch.grab_current is self:
-                    super().on_touch_up(touch)
                 return True
 
             return super().on_touch_up(touch)
