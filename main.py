@@ -67,7 +67,7 @@ from kivy.metrics import dp
 from kivy.graphics import Color, Line as KivyLine, Rectangle
 from kivy.core.text import Label as CoreLabel
 from kivy.uix.widget import Widget
-from kivy.properties import StringProperty, BooleanProperty, ListProperty, ObjectProperty
+from kivy.properties import StringProperty, BooleanProperty, ListProperty, ObjectProperty, NumericProperty
 from kivy.utils import platform
 from kivy.utils import escape_markup
 from kivy.uix.textinput import TextInput
@@ -441,6 +441,20 @@ if CARTE_DISPONIBLE:
         # ---> TRANSFORMATION ICI : Utilisation d'une BooleanProperty Kivy
         freeze_actif = BooleanProperty(False)
 
+        # ---> PAN DIFFÉRÉ (utilisé UNIQUEMENT par l'onglet Ajout) :
+        # durée (secondes) pendant laquelle l'appui doit être MAINTENU
+        # avant que le glisser ne déplace la carte. 0 (défaut) = aucun
+        # changement pour tous les autres onglets et le Live : la
+        # carte y suit le doigt dès l'appui, exactement comme avant.
+        # Pourquoi : sur les autres onglets, la carte vit dans un
+        # ScrollView qui CAPTE les glissers courts (défilement de la
+        # page) — la carte ne glisse qu'après un appui LONG maintenu,
+        # puis glisser. La carte de l'onglet Ajout est la seule HORS
+        # ScrollView : sans ce délai, son Scatter interne grabbe le
+        # toucher dès l'appui et la carte glisse au moindre clic
+        # (court) maintenu + glisser.
+        delai_avant_pan = NumericProperty(0)
+
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             # self.freeze_actif = False # Plus nécessaire ici car géré par la propriété ci-dessus
@@ -538,9 +552,50 @@ if CARTE_DISPONIBLE:
                 # carte. Le timer de clic long (degel) reste actif.
                 return True
 
+            # PAN DIFFÉRÉ (onglet Ajout uniquement — delai_avant_pan > 0 ;
+            # 0 partout ailleurs : ce bloc n'est JAMAIS exécuté sur les
+            # autres onglets ni sur le Live). On ne laisse PAS le
+            # Scatter interne grabber le toucher dès l'appui : sinon la
+            # carte glisserait au moindre clic (court) maintenu +
+            # glisser, alors que sur tous les autres onglets il faut
+            # un appui LONG maintenu (le ScrollView ancêtre y capte
+            # les glissers courts). On ne dispatche donc le toucher
+            # qu'aux autres enfants — les marqueurs (points orange
+            # déplaçables, disques rouges cliquables) restent
+            # immédiatement actifs — et le Scatter ne prendra le
+            # relais qu'une fois le délai écoulé, doigt toujours posé
+            # (voir on_touch_move).
+            if self.delai_avant_pan > 0:
+                touch.ud["pan_differe_actif"] = True
+                touch.ud["pan_differe_debut"] = Clock.get_time()
+                scatter = getattr(self, "_scatter", None)
+                for enfant in self.children:
+                    if enfant is scatter:
+                        continue
+                    if enfant.dispatch("on_touch_down", touch):
+                        break
+                return True
+
             return super().on_touch_down(touch)
 
         def on_touch_move(self, touch):
+            # PAN DIFFÉRÉ : le délai est écoulé, le doigt est toujours
+            # posé et aucun marqueur ne l'a capturé — le Scatter interne
+            # prend le relais MAINTENANT : on lui rejoue un toucher
+            # down pour qu'il grabbe et suive le glisser à partir de la
+            # position COURANTE du doigt (le super().on_touch_move
+            # ci-dessous lui transmettra ce mouvement et les suivants).
+            if (touch.ud.get("pan_differe_actif")
+                    and self.delai_avant_pan > 0
+                    and touch.grab_current is None
+                    and (Clock.get_time()
+                         - touch.ud.get("pan_differe_debut", 0.0)
+                         >= self.delai_avant_pan)):
+                touch.ud["pan_differe_actif"] = False
+                scatter = getattr(self, "_scatter", None)
+                if scatter is not None:
+                    scatter.dispatch("on_touch_down", touch)
+
             # Le doigt se deplace : au-dela du seuil, ce n'est plus un
             # clic long mais un glisser de carte -> timer annule.
             if touch.ud.get("clic_long_carte_actif"):
@@ -859,20 +914,38 @@ if CARTE_DISPONIBLE:
             sous-classes interactives de l'onglet Ajout (points ajoutés
             orange, disques rouges des points de trace) : les disques
             sont petits (14-18 dp), trop petits pour être tapés au
-            doigt avec le collide_point standard (qui compare en plus
-            des coordonnées écran à l'espace interne du calque de la
-            carte, décalé par le Scatter). On convertit le toucher en
-            coordonnées LOCALES du marqueur (to_local, insensible au
-            décalage du calque) et on accepte tout tap à moins de
-            demi-taille + 12 dp du centre. Les autres onglets
+            doigt avec le collide_point standard. Le test compare la
+            position du toucher au CENTRE du marqueur et accepte tout
+            tap à moins de demi-taille + 12 dp. Les autres onglets
             (Nettoyage...) posent des MarqueurDisqueRouge sans jamais
-            appeler cette méthode : aucun effet pour eux."""
-            try:
-                lx, ly = self.to_local(touch.x, touch.y, relative=True)
-            except Exception:
-                return self.collide_point(*touch.pos)
+            appeler cette méthode : aucun effet pour eux.
+
+            CORRECTIF (2e) : la comparaison se fait dans l'ESPACE DU
+            TOUCHER REÇU, SANS AUCUNE CONVERSION. Dans la version pip
+            de kivy_garden.mapview, les marqueurs sont des enfants
+            d'un MarkerMapLayer (Widget SIMPLE, pas RelativeLayout) :
+            le toucher leur parvient dans l'espace des coordonnées du
+            marqueur lui-même (marker.pos est posé par set_marker_position
+            avec get_window_xy_from, qui rend des coordonnées LOCALES
+            à la carte). Comparer touch.x/y à self.center directement
+            est donc EXACT. Les conversions essayées avant (to_local
+            puis to_window) décalaient toutes deux la zone d'attrape
+            du POS des RelativeLayout ANCÊTRES de la carte (l'onglet
+            Ajout est le seul à emboîter sa carte dans un RelativeLayout
+            sous ~250 dp de boutons) : chaque appui dans la moitié
+            basse de la carte « tombait » sur un marqueur fantôme, qui
+            capturait le toucher au on_touch_down. Or les marqueurs
+            reçoivent le toucher AVANT le Scatter interne de la carte
+            (ordre de dispatch inverse des enfants) : un marqueur qui
+            renvoie True empêche le Scatter de grabber, et le PAN de
+            la carte devient impossible partout ailleurs. Avec la
+            comparaison directe, un marqueur ne consomme le toucher
+            QUE s'il est réellement touché ; partout ailleurs le
+            toucher atteint le Scatter et la carte glisse normalement."""
+            dx = touch.x - self.center_x
+            dy = touch.y - self.center_y
             rayon = max(self.width, self.height) / 2.0 + dp(12)
-            return (lx * lx + ly * ly) <= rayon * rayon
+            return (dx * dx + dy * dy) <= rayon * rayon
 
     class MarqueurWaypoint(MapMarker):
         """Curseur des waypoints/annotations photos : un disque JAUNE
@@ -8699,6 +8772,12 @@ class AjoutScreen(Screen):
     # bouton Â« Annuler la suppression Â» du kv.
     suppression_annulable = BooleanProperty(False)
     trace_chargee = BooleanProperty(False)
+    # Délai (secondes) d'appui MAINTENU avant que le glisser ne
+    # déplace la carte de cet onglet — même geste « clic long
+    # maintenu + glisser » que sur toutes les autres cartes (où c'est
+    # le ScrollView ancêtre qui impose ce délai en captant les
+    # glissers courts). Réglable ICI en un seul endroit.
+    DELAI_PAN_AJOUT = 0.5
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -8721,6 +8800,14 @@ class AjoutScreen(Screen):
             self.map_view = MapViewMolette(
                 zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
             self.ids.map_container.add_widget(self.map_view)
+            # PAN de la carte au CLIC LONG MAINTENU + GLISSER, comme
+            # sur toutes les autres cartes (où c'est le ScrollView
+            # ancêtre qui impose ce délai en captant les glissers
+            # courts). Voir MapViewMolette.delai_avant_pan et
+            # AjoutScreen.DELAI_PAN_AJOUT (réglable en un seul
+            # endroit). Rien à faire pour les autres onglets : délai à
+            # 0 par défaut, comportement strictement inchangé.
+            self.map_view.delai_avant_pan = self.DELAI_PAN_AJOUT
             # La taille des curseurs de waypoints suit le zoom de la carte.
             self.map_view.bind(zoom=self._maj_taille_waypoints)
             # Repose des disques rouges au DÃPLACEMENT de la carte :
@@ -9140,9 +9227,26 @@ class AjoutScreen(Screen):
         if (self.manager is not None and self.manager.current == self.name
                 and self.map_view is not None
                 and not getattr(self.map_view, "freeze_actif", False)
-                and self.map_view.collide_point(*touch.pos)):
+                and self.map_view.collide_point(*self._touch_vers_carte(touch))):
             touch.ud["carte_pos_depart_ajout"] = (touch.x, touch.y)
         return False
+
+    def _touch_vers_carte(self, touch):
+        """Convertit la position (FENÊTRE) d'un toucher reçu par un
+        handler Window vers l'espace LOCAL de la carte, utilisé par
+        toute la géométrie de l'onglet (mv.center, positions des
+        points via projeter_mercator). Les handlers Window reçoivent
+        des coordonnées fenêtre « brutes » ; sur les autres onglets la
+        carte est posée en (0, 0) de l'écran et les deux espaces
+        coïncident. Mais l'onglet Ajout est le seul à emboîter sa
+        carte dans un RelativeLayout placé sous ~250 dp de boutons :
+        l'origine locale de la carte est donc décalée de celle de la
+        fenêtre. Sans cette conversion, tout tap d'ajout de point
+        tombait d'autant trop haut."""
+        if self.map_view is None:
+            return (touch.x, touch.y)
+        dx, dy = self.map_view.to_window(0, 0)
+        return (touch.x - dx, touch.y - dy)
 
     def _sur_touch_carte(self, window, touch):
         """Fin du toucher sur la carte : si c'est un TAP COURT (pas un
@@ -9178,7 +9282,11 @@ class AjoutScreen(Screen):
         mv = self.map_view
         zoom = mv.zoom
         cx, cy = gps_logic.projeter_mercator(mv.lat, mv.lon, zoom)
-        tap_x, tap_y = touch.x, touch.y
+        # Le tap est converti dans l'espace LOCAL de la carte : le
+        # handler Window reçoit des coordonnées fenêtre, or toute la
+        # géométrie ci-dessous (mv.center, écrans des points) est en
+        # coordonnées carte (voir _touch_vers_carte).
+        tap_x, tap_y = self._touch_vers_carte(touch)
 
         def _ecran(p):
             gx, gy = gps_logic.projeter_mercator(p['lat'], p['lon'], zoom)
