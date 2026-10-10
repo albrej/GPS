@@ -514,18 +514,74 @@ if CARTE_DISPONIBLE:
             if touch.ud.get("appui_long_annule"):
                 return
             touch.ud["bascule_freeze_effectuee"] = True
-            # Le clic long est tenu : le glisser qui suit DEPLACERA la
-            # carte (systeme "clic long puis glisser"). Sur les onglets
-            # sans freeze_callback (tout sauf Live), seul cet armement
-            # a un effet visible ; sur Live, la bascule gel/degel a
-            # AUSSI lieu, comme avant.
-            touch.ud["pan_arme"] = True
+            # GARDE ANTI-MOUVEMENT : si le doigt a déjà glissé (ex. le
+            # ScrollView ancêtre est en train de défiler la page et nous
+            # a pris le toucher — nos on_touch_move ne sont donc plus
+            # appelés pour annuler le timer), ce n'est pas un clic
+            # long : ni gel/dégel, ni pan.
+            depart = touch.ud.get("carte_pos_depart")
+            if depart is not None and (
+                    abs(touch.x - depart[0]) > dp(self.SEUIL_DEPLACEMENT_FREEZE_DP)
+                    or abs(touch.y - depart[1]) > dp(self.SEUIL_DEPLACEMENT_FREEZE_DP)):
+                touch.ud["appui_long_annule"] = True
+                timer = touch.ud.get("timer_clic_long_freeze")
+                if timer is not None:
+                    timer.cancel()
+                    touch.ud["timer_clic_long_freeze"] = None
+                return
             timer = touch.ud.get("timer_clic_long_freeze")
             if timer is not None:
                 timer.cancel()
                 touch.ud["timer_clic_long_freeze"] = None
             if self.freeze_callback:
                 self.freeze_callback()
+            # ---- ARMEMENT DU PAN « CLIC LONG PUIS GLISSER » ----
+            # Uniquement si : (1) le toucher a été pris en charge par la
+            # carte ELLE-MÊME (pas par un marqueur enfant — la clé
+            # pan_pos_prec n'existe que dans ce cas), et (2) la carte
+            # n'est PAS gelée à l'issue de la bascule. Sur l'onglet
+            # Live, le premier clic long GEL la carte (pas de pan : le
+            # gel est un verrou volontaire) ; le clic long qui DÉGEL
+            # arme au contraire le pan : on peut déplacer la carte
+            # immédiatement, sans recommencer le geste. Sur tous les
+            # autres onglets (freeze_callback absent), le clic long
+            # arme simplement le pan.
+            if ("pan_pos_prec" in touch.ud
+                    and not getattr(self, "freeze_actif", False)):
+                touch.ud["pan_arme"] = True
+                # PRISE DU TOUCHER (« grab ») : c'est le point crucial.
+                # Sans grab, la carte ne recevait PLUS AUCUN mouvement
+                # dès que le ScrollView ancêtre s'était emparé du
+                # toucher (simple glisser = défilement de la page,
+                # déclenché dès ~20 px de mouvement dans Kivy) : le
+                # pan ne pouvait donc jamais démarrer. En grabbant au
+                # moment du clic long, la carte devient l'unique
+                # destinataire des mouvements suivants, et on retire
+                # le toucher à tout autre grabber éventuel (ScrollView,
+                # Scatter interne) : la page ne défile pas pendant le
+                # déplacement de la carte.
+                touch.grab(self)
+                for grabs in list(getattr(touch, "grab_list", None) or []):
+                    if grabs is not self:
+                        touch.ungrab(grabs)
+                # RETOUR VISUEL (diagnostic + ergonomie) : un LISERE
+                # ORANGE apparait autour de la carte tant que le
+                # deplacement par glisser est arme. Il signale que le
+                # clic long a bien ete tenu et que le glisser va
+                # deplacer la carte ; il disparait au relachement du
+                # doigt. Repere local du widget : (0, 0) = coin
+                # bas-gauche de la carte.
+                try:
+                    self.canvas.after.remove_group("lisere_pan_armed")
+                except Exception:
+                    pass
+                try:
+                    with self.canvas.after:
+                        Color(1.0, 0.55, 0.0, 0.95, group="lisere_pan_armed")
+                        KivyLine(rectangle=(0, 0, self.width, self.height),
+                                 width=dp(3), group="lisere_pan_armed")
+                except Exception:
+                    pass
 
         def _annuler_clic_long(self, touch):
             timer = touch.ud.get("timer_clic_long_freeze")
@@ -548,6 +604,13 @@ if CARTE_DISPONIBLE:
             # premier, qui continuerait de vivre et de tirer.
             touch.ud["clic_long_carte_actif"] = True
             if touch.ud.get("timer_clic_long_freeze") is None:
+                # Secours : un liseré du pan d'un GESTE PRECEDENT
+                # pourrait trainer (toucher fini sans on_touch_up vu
+                # par la carte) ; on le retire à chaque nouvel appui.
+                try:
+                    self.canvas.after.remove_group("lisere_pan_armed")
+                except Exception:
+                    pass
                 touch.ud["carte_pos_depart"] = (touch.x, touch.y)
                 touch.ud["temps_depart_freeze"] = Clock.get_time()
                 touch.ud["bascule_freeze_effectuee"] = False
@@ -582,6 +645,13 @@ if CARTE_DISPONIBLE:
                 # ancetre le grabberait pour son defilement, et les
                 # evenements move/up deviendraient incoherents pour la
                 # carte. Le timer de clic long (degel) reste actif.
+                # Les cles du pan sont posees AUSSI en gel : au degel
+                # par le clic long, _bascule_freeze_clic_long armera
+                # le pan, et le glisser qui suit (doigt toujours pose)
+                # deplacera la carte sans recommencer le geste.
+                touch.ud["pan_arme"] = False
+                touch.ud["pan_pos_prec"] = (touch.x, touch.y)
+                touch.ud["pan_effectue"] = False
                 return True
 
             # CLIC LONG PUIS GLISSER : on NE PASSE PAS par super() —
@@ -643,8 +713,12 @@ if CARTE_DISPONIBLE:
                     return True
                 # Clic long pas encore tenu : on suit juste la
                 # position pour que le pan demarre precisement la ou
-                # le doigt se trouve quand le clic long arme.
+                # le doigt se trouve quand le clic long arme. Le
+                # toucher est consomme (return True) : le Scatter
+                # interne ne doit JAMAIS pan la carte au simple
+                # glisser — seul le clic long arme le pan.
                 touch.ud["pan_pos_prec"] = (touch.x, touch.y)
+                return True
 
             # Empeche le zoom par pincement en neutralisant l'effet multi-touch de la carte
             if touch.grab_current is not self and len(getattr(self, 'touches', [])) > 1:
@@ -654,6 +728,11 @@ if CARTE_DISPONIBLE:
         def on_touch_up(self, touch):
             depart_sur_carte = touch.ud.pop("clic_long_carte_actif", False)
             if depart_sur_carte:
+                # Retire le LISERE ORANGE du pan arme (s'il etait la).
+                try:
+                    self.canvas.after.remove_group("lisere_pan_armed")
+                except Exception:
+                    pass
                 # Ce toucher avait demarre sur la carte : on annule le
                 # timer s'il pend encore (relachement avant 0.6 s), et
                 # s'il a dure au moins 0.6 s sans bouger et sans bascule
@@ -671,18 +750,13 @@ if CARTE_DISPONIBLE:
                         and not touch.ud.get("pan_effectue")
                         and duree >= self.DUREE_CLIC_LONG_FREEZE):
                     self._bascule_freeze_clic_long(touch)
-                # Secours de "degrab" : si ce toucher avait ete "grabbe"
-                # par la classe de base MapView avant que le gel ne
-                # s'active (ex: gel declenche par le clic long pendant
-                # que le doigt est encore pose, ou gele pendant un
-                # glisser en cours), on la laisse le "degrabber"
-                # correctement (elle redescend _touch_count a 0 et
-                # repasse _pause a False) - sinon _pause resterait
-                # bloque a True pour toujours et load_tile_for_source()
-                # (kivy_garden.mapview) ne chargerait plus aucune
-                # nouvelle tuile ensuite.
+                # La carte avait « grabbe » ce toucher au moment du
+                # clic long (armement du pan) : on le relache. On
+                # n'appelle PAS super() : le Scatter interne n'a
+                # jamais eu ce toucher (jamais grabbe, on a consomme
+                # le down nous-memes), il n'y a rien a lui rendre.
                 if touch.grab_current is self:
-                    super().on_touch_up(touch)
+                    touch.ungrab(self)
                 # Le toucher a ete consomme par la carte des le down :
                 # le Scatter n'a jamais eu le toucher, rien a lui
                 # rendre — on renvoie toujours True.
