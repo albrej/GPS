@@ -25,6 +25,21 @@ import zipfile
 
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# SUR PC UNIQUEMENT : désactive le SIMULATEUR MULTITOUCH de Kivy, qui
+# matérialise chaque clic droit (et chaque molette) par un « disque
+# rouge » déplaçable dessiné PAR-DESSUS toute l'application (donc
+# visible quel que soit l'onglet actif, et persistant d'un onglet à
+# l'autre). Le token « disable_multitouch » est la désactivation
+# RADICALE côté fournisseur souris : plus aucune simulation, donc
+# aucun disque n'est jamais créé. Les clics droits restent de vrais
+# événements (button == "right", utilisés par l'onglet Ajout pour la
+# suppression de points), la molette continue de défiler/déplacer la
+# carte. Aucun effet sur Android : cette configuration ne concerne
+# que le fournisseur d'entrée « souris » du poste de développement.
+from kivy.config import Config
+Config.set("input", "mouse", "mouse,disable_multitouch")
+
 from kivy.app import App
 from kivy.lang import Builder
 from kivy.uix.screenmanager import ScreenManager, Screen
@@ -827,6 +842,26 @@ if CARTE_DISPONIBLE:
                 cx, cy = self.center
                 self.size = (self._cote, self._cote)
                 self.center = (cx, cy)
+
+        def _toucher_sur_marqueur(self, touch):
+            """Test de collision TOLLÉRANT, utilisé uniquement par les
+            sous-classes interactives de l'onglet Ajout (points ajoutés
+            orange, disques rouges des points de trace) : les disques
+            sont petits (14-18 dp), trop petits pour être tapés au
+            doigt avec le collide_point standard (qui compare en plus
+            des coordonnées écran à l'espace interne du calque de la
+            carte, décalé par le Scatter). On convertit le toucher en
+            coordonnées LOCALES du marqueur (to_local, insensible au
+            décalage du calque) et on accepte tout tap à moins de
+            demi-taille + 12 dp du centre. Les autres onglets
+            (Nettoyage...) posent des MarqueurDisqueRouge sans jamais
+            appeler cette méthode : aucun effet pour eux."""
+            try:
+                lx, ly = self.to_local(touch.x, touch.y, relative=True)
+            except Exception:
+                return self.collide_point(*touch.pos)
+            rayon = max(self.width, self.height) / 2.0 + dp(12)
+            return (lx * lx + ly * ly) <= rayon * rayon
 
     class MarqueurWaypoint(MapMarker):
         """Curseur des waypoints/annotations photos : un disque JAUNE
@@ -10542,6 +10577,37 @@ class EcranAVenir(Screen):
         self.add_widget(layout)
 
 
+def _purger_disques_simulateur(*args):
+    """FILET DE SÉCURITÉ (PC uniquement, aucun effet ailleurs) : retire
+    du canvas ARRIÈRE de la fenêtre tout « disque rouge » laissé par le
+    simulateur multitouch de Kivy (clic droit / molette). Le simulateur
+    pose EXACTEMENT, dans Window.canvas.after, une instruction
+    Color(0.8, 0.2, 0.2, 0.7) suivie d'une Ellipse de 20 x 20 — c'est
+    cette paire, et elle seule, que l'on retire : aucun autre élément
+    de l'application ne dessine dans ce canvas, les onglets ne sont
+    jamais touchés. Défensif : ne lève jamais. Appelée périodiquement
+    par Clock (voir OutilsTracesApp.build)."""
+    try:
+        apres = Window.canvas.after
+        enfants = list(apres.children)
+        i = 0
+        while i < len(enfants) - 1:
+            instr = enfants[i]
+            suivant = enfants[i + 1]
+            if (instr.__class__.__name__ == "Color"
+                    and abs(float(instr.r) - 0.8) < 0.02
+                    and abs(float(instr.g) - 0.2) < 0.02
+                    and abs(float(instr.b) - 0.2) < 0.02
+                    and suivant.__class__.__name__ == "Ellipse"
+                    and float(suivant.size[0]) <= 30.0
+                    and float(suivant.size[1]) <= 30.0):
+                apres.remove(instr)
+                apres.remove(suivant)
+            i += 1
+    except Exception:
+        pass
+
+
 class OutilsTracesApp(App):
     title = "Bubu GPS"
 
@@ -10600,6 +10666,14 @@ class OutilsTracesApp(App):
         # change pas explicitement : tous les libellés en texte noir
         # étaient donc invisibles dessus. On passe à un fond clair.
         Window.clearcolor = (0.96, 0.97, 0.98, 1)
+
+        # Filet de sécurité PC (voir _purger_disques_simulateur) :
+        # balaye le canvas de la fenêtre toutes les 0,2 s pour retirer
+        # tout disque du simulateur multitouch qui aurait malgré tout
+        # été posé. Un disque éventuel disparaît donc en 0,2 s au
+        # maximum, quel que soit l'onglet affiché. Silencieux et sans
+        # aucun effet sur Android.
+        Clock.schedule_interval(_purger_disques_simulateur, 0.2)
 
         Builder.load_string(KV)
 
