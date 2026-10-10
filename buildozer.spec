@@ -5,7 +5,7 @@ package.domain = org.perso
 
 source.dir = .
 source.include_exts = py,kv,png,jpg,gpx,kml,kmz,xml
-
+source.exclude_dirs = cache, __pycache__, screens, .github
 version = 0.2
 
 # Dépendances Python nécessaires à l'onglet Conversion.
