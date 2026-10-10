@@ -1154,15 +1154,15 @@ if CARTE_DISPONIBLE:
             popup.open()
 
     class MarqueurPointAjout(MarqueurDisqueRouge):
-        """Disque ORANGE d'un point AJOUTÃ par l'utilisateur (onglet
-        Ajout) : mÃªme construction que les disques rouges des points
-        aberrants (MarqueurDisqueRouge), mais il se laisse DÃPLACER au
+        """Disque ORANGE d'un point AJOUTÉ par l'utilisateur (onglet
+        Ajout) : même construction que les disques rouges des points
+        aberrants (MarqueurDisqueRouge), mais il se laisse DÉPLACER au
         doigt : un appui dessus le CAPTURE (la carte ne glisse pas
-        derriÃ¨re), le glisser le dÃ©place en direct, et au relÃ¢chement :
-          - aprÃ¨s un dÃ©placement : on_fin_deplacement(marqueur) â
-            l'onglet recalcule l'horodatage interpolÃ© entre les deux
+        derrière), le glisser le déplace en direct, et au relâchement :
+          - après un déplacement : on_fin_deplacement(marqueur) —
+            l'onglet recalcule l'horodatage interpolé entre les deux
             points de trace les plus proches de la nouvelle position ;
-          - sans dÃ©placement (simple tap) : on_clic(marqueur) â popup
+          - sans déplacement (simple tap) : on_clic(marqueur) — popup
             d'information (position + horodatage)."""
 
         def __init__(self, map_view=None, on_fin_deplacement=None,
@@ -1171,19 +1171,19 @@ if CARTE_DISPONIBLE:
             self.map_view = map_view
             self.on_fin_deplacement = on_fin_deplacement
             self.on_clic = on_clic
-            # Callback (marqueur) appelÃ© au CLIC DROIT (souris, PC) :
-            # supprime entiÃ¨rement le point de la trace.
+            # Callback (marqueur) appelé au CLIC DROIT (souris, PC) :
+            # supprime entièrement le point de la trace.
             self.on_suppression = on_suppression
-            # Callback (marqueur) appelÃ© Ã  CHAQUE frame du glisser :
-            # utilisÃ© par l'onglet Ajout pour dÃ©former la trace EN
-            # TEMPS RÃEL pendant le dÃ©placement du point.
+            # Callback (marqueur) appelé à CHAQUE frame du glisser :
+            # utilisé par l'onglet Ajout pour déformer la trace EN
+            # TEMPS RÉEL pendant le déplacement du point.
             self.on_deplacement = on_deplacement
 
         def _latlon_depuis_touch(self, touch):
-            """Position (lat, lon) de la carte sous le doigt â mÃªme
+            """Position (lat, lon) de la carte sous le doigt — même
             projection Mercator que le tap de l'onglet Carte. Pendant
             le glisser du point, la carte est immobile (le toucher a
-            Ã©tÃ© capturÃ© par le marqueur), son centre est donc stable."""
+            été capturé par le marqueur), son centre est donc stable."""
             mv = self.map_view
             if mv is None:
                 return None, None
@@ -1195,11 +1195,11 @@ if CARTE_DISPONIBLE:
 
         def on_touch_down(self, touch):
             if self._toucher_sur_marqueur(touch):
-                # CLIC DROIT (souris, PC) : suppression immÃ©diate du
-                # point, sans capture ni dÃ©placement.
+                # CLIC DROIT (souris, PC) : suppression immédiate du
+                # point, sans capture ni déplacement.
                 if getattr(touch, "button", "") == "right" and self.on_suppression is not None:
-                    # Marque AUSSI le toucher comme Â« sur un point
-                    # existant Â» : le handler Window de l'onglet ne
+                    # Marque AUSSI le toucher comme « sur un point
+                    # existant » : le handler Window de l'onglet ne
                     # doit pas traiter ce clic droit comme un tap
                     # d'ajout de point sur la trace.
                     touch.ud["point_existant_touche"] = True
@@ -1210,7 +1210,7 @@ if CARTE_DISPONIBLE:
                     return True
                 touch.grab(self)
                 touch.ud["point_ajout_deplace"] = False
-                # Marque le toucher : il ne doit PAS dÃ©clencher l'ajout
+                # Marque le toucher : il ne doit PAS déclencher l'ajout
                 # d'un nouveau point (le tap est sur un point existant).
                 touch.ud["point_existant_touche"] = True
                 # PAN DIFFÉRÉ (onglet Ajout) : le point est attrapé, la
@@ -1229,15 +1229,15 @@ if CARTE_DISPONIBLE:
                     self.lat = lat
                     self.lon = lon
                     touch.ud["point_ajout_deplace"] = True
-                    # Repositionne le marqueur Ã  l'Ã©cran immÃ©diatement :
+                    # Repositionne le marqueur à l'écran immédiatement :
                     # le calque de marqueurs de mapview ne repositionne
-                    # de lui-mÃªme qu'au dÃ©placement de la carte.
+                    # de lui-même qu'au déplacement de la carte.
                     try:
                         self.parent.reposition()
                     except Exception:
                         pass
-                    # DÃ©formation de la trace EN DIRECT (l'onglet se
-                    # charge de la frÃ©quence de rafraÃ®chissement).
+                    # Déformation de la trace EN DIRECT (l'onglet se
+                    # charge de la fréquence de rafraîchissement).
                     if self.on_deplacement is not None:
                         try:
                             self.on_deplacement(self)
@@ -1267,15 +1267,15 @@ if CARTE_DISPONIBLE:
         """Disque rouge d'un POINT DE TRACE de l'onglet Ajout,
         INTERACTIF (contrairement aux points aberrants de l'onglet
         Nettoyage qui restent de simples MarqueurDisqueRouge) :
-          - CLIC GAUCHE (tap) : on_clic(marqueur) â l'onglet affiche
-            les coordonnÃ©es GPS, l'horodatage EXIF et l'altitude des
+          - CLIC GAUCHE (tap) : on_clic(marqueur) — l'onglet affiche
+            les coordonnées GPS, l'horodatage EXIF et l'altitude des
             points ENTOURANT ce point dans le bloc central de
-            l'onglet (intitulÃ© changÃ©, les deux autres blocs effacÃ©s) ;
-          - CLIC DROIT (souris, PC) : on_suppression(marqueur) â
-            supprime entiÃ¨rement ce point de la trace.
-        Le marqueur garde une rÃ©fÃ©rence au DICT du point de trace
-        (self._point) : son index est retrouvÃ© PAR IDENTITÃ au moment
-        du clic, donc il reste correct mÃªme aprÃ¨s des insertions ou
+            l'onglet (intitulé changé, les deux autres blocs effacés) ;
+          - CLIC DROIT (souris, PC) : on_suppression(marqueur) —
+            supprime entièrement ce point de la trace.
+        Le marqueur garde une référence au DICT du point de trace
+        (self._point) : son index est retrouvé PAR IDENTITÉ au moment
+        du clic, donc il reste correct même après des insertions ou
         suppressions d'autres points."""
 
         def __init__(self, point=None, on_clic=None, on_suppression=None, **kwargs):
@@ -1302,10 +1302,10 @@ if CARTE_DISPONIBLE:
                         if (isinstance(enfant, MarqueurPointAjout)
                                 and enfant._toucher_sur_marqueur(touch)):
                             return False
-                # CLIC DROIT (souris, PC) : suppression immÃ©diate.
+                # CLIC DROIT (souris, PC) : suppression immédiate.
                 if getattr(touch, "button", "") == "right" and self.on_suppression is not None:
-                    # Marque AUSSI le toucher comme Â« sur un point
-                    # existant Â» : le handler Window de l'onglet ne
+                    # Marque AUSSI le toucher comme « sur un point
+                    # existant » : le handler Window de l'onglet ne
                     # doit pas traiter ce clic droit comme un tap
                     # d'ajout de point sur la trace.
                     touch.ud["point_existant_touche"] = True
@@ -1317,7 +1317,7 @@ if CARTE_DISPONIBLE:
                 touch.grab(self)
                 touch.ud["point_trace_deplace"] = False
                 touch.ud["point_trace_depart"] = (touch.x, touch.y)
-                # Marque le toucher : il ne doit PAS dÃ©clencher l'ajout
+                # Marque le toucher : il ne doit PAS déclencher l'ajout
                 # d'un nouveau point (le tap est sur un point existant).
                 touch.ud["point_existant_touche"] = True
                 # PAN DIFFÉRÉ (onglet Ajout) : le point est attrapé, la
@@ -1329,9 +1329,9 @@ if CARTE_DISPONIBLE:
 
         def on_touch_move(self, touch):
             if touch.grab_current is self:
-                # Un lÃ©ger glissement n'est pas un clic : le disque ne
-                # se dÃ©place pas (ce n'est pas un point ajoutÃ©), on
-                # note juste que ce n'Ã©tait pas un tap.
+                # Un léger glissement n'est pas un clic : le disque ne
+                # se déplace pas (ce n'est pas un point ajouté), on
+                # note juste que ce n'était pas un tap.
                 depart = touch.ud.get("point_trace_depart")
                 if depart is not None and (
                         abs(touch.x - depart[0]) > dp(8)
@@ -3073,8 +3073,8 @@ KV = """
 <AjoutScreen>:
     # Onglet "Ajout" : VOLONTAIREMENT hors ScrollView (contrairement
     # aux autres onglets) : la carte occupe TOUTE la hauteur restante
-    # de l'Ã©cran sous les boutons (size_hint_y: 1, sans limite de
-    # taille verticale fixe) â c'est tout l'intÃ©rÃªt de cet onglet.
+    # de l'écran sous les boutons (size_hint_y: 1, sans limite de
+    # taille verticale fixe) — c'est tout l'intérêt de cet onglet.
     BoxLayout:
         orientation: "vertical"
         padding: dp(16)
@@ -3096,10 +3096,10 @@ KV = """
                 text: "Charger une trace"
                 background_color: 0.2, 0.6, 0.86, 1
                 on_release: root.ouvrir_selecteur_fichier()
-            # Fond de carte : bouton carrÃ© ouvrant le menu dÃ©roulant
-            # des 4 vues (satellite par dÃ©faut), mÃªme gabarit que le
+            # Fond de carte : bouton carré ouvrant le menu déroulant
+            # des 4 vues (satellite par défaut), même gabarit que le
             # bouton "Layer" des onglets Photos/Live (48 dp), affichant
-            # l'icÃ´ne images/Layer.png en 48 x 48 dp.
+            # l'icône images/Layer.png en 48 x 48 dp.
             Button:
                 id: btn_layer
                 size_hint_x: None
@@ -3115,20 +3115,20 @@ KV = """
                     allow_stretch: True
                     keep_ratio: True
 
-        # Enregistrement de la trace modifiÃ©e (points ajoutÃ©s /
-        # dÃ©placÃ©s par l'utilisateur) dans un nouveau fichier GPX
-        # Â« <nom>_modifie.gpx Â», sans toucher au fichier source.
-        # Actif dÃ¨s qu'une trace est chargÃ©e.
+        # Enregistrement de la trace modifiée (points ajoutés /
+        # déplacés par l'utilisateur) dans un nouveau fichier GPX
+        # « <nom>_modifie.gpx », sans toucher au fichier source.
+        # Actif dès qu'une trace est chargée.
         Button:
-            text: "Enregistrer la trace modifiÃ©e"
+            text: "Enregistrer la trace modifiée"
             background_color: 0.15, 0.68, 0.38, 1
             size_hint_y: None
             height: dp(48)
             disabled: not root.trace_chargee
             on_release: root.enregistrer_trace_modifiee()
 
-        # Annulation UNE Ã UNE des suppressions (clic droit) : chaque
-        # appui restaure la derniÃ¨re suppression. GrisÃ© quand la pile
+        # Annulation UNE À UNE des suppressions (clic droit) : chaque
+        # appui restaure la dernière suppression. Grisé quand la pile
         # des suppressions annulables est vide.
         Button:
             text: "Annuler la suppression"
@@ -3148,11 +3148,11 @@ KV = """
             color: 0.2, 0.5, 0.2, 1
             italic: True
 
-        # Infos PERMANENTES du dernier point ajoutÃ©/sÃ©lectionnÃ© :
-        # TROIS BLOCS CÃTE Ã CÃTE, dans l'ordre point PRÃCÃDENT,
-        # POINT AJOUTÃ, point SUIVANT. Chaque bloc affiche GPS,
+        # Infos PERMANENTES du dernier point ajouté/sélectionné :
+        # TROIS BLOCS CÔTE À CÔTE, dans l'ordre point PRÉCÉDENT,
+        # POINT AJOUTÉ, point SUIVANT. Chaque bloc affiche GPS,
         # horodatage EXIF et altitude. Hauteur fixe quand un point
-        # est affichÃ©, repliÃ©e Ã  zÃ©ro sinon (la carte rÃ©cupÃ¨re la
+        # est affiché, repliée à zéro sinon (la carte récupère la
         # place).
         BoxLayout:
             orientation: "horizontal"
@@ -4059,25 +4059,25 @@ KV = """
 
 
 def _ouvrir_popup_selection(ecran, titre, contenu, taille=(0.95, 0.95)):
-    """CrÃ©e et ouvre le popup de sÃ©lection de fichier d'un Ã©cran, AVEC
-    DEBOUNCE : sur certains tÃ©lÃ©phones Android (ROM MIUI/HyperOS en
+    """Crée et ouvre le popup de sélection de fichier d'un écran, AVEC
+    DEBOUNCE : sur certains téléphones Android (ROM MIUI/HyperOS en
     particulier), un tap sur un bouton peut dispatcher on_release DEUX
-    FOIS (double Ã©vÃ©nement tactile â mÃªme cause que le bug du menu
-    dÃ©roulant). Sans garde, chaque appel crÃ©ait un NOUVEAU popup par-
-    dessus le prÃ©cÃ©dent : le choix refermait le dernier (la rÃ©fÃ©rence
+    FOIS (double événement tactile — même cause que le bug du menu
+    déroulant). Sans garde, chaque appel créait un NOUVEAU popup par-
+    dessus le précédent : le choix refermait le dernier (la référence
     self._popup pointait dessus), mais le PREMIER restait ouvert,
-    dessinÃ© par-dessus l'Ã©cran â il fallait le bouton Â« retour Â»
-    d'Android pour s'en dÃ©barrasser. DÃ©bounce : toute nouvelle demande
-    d'ouverture moins de 0,5 s aprÃ¨s la prÃ©cÃ©dente est IGNORÃE ; au
-    passage, si un popup de sÃ©lection traÃ®ne encore, il est refermÃ©.
-    La rÃ©fÃ©rence est rangÃ©e dans ecran._popup comme avant (les
-    _fichier_choisi des Ã©crans continuent de la dismiss())."""
+    dessiné par-dessus l'écran — il fallait le bouton « retour »
+    d'Android pour s'en débarrasser. Débounce : toute nouvelle demande
+    d'ouverture moins de 0,5 s après la précédente est IGNORÉE ; au
+    passage, si un popup de sélection traîne encore, il est refermé.
+    La référence est rangée dans ecran._popup comme avant (les
+    _fichier_choisi des écrans continuent de la dismiss())."""
     maintenant = Clock.get_time()
     if maintenant - getattr(ecran, "_t_dernier_popup_selection", -10.0) < 0.5:
-        return  # double dispatch du mÃªme tap : le premier popup reste
+        return  # double dispatch du même tap : le premier popup reste
     ecran._t_dernier_popup_selection = maintenant
-    # Garde-fou : referme un Ã©ventuel popup de sÃ©lection encore ouvert
-    # (changement d'Ã©cran pendant la sÃ©lection, par exemple).
+    # Garde-fou : referme un éventuel popup de sélection encore ouvert
+    # (changement d'écran pendant la sélection, par exemple).
     ancien = getattr(ecran, "_popup", None)
     if ancien is not None and ancien.parent is not None:
         try:
@@ -8798,34 +8798,34 @@ class NettoyageScreen(Screen):
 
 
 class AjoutScreen(Screen):
-    """Onglet "Ajout" : Ã©cran TOTALEMENT INDÃPENDANT des autres onglets
-    (aucune rÃ©fÃ©rence croisÃ©e avec eux, aucun Ã©tat partagÃ©) :
-      - bouton Â« Charger une trace Â» (GPX/KMZ/KML) via le mÃªme
+    """Onglet "Ajout" : écran TOTALEMENT INDÉPENDANT des autres onglets
+    (aucune référence croisée avec eux, aucun état partagé) :
+      - bouton « Charger une trace » (GPX/KMZ/KML) via le même
         explorateur que les autres onglets ;
-      - bouton carrÃ© Layer (icÃ´ne images/Layer.png) ouvrant le menu
-        dÃ©roulant des 4 vues : satellite, plan, topo, topo+ ;
-      - le nom de la trace chargÃ©e s'affiche comme d'habitude
+      - bouton carré Layer (icône images/Layer.png) ouvrant le menu
+        déroulant des 4 vues : satellite, plan, topo, topo+ ;
+      - le nom de la trace chargée s'affiche comme d'habitude
         (info_fichier : nom du fichier + nombre de points et de
         waypoints) ;
-      - la carte occupe TOUTE la hauteur restante de l'Ã©cran sous les
+      - la carte occupe TOUTE la hauteur restante de l'écran sous les
         boutons (pas de ScrollView, pas de hauteur fixe) ;
-      - trace (polyligne cyan), triangles dÃ©part/arrivÃ©e (vert/rouge,
-        orange si boucle fermÃ©e â¤ 20 m), waypoints en disques jaunes
+      - trace (polyligne cyan), triangles départ/arrivée (vert/rouge,
+        orange si boucle fermée ≤ 20 m), waypoints en disques jaunes
         cliquables (popup nom/description, ouverture photo le cas
-        Ã©chÃ©ant), et boutons + / - de zoom.
-    Aucune sÃ©lection de point, pas de graphique : volontairement
-    minimal pour rester indÃ©pendant."""
+        échéant), et boutons + / - de zoom.
+    Aucune sélection de point, pas de graphique : volontairement
+    minimal pour rester indépendant."""
 
     fichier_source = StringProperty("")
-    info_fichier = StringProperty("Aucune trace chargÃ©e.")
-    # Infos du dernier point ajoutÃ©/sÃ©lectionnÃ©, en TROIS BLOCS
-    # affichÃ©s cÃ´te Ã  cÃ´te dans l'onglet : point PRÃCÃDENT, POINT
-    # AJOUTÃ, point SUIVANT (GPS / EXIF / altitude pour chacun).
+    info_fichier = StringProperty("Aucune trace chargée.")
+    # Infos du dernier point ajouté/sélectionné, en TROIS BLOCS
+    # affichés côte à côte dans l'onglet : point PRÉCÉDENT, POINT
+    # AJOUTÉ, point SUIVANT (GPS / EXIF / altitude pour chacun).
     info_avant_text = StringProperty("")
     info_ajout_text = StringProperty("")
     info_apres_text = StringProperty("")
     # Vrai tant qu'il reste des suppressions annulables : pilote le
-    # bouton Â« Annuler la suppression Â» du kv.
+    # bouton « Annuler la suppression » du kv.
     suppression_annulable = BooleanProperty(False)
     trace_chargee = BooleanProperty(False)
     # Délai (secondes) d'appui MAINTENU avant que le glisser ne
@@ -8842,11 +8842,11 @@ class AjoutScreen(Screen):
         self.marqueurs_actifs = []
         self.marqueurs_waypoints = []
         self.marqueurs_points = []
-        self.points_ajoutes = []       # points crÃ©Ã©s par l'utilisateur : {'lat','lon','time','marqueur'}
-        # Pile des suppressions annulables : une entrÃ©e par point
-        # supprimÃ© (clic droit), dans l'ordre â le bouton Â« Annuler la
-        # suppression Â» restaure la DERNIÃRE (une Ã  une). Chaque
-        # entrÃ©e : {'index': int, 'point': dict, 'type': 'trace'|'ajoute'}.
+        self.points_ajoutes = []       # points créés par l'utilisateur : {'lat','lon','time','marqueur'}
+        # Pile des suppressions annulables : une entrée par point
+        # supprimé (clic droit), dans l'ordre — le bouton « Annuler la
+        # suppression » restaure la DERNIÈRE (une à une). Chaque
+        # entrée : {'index': int, 'point': dict, 'type': 'trace'|'ajoute'}.
         self._suppressions_annulables = []
         self._horloge_disques = None
         self.trace_layer = None
@@ -8866,28 +8866,28 @@ class AjoutScreen(Screen):
             self.map_view.delai_avant_pan = self.DELAI_PAN_AJOUT
             # La taille des curseurs de waypoints suit le zoom de la carte.
             self.map_view.bind(zoom=self._maj_taille_waypoints)
-            # Repose des disques rouges au DÃPLACEMENT de la carte :
-            # les points qui sortent du cadre sont remplacÃ©s pour
+            # Repose des disques rouges au DÉPLACEMENT de la carte :
+            # les points qui sortent du cadre sont remplacés pour
             # garder 20 disques visibles (debounce, voir
             # _planifier_maj_disques ; le zoom passe par
             # _maj_taille_waypoints ci-dessus).
             self.map_view.bind(lat=self._planifier_maj_disques,
                                lon=self._planifier_maj_disques)
-            # GESTION DES TUILES (mÃªme remÃ¨de que le zoom, Ã©tendu au
-            # DÃPLACEMENT de la carte) : l'affectation de lat/lon ne
+            # GESTION DES TUILES (même remède que le zoom, étendu au
+            # DÉPLACEMENT de la carte) : l'affectation de lat/lon ne
             # relance pas toujours le chargement des tuiles dans
-            # kivy_garden.mapview â le fond peut rester gris ou
-            # afficher des tuiles pÃ©rimÃ©es quand on se dÃ©place. On
-            # force donc, en diffÃ©rÃ© (debounce 0,25 s), un
-            # rechargement complet des tuiles aprÃ¨s chaque pan, comme
-            # le font dÃ©jÃ  changer_vue_carte et les boutons +/-.
+            # kivy_garden.mapview — le fond peut rester gris ou
+            # afficher des tuiles périmées quand on se déplace. On
+            # force donc, en différé (debounce 0,25 s), un
+            # rechargement complet des tuiles après chaque pan, comme
+            # le font déjà changer_vue_carte et les boutons +/-.
             self.map_view.bind(lat=self._planifier_recharge_tuiles,
                                lon=self._planifier_recharge_tuiles,
                                zoom=self._planifier_recharge_tuiles)
-            # AJOUT DE POINTS : tap court sur la trace (dÃ©tection au
-            # niveau de la Window, comme le tap de sÃ©lection de
-            # l'onglet Carte). Le dÃ©placement des points ajoutÃ©s se
-            # fait lui-mÃªme dans MarqueurPointAjout (grab au doigt).
+            # AJOUT DE POINTS : tap court sur la trace (détection au
+            # niveau de la Window, comme le tap de sélection de
+            # l'onglet Carte). Le déplacement des points ajoutés se
+            # fait lui-même dans MarqueurPointAjout (grab au doigt).
             Window.bind(on_touch_down=self._debut_touch_carte,
                         on_touch_up=self._sur_touch_carte)
         else:
@@ -8902,12 +8902,12 @@ class AjoutScreen(Screen):
             ))
 
     def zoomer_carte(self):
-        """Augmente le niveau de zoom de la carte (bouton Â« + Â»).
-        MÃªme gestion des tuiles que l'onglet DÃ©coupe : aprÃ¨s le
+        """Augmente le niveau de zoom de la carte (bouton « + »).
+        Même gestion des tuiles que l'onglet Découpe : après le
         changement de zoom, on force le rechargement complet des
-        tuiles (trigger_update(True)) â l'affectation de Â« zoom Â»
+        tuiles (trigger_update(True)) — l'affectation de « zoom »
         seule ne suffit pas toujours, le fond peut rester gris ou
-        afficher des tuiles pÃ©rimÃ©es du niveau prÃ©cÃ©dent."""
+        afficher des tuiles périmées du niveau précédent."""
         mapview = getattr(self, "map_view", None)
         if mapview is not None and hasattr(mapview, "zoom"):
             max_z = getattr(getattr(mapview, "map_source", None), "max_zoom", 19)
@@ -8917,9 +8917,9 @@ class AjoutScreen(Screen):
                 mapview.trigger_update(True)
 
     def dezoomer_carte(self):
-        """RÃ©duit le niveau de zoom de la carte (bouton Â« - Â»).
-        MÃªme gestion des tuiles que l'onglet DÃ©coupe (voir
-        zoomer_carte) : rechargement complet des tuiles aprÃ¨s le
+        """Réduit le niveau de zoom de la carte (bouton « - »).
+        Même gestion des tuiles que l'onglet Découpe (voir
+        zoomer_carte) : rechargement complet des tuiles après le
         changement de zoom."""
         mapview = getattr(self, "map_view", None)
         if mapview is not None and hasattr(mapview, "zoom"):
@@ -8938,8 +8938,8 @@ class AjoutScreen(Screen):
         self.map_view.trigger_update(True)
 
     def ouvrir_menu_fonds(self, bouton):
-        """Ouvre le menu dÃ©roulant compact des fonds de carte sous le
-        bouton carrÃ© Â« Layer Â» (vue courante marquÃ©e en vert)."""
+        """Ouvre le menu déroulant compact des fonds de carte sous le
+        bouton carré « Layer » (vue courante marquée en vert)."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         menu = _construire_menu_fonds_carte(self)
@@ -8960,7 +8960,7 @@ class AjoutScreen(Screen):
     def charger_trace(self, chemin):
         """Charge une trace GPX/KMZ/KML dans cet onglet : lecture des
         points et des waypoints, affichage du nom du fichier comme
-        d'habitude, tracÃ© sur la carte et recentrage automatique."""
+        d'habitude, tracé sur la carte et recentrage automatique."""
         if not chemin:
             return
         try:
@@ -8973,13 +8973,13 @@ class AjoutScreen(Screen):
 
         if not points:
             self.trace_chargee = False
-            self.info_fichier = "Aucun point GPS trouvÃ© dans ce fichier."
+            self.info_fichier = "Aucun point GPS trouvé dans ce fichier."
             return
 
         self.fichier_source = chemin
         self.points_courants = points
         self.trace_chargee = True
-        # Les infos du point prÃ©cÃ©demment ajoutÃ© ne concernent plus
+        # Les infos du point précédemment ajouté ne concernent plus
         # cette nouvelle trace, et les suppressions de l'ancienne
         # trace ne sont plus annulables.
         self.info_avant_text = ""
@@ -8988,9 +8988,9 @@ class AjoutScreen(Screen):
         self._suppressions_annulables = []
         self.suppression_annulable = False
 
-        # MÃªme rÃ¨gle que les onglets Carte/Photos/Live : seuls les
-        # vrais waypoints (nom non numÃ©rique, non superposÃ©s au
-        # dÃ©part/arrivÃ©e) sont affichÃ©s et comptÃ©s.
+        # Même règle que les onglets Carte/Photos/Live : seuls les
+        # vrais waypoints (nom non numérique, non superposés au
+        # départ/arrivée) sont affichés et comptés.
         vrais_wpts = gps_logic.vrais_waypoints(
             waypoints, [(points[0]['lat'], points[0]['lon']), (points[-1]['lat'], points[-1]['lon'])])
         self.info_fichier = (
@@ -9001,9 +9001,9 @@ class AjoutScreen(Screen):
         self._afficher_trace_sur_carte(points, waypoints=vrais_wpts)
 
     def _afficher_trace_sur_carte(self, points, waypoints=None):
-        """Trace la polyligne, pose les triangles dÃ©part/arrivÃ©e, les
+        """Trace la polyligne, pose les triangles départ/arrivée, les
         disques jaunes des waypoints, centre et zoome la carte sur
-        l'emprise de la trace (mÃªme graphisme que l'onglet Carte)."""
+        l'emprise de la trace (même graphisme que l'onglet Carte)."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
 
@@ -9019,8 +9019,8 @@ class AjoutScreen(Screen):
         for mp in self.marqueurs_points:
             self.map_view.remove_marker(mp)
         self.marqueurs_points = []
-        # Les points AJOUTÃS par l'utilisateur ne survivent pas au
-        # chargement d'une nouvelle trace : on repart de zÃ©ro.
+        # Les points AJOUTÉS par l'utilisateur ne survivent pas au
+        # chargement d'une nouvelle trace : on repart de zéro.
         for point in self.points_ajoutes:
             try:
                 self.map_view.remove_marker(point['marqueur'])
@@ -9032,9 +9032,9 @@ class AjoutScreen(Screen):
             return
 
         liste_coords = [(p['lat'], p['lon']) for p in points]
-        # Le calque de la trace est posÃ© APRÃS les marqueurs : ajoutÃ©
+        # Le calque de la trace est posé APRÈS les marqueurs : ajouté
         # en dernier il s'affiche par-dessus eux, puis on remonte le
-        # calque des marqueurs au-dessus de la trace (mÃªme mÃ©canique
+        # calque des marqueurs au-dessus de la trace (même mécanique
         # que l'onglet Carte).
         self.trace_layer = TraceLayer()
         self.trace_layer.set_points(liste_coords)
@@ -9053,8 +9053,8 @@ class AjoutScreen(Screen):
             self.map_view.add_marker(mw)
             self.marqueurs_waypoints.append(mw)
 
-        # Triangles dÃ©part/arrivÃ©e pour Â« Point de passage 1/2 Â»
-        # (vert / rouge, orange unique si boucle fermÃ©e â¤ 20 m).
+        # Triangles départ/arrivée pour « Point de passage 1/2 »
+        # (vert / rouge, orange unique si boucle fermée ≤ 20 m).
         _poser_triangles_points_passage(self, waypoints)
 
         dist_dep_arr = gps_logic.calculer_distance_haversine(
@@ -9077,11 +9077,11 @@ class AjoutScreen(Screen):
         # DISQUES ROUGES sur les points de la trace : toujours
         # NB_MAX_DISQUES_POINTS (20) VISIBLES DANS LE CADRE, quel que
         # soit le zoom ou la position (voir _maj_disques_points) :
-        # EXACTEMENT les mÃªmes que les points aberrants de l'onglet
-        # Nettoyage (MarqueurDisqueRouge : canvas du MapMarker effacÃ©,
-        # disque rouge dessinÃ©, source neutralisÃ©e, demi-taille gÃ©rÃ©e
-        # par la classe via maj_taille â couleur rouge par dÃ©faut).
-        # La pose est faite Ã  la fin du chargement, APRÃS le zoom
+        # EXACTEMENT les mêmes que les points aberrants de l'onglet
+        # Nettoyage (MarqueurDisqueRouge : canvas du MapMarker effacé,
+        # disque rouge dessiné, source neutralisée, demi-taille gérée
+        # par la classe via maj_taille — couleur rouge par défaut).
+        # La pose est faite à la fin du chargement, APRÈS le zoom
         # automatique sur l'emprise de la trace.
         self.map_view.add_layer(self.trace_layer)
         self._remonte_calque_marqueurs()
@@ -9098,13 +9098,13 @@ class AjoutScreen(Screen):
             self.map_view.zoom = max(2, min(zoom, 18))
         self._maj_taille_waypoints(self.map_view, self.map_view.zoom)
         # Pose initiale des disques rouges : 20 (ou moins si la trace
-        # en compte moins) rÃ©partis parmi les points VISIBLES dans le
-        # cadre, aprÃ¨s le zoom automatique sur l'emprise de la trace.
+        # en compte moins) répartis parmi les points VISIBLES dans le
+        # cadre, après le zoom automatique sur l'emprise de la trace.
         self._maj_disques_points()
 
     def _remonte_calque_marqueurs(self):
         """Remonte le calque des marqueurs AU-DESSUS du calque de trace
-        (mÃªme mÃ©canique que l'onglet Carte)."""
+        (même mécanique que l'onglet Carte)."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         couche = getattr(self.map_view, "_marker_layer", None)
@@ -9121,11 +9121,11 @@ class AjoutScreen(Screen):
         except Exception:
             pass
 
-    # Nombre de disques rouges affichÃ©s DANS LE CADRE de la carte, quel
+    # Nombre de disques rouges affichés DANS LE CADRE de la carte, quel
     # que soit le niveau de zoom ou la position : toujours 20 visibles
-    # (moins si la trace contient moins de points). Ã chaque zoom /
-    # dÃ©placement, les points qui sortent du cadre sont remplacÃ©s par
-    # d'autres, rÃ©partis uniformÃ©ment parmi les points VISIBLES.
+    # (moins si la trace contient moins de points). À chaque zoom /
+    # déplacement, les points qui sortent du cadre sont remplacés par
+    # d'autres, répartis uniformément parmi les points VISIBLES.
     NB_MAX_DISQUES_POINTS = 20
 
     def _retirer_disques_points(self):
@@ -9140,8 +9140,8 @@ class AjoutScreen(Screen):
 
     def _bornes_visibles(self):
         """Bornes (lat_min, lat_max, lon_min, lon_max) de la partie de
-        la carte actuellement visible Ã  l'Ã©cran, calculÃ©es avec la
-        mÃªme projection Mercator maison que le tap sur la carte
+        la carte actuellement visible à l'écran, calculées avec la
+        même projection Mercator maison que le tap sur la carte
         (cf. _sur_touch_carte de l'onglet Carte)."""
         if self.map_view is None:
             return None
@@ -9156,11 +9156,11 @@ class AjoutScreen(Screen):
 
     def _indices_points_affiches(self):
         """Indices des points qui recevront un disque rouge : au plus
-        NB_MAX_DISQUES_POINTS points, RÃPARTIS UNIFORMÃMENT parmi les
+        NB_MAX_DISQUES_POINTS points, RÉPARTIS UNIFORMÉMENT parmi les
         points de la trace actuellement DANS LE CADRE de la carte
         (premier et dernier visibles toujours inclus). Si le cadre
         contient moins de points que le maximum, tous les points
-        visibles sont affichÃ©s (au zoom max, une portion de trace de 5
+        visibles sont affichés (au zoom max, une portion de trace de 5
         points affiche ces 5 points)."""
         bornes = self._bornes_visibles()
         if bornes is None:
@@ -9173,9 +9173,9 @@ class AjoutScreen(Screen):
             return []
         if n <= self.NB_MAX_DISQUES_POINTS:
             return visibles
-        # RÃ©partition uniforme de NB_MAX_DISQUES_POINTS indices parmi
+        # Répartition uniforme de NB_MAX_DISQUES_POINTS indices parmi
         # les visibles : premier et derniers visibles inclus, espacement
-        # rÃ©gulier entre eux.
+        # régulier entre eux.
         m = self.NB_MAX_DISQUES_POINTS
         indices = []
         deja_vus = set()
@@ -9189,9 +9189,9 @@ class AjoutScreen(Screen):
     def _maj_disques_points(self):
         """(Re)pose les disques rouges pour qu'il y en ait TOUJOURS
         NB_MAX_DISQUES_POINTS (20) visibles dans le cadre, quel que
-        soit le zoom ou la position de la carte : Ã  chaque changement,
-        les points sortis de l'Ã©cran sont remplacÃ©s par d'autres pris
-        uniformÃ©ment parmi les points visibles. Le coÃ»t reste constant
+        soit le zoom ou la position de la carte : à chaque changement,
+        les points sortis de l'écran sont remplacés par d'autres pris
+        uniformément parmi les points visibles. Le coût reste constant
         (retire + repose 20 marqueurs au plus), la carte reste fluide.
         Sans trace ou sans carte : ne fait rien."""
         if not CARTE_DISPONIBLE or self.map_view is None or not self.points_courants:
@@ -9210,9 +9210,9 @@ class AjoutScreen(Screen):
             p = self.points_courants[i]
             # Disque rouge INTERACTIF (MarqueurPointTrace) : clic
             # gauche = infos des points entourant, clic droit (PC) =
-            # suppression du point. Le marqueur garde une rÃ©fÃ©rence au
-            # DICT du point : son index est retrouvÃ© par identitÃ© au
-            # moment du clic, donc reste correct aprÃ¨s insertions ou
+            # suppression du point. Le marqueur garde une référence au
+            # DICT du point : son index est retrouvé par identité au
+            # moment du clic, donc reste correct après insertions ou
             # suppressions d'autres points.
             mp = MarqueurPointTrace(
                 point=p,
@@ -9223,31 +9223,31 @@ class AjoutScreen(Screen):
             self.map_view.add_marker(mp)
             self.marqueurs_points.append(mp)
         # PAS de _remonte_calque_marqueurs() ici : le calque des
-        # marqueurs est dÃ©jÃ  au-dessus du calque de trace (remontÃ© au
-        # chargement et Ã  chaque pose de trace), et retirer/reposer
-        # le calque Ã  chaque repose de disques perturbait le
-        # chargement des tuiles pendant les dÃ©placements de la carte.
+        # marqueurs est déjà au-dessus du calque de trace (remonté au
+        # chargement et à chaque pose de trace), et retirer/reposer
+        # le calque à chaque repose de disques perturbait le
+        # chargement des tuiles pendant les déplacements de la carte.
 
     def _planifier_maj_disques(self, *args):
-        """Repose diffÃ©rÃ©e (debounce 0,15 s) des disques rouges :
-        dÃ©clenchÃ©e Ã  chaque changement de zoom OU de position (lat/lon)
-        de la carte. Le dÃ©lai Ã©vite de retirer/reposer 20 marqueurs Ã 
+        """Repose différée (debounce 0,15 s) des disques rouges :
+        déclenchée à chaque changement de zoom OU de position (lat/lon)
+        de la carte. Le délai évite de retirer/reposer 20 marqueurs à
         chaque frame pendant un glisser continu : on ne repose qu'une
-        fois le mouvement stabilisÃ© (ou toutes les 0,15 s s'il dure)."""
+        fois le mouvement stabilisé (ou toutes les 0,15 s s'il dure)."""
         if getattr(self, "_horloge_disques", None) is not None:
             self._horloge_disques.cancel()
         self._horloge_disques = Clock.schedule_once(
             lambda dt: self._maj_disques_points(), 0.15)
 
     def _planifier_recharge_tuiles(self, *args):
-        """Rechargement diffÃ©rÃ© (debounce 0,25 s) des TUILES de la
-        carte, dÃ©clenchÃ© Ã  chaque changement de position (lat/lon) ou
-        de zoom : aprÃ¨s un pan, kivy_garden.mapview ne recharge pas
+        """Rechargement différé (debounce 0,25 s) des TUILES de la
+        carte, déclenché à chaque changement de position (lat/lon) ou
+        de zoom : après un pan, kivy_garden.mapview ne recharge pas
         toujours les tuiles de la zone nouvellement visible (fond
-        gris, tuiles pÃ©rimÃ©es). On force trigger_update(True) â le
-        mÃªme rechargement complet que changer_vue_carte, les boutons
-        +/- et le dÃ©gel â une seule fois le mouvement stabilisÃ© (le
-        debounce Ã©vite de le relancer Ã  chaque frame du glisser)."""
+        gris, tuiles périmées). On force trigger_update(True) — le
+        même rechargement complet que changer_vue_carte, les boutons
+        +/- et le dégel — une seule fois le mouvement stabilisé (le
+        debounce évite de le relancer à chaque frame du glisser)."""
         if getattr(self, "_horloge_tuiles", None) is not None:
             self._horloge_tuiles.cancel()
         self._horloge_tuiles = Clock.schedule_once(
@@ -9256,11 +9256,11 @@ class AjoutScreen(Screen):
     def _recharger_tuiles(self, *args):
         """Rechargement complet des TUILES de la carte (voir
         _planifier_recharge_tuiles) : trigger_update(True) force
-        MapView Ã  recalculer et recharger toutes les tuiles de la
-        zone visible â mÃªmes mÃ©canismes internes que les onglets
-        Carte et DÃ©coupe (aucun hack des tuiles : les interventions
+        MapView à recalculer et recharger toutes les tuiles de la
+        zone visible — mêmes mécanismes internes que les onglets
+        Carte et Découpe (aucun hack des tuiles : les interventions
         sur les structures internes de mapview cassaient l'affichage,
-        elles ont toutes Ã©tÃ© retirÃ©es)."""
+        elles ont toutes été retirées)."""
         if self.map_view is None:
             return
         try:
@@ -9271,7 +9271,7 @@ class AjoutScreen(Screen):
     def _maj_taille_waypoints(self, instance, zoom):
         """La taille des disques (waypoints jaunes ET points rouges)
         suit le zoom de la carte ; et comme le zoom change les bornes
-        visibles, la repose des disques rouges est REPLANIFIÃE (pour
+        visibles, la repose des disques rouges est REPLANIFIÉE (pour
         garder 20 disques visibles dans le cadre)."""
         for mw in self.marqueurs_waypoints:
             mw.maj_taille(zoom)
@@ -9284,11 +9284,11 @@ class AjoutScreen(Screen):
     # AJOUT DE POINTS : tap sur la trace -> point orange draggable.
     # ------------------------------------------------------------------
     def _debut_touch_carte(self, window, touch):
-        """MÃ©morise la position de l'appui si le toucher dÃ©marre sur la
+        """Mémorise la position de l'appui si le toucher démarre sur la
         carte (pour distinguer plus tard le simple tap du glisser),
-        SANS consommer l'Ã©vÃ©nement (pas de grab, pas de return True)
-        â mÃªme principe que l'onglet Carte. Si la carte est GELÃE
-        (clic long), pas d'ajout de point : tout est verrouillÃ©."""
+        SANS consommer l'événement (pas de grab, pas de return True)
+        — même principe que l'onglet Carte. Si la carte est GELÉE
+        (clic long), pas d'ajout de point : tout est verrouillé."""
         if (self.manager is not None and self.manager.current == self.name
                 and self.map_view is not None
                 and not getattr(self.map_view, "freeze_actif", False)
@@ -9315,34 +9315,34 @@ class AjoutScreen(Screen):
 
     def _sur_touch_carte(self, window, touch):
         """Fin du toucher sur la carte : si c'est un TAP COURT (pas un
-        glisser, pas un clic long de gel) tombant SUR LA TRACE (Ã 
+        glisser, pas un clic long de gel) tombant SUR LA TRACE (à
         moins de 35 dp d'un segment de la trace), AJOUTE un point
-        orange Ã  cet endroit, avec par dÃ©faut l'horodatage interpolÃ©
-        entre les deux points de la TRACE COMPLÃTE qui l'encadrent
-        (pas seulement les points affichÃ©s)."""
+        orange à cet endroit, avec par défaut l'horodatage interpolé
+        entre les deux points de la TRACE COMPLÈTE qui l'encadrent
+        (pas seulement les points affichés)."""
         if self.manager is None or self.manager.current != self.name:
             return False
         depart = touch.ud.get("carte_pos_depart_ajout")
         if (not CARTE_DISPONIBLE or self.map_view is None
                 or not self.points_courants or depart is None):
             return False
-        # CLIC DROIT (souris, PC) : JAMAIS d'ajout de point â le clic
-        # droit est rÃ©servÃ© Ã  la SUPPRESSION (disques rouges et
-        # points orange). Sans ce filtre, un clic droit prÃ¨s de la
-        # trace ajoutait un point non demandÃ©.
+        # CLIC DROIT (souris, PC) : JAMAIS d'ajout de point — le clic
+        # droit est réservé à la SUPPRESSION (disques rouges et
+        # points orange). Sans ce filtre, un clic droit près de la
+        # trace ajoutait un point non demandé.
         if getattr(touch, "button", "") == "right":
             return False
-        # Le clic long de gel/dÃ©gel de la carte ne doit PAS ajouter de
-        # point : le marqueur a dÃ©jÃ  basculÃ© le gel pendant l'appui.
+        # Le clic long de gel/dégel de la carte ne doit PAS ajouter de
+        # point : le marqueur a déjà basculé le gel pendant l'appui.
         if touch.ud.get("bascule_freeze_effectuee"):
             return False
-        # Le tap a commencÃ© sur un POINT EXISTANT (disque rouge de la
-        # trace ou point ajoutÃ© orange) : c'est un clic/suppression de
+        # Le tap a commencé sur un POINT EXISTANT (disque rouge de la
+        # trace ou point ajouté orange) : c'est un clic/suppression de
         # ce point, PAS un ajout de nouveau point.
         if touch.ud.get("point_existant_touche"):
             return False
         if abs(touch.x - depart[0]) > dp(8) or abs(touch.y - depart[1]) > dp(8):
-            return False  # c'Ã©tait un glisser (pan/zoom), pas un tap
+            return False  # c'était un glisser (pan/zoom), pas un tap
 
         mv = self.map_view
         zoom = mv.zoom
@@ -9357,8 +9357,8 @@ class AjoutScreen(Screen):
             gx, gy = gps_logic.projeter_mercator(p['lat'], p['lon'], zoom)
             return (mv.center_x + gx - cx, mv.center_y - (gy - cy))
 
-        # Segment de la trace le plus proche du tap (distance Ã©cran en
-        # dp, indÃ©pendante du zoom).
+        # Segment de la trace le plus proche du tap (distance écran en
+        # dp, indépendante du zoom).
         meilleur = None  # (distance_px, index_segment, ratio)
         for i in range(len(self.points_courants) - 1):
             x1, y1 = _ecran(self.points_courants[i])
@@ -9367,7 +9367,7 @@ class AjoutScreen(Screen):
             if meilleur is None or d < meilleur[0]:
                 meilleur = (d, i, ratio)
         if meilleur is None or meilleur[0] > dp(35):
-            return False  # tap hors de la trace : rien Ã  ajouter
+            return False  # tap hors de la trace : rien à ajouter
 
         # Position GPS exacte du tap.
         px = cx + (tap_x - mv.center_x)
@@ -9379,8 +9379,8 @@ class AjoutScreen(Screen):
     @staticmethod
     def _distance_tap_segment(x, y, x1, y1, x2, y2):
         """Distance du point (x, y) au segment [P1, P2], et ratio (0..1)
-        du projetÃ© sur le segment (utilisÃ© pour interpoler l'horodatage
-        entre les deux extrÃ©mitÃ©s du segment)."""
+        du projeté sur le segment (utilisé pour interpoler l'horodatage
+        entre les deux extrémités du segment)."""
         dx, dy = x2 - x1, y2 - y1
         long2 = dx * dx + dy * dy
         if long2 <= 1e-9:
@@ -9391,9 +9391,9 @@ class AjoutScreen(Screen):
         return math.hypot(x - proj_x, y - proj_y), t
 
     def _horodatage_interpole(self, index_segment, ratio):
-        """Horodatage interpolÃ© entre le point index_segment et le
-        point index_segment+1 de la TRACE COMPLÃTE (self.points_courants,
-        pas seulement les points affichÃ©s) : t1 + (t2 - t1) * ratio.
+        """Horodatage interpolé entre le point index_segment et le
+        point index_segment+1 de la TRACE COMPLÈTE (self.points_courants,
+        pas seulement les points affichés) : t1 + (t2 - t1) * ratio.
         Renvoie None si l'un des deux points n'a pas d'horodatage."""
         t1 = self.points_courants[index_segment]['time']
         t2 = self.points_courants[index_segment + 1]['time']
@@ -9402,8 +9402,8 @@ class AjoutScreen(Screen):
         return None
 
     def _altitude_interpolee(self, index_segment, ratio):
-        """Altitude interpolÃ©e entre le point index_segment et le point
-        index_segment+1 de la trace complÃ¨te : ele1 + (ele2 - ele1) *
+        """Altitude interpolée entre le point index_segment et le point
+        index_segment+1 de la trace complète : ele1 + (ele2 - ele1) *
         ratio. Renvoie None si l'un des deux points n'a pas
         d'altitude."""
         e1 = self.points_courants[index_segment]['ele']
@@ -9413,9 +9413,9 @@ class AjoutScreen(Screen):
         return e1 if e1 is not None else e2
 
     def _segment_le_plus_proche(self, lat, lon):
-        """(index_segment, ratio) du segment de la trace complÃ¨te le
-        plus proche de (lat, lon) â projection en degrÃ©s lat/lon,
-        suffisante pour dÃ©partager deux points voisins."""
+        """(index_segment, ratio) du segment de la trace complète le
+        plus proche de (lat, lon) — projection en degrés lat/lon,
+        suffisante pour départager deux points voisins."""
         meilleur = None
         for i in range(len(self.points_courants) - 1):
             p1, p2 = self.points_courants[i], self.points_courants[i + 1]
@@ -9428,35 +9428,35 @@ class AjoutScreen(Screen):
         return meilleur[1], meilleur[2]
 
     def ajouter_point_sur_trace(self, lat, lon, index_segment, ratio):
-        """CrÃ©e un point AJOUTÃ (disque orange draggable) Ã  (lat, lon)
-        et l'INSÃRE DANS LA TRACE elle-mÃªme (self.points_courants),
+        """Crée un point AJOUTÉ (disque orange draggable) à (lat, lon)
+        et l'INSÈRE DANS LA TRACE elle-même (self.points_courants),
         entre le point index_segment et le point index_segment+1 : la
-        trace possÃ¨de donc un VRAI sommet Ã  cet endroit, et dÃ©placer
-        le point orange DÃFORME la trace (elle suit le doigt, en
-        direct). Horodatage et altitude par dÃ©faut Ã MI-CHEMIN entre
-        les deux points encadrants (ratio 0,5), indÃ©pendamment de la
+        trace possède donc un VRAI sommet à cet endroit, et déplacer
+        le point orange DÉFORME la trace (elle suit le doigt, en
+        direct). Horodatage et altitude par défaut À MI-CHEMIN entre
+        les deux points encadrants (ratio 0,5), indépendamment de la
         position exacte du tap sur le segment."""
         if not CARTE_DISPONIBLE or self.map_view is None:
             return
         if index_segment < 0 or index_segment + 1 >= len(self.points_courants):
             index_segment = max(0, len(self.points_courants) - 2)
-        # Horodatage et altitude TOUJOURS Ã MI-CHEMIN (ratio 0,5)
-        # entre les deux points encadrants â quelle que soit la
-        # position exacte du tap sur le segment (choix demandÃ© : le
-        # Â« ratio Â» du tap ne sert qu'Ã  INSÃRER le point au bon endroit
-        # dans la trace, pas Ã  horodater).
+        # Horodatage et altitude TOUJOURS À MI-CHEMIN (ratio 0,5)
+        # entre les deux points encadrants — quelle que soit la
+        # position exacte du tap sur le segment (choix demandé : le
+        # « ratio » du tap ne sert qu'à INSÉRER le point au bon endroit
+        # dans la trace, pas à horodater).
         heure = self._horodatage_interpole(index_segment, 0.5)
-        # ALTITUDE interpolÃ©e elle aussi Ã MI-CHEMIN entre les deux
-        # points encadrants (mÃªme rÃ¨gle que l'horodatage) : le point
-        # ajoutÃ© possÃ¨de une altitude cohÃ©rente avec la trace,
-        # affichÃ©e dans son popup et Ã©crite dans le GPX enregistrÃ©.
+        # ALTITUDE interpolée elle aussi À MI-CHEMIN entre les deux
+        # points encadrants (même règle que l'horodatage) : le point
+        # ajouté possède une altitude cohérente avec la trace,
+        # affichée dans son popup et écrite dans le GPX enregistré.
         # None si les deux voisins n'ont pas d'altitude.
         altitude = self._altitude_interpolee(index_segment, 0.5)
         nouveau_point = {'lat': lat, 'lon': lon, 'ele': altitude, 'time': heure}
         position = index_segment + 1
         self.points_courants.insert(position, nouveau_point)
-        # Les autres points ajoutÃ©s situÃ©s APRÃS l'insertion voient
-        # leur index dÃ©calÃ© d'un cran.
+        # Les autres points ajoutés situés APRÈS l'insertion voient
+        # leur index décalé d'un cran.
         for point in self.points_ajoutes:
             if point['index'] >= position:
                 point['index'] += 1
@@ -9469,26 +9469,26 @@ class AjoutScreen(Screen):
             on_deplacement=self._sur_deplacement_point,
             on_fin_deplacement=self._sur_fin_deplacement_point,
             on_clic=self._clic_point_ajoute,
-            # Clic droit (PC) : suppression totale du point ajoutÃ©.
+            # Clic droit (PC) : suppression totale du point ajouté.
             on_suppression=self._supprimer_point_ajoute,
         )
         self.map_view.add_marker(marqueur)
         self.points_ajoutes.append({'index': position, 'marqueur': marqueur})
-        # La trace est redessinÃ©e AVEC le nouveau sommet ; les
+        # La trace est redessinée AVEC le nouveau sommet ; les
         # marqueurs restent au-dessus du calque de trace.
         self._rafraichir_trace()
-        # Affiche immÃ©diatement les infos (GPS/EXIF/altitude) du point
-        # crÃ©Ã© et de ses voisins dans le label de l'onglet.
+        # Affiche immédiatement les infos (GPS/EXIF/altitude) du point
+        # créé et de ses voisins dans le label de l'onglet.
         self._maj_infos_point(position)
 
     def _point_ajoute_de(self, marqueur):
-        """EntrÃ©e de self.points_ajoutes correspondant au marqueur."""
+        """Entrée de self.points_ajoutes correspondant au marqueur."""
         return next((p for p in self.points_ajoutes
                       if p.get('marqueur') is marqueur), None)
 
     def _rafraichir_trace(self):
         """Redessine la polyligne de la trace avec les sommets actuels
-        de self.points_courants (points du GPX + points ajoutÃ©s), et
+        de self.points_courants (points du GPX + points ajoutés), et
         remonte le calque des marqueurs au-dessus."""
         if self.trace_layer is not None and self.map_view is not None:
             self.trace_layer.set_points(
@@ -9496,11 +9496,11 @@ class AjoutScreen(Screen):
         self._remonte_calque_marqueurs()
 
     def _sur_deplacement_point(self, marqueur):
-        """Le point orange est EN TRAIN d'Ãªtre glissÃ© : son sommet dans
-        la trace est mis Ã  jour au doigt, et la polyligne est
-        redessinÃ©e de faÃ§on THROTLÃE (au plus toutes les 0,06 s) â la
-        trace SUIVT le doigt en direct, sans coÃ»ter un redessin complet
-        Ã  chaque frame sur les traces longues."""
+        """Le point orange est EN TRAIN d'être glissé : son sommet dans
+        la trace est mis à jour au doigt, et la polyligne est
+        redessinée de façon THROTLÉE (au plus toutes les 0,06 s) — la
+        trace SUIVT le doigt en direct, sans coûter un redessin complet
+        à chaque frame sur les traces longues."""
         entree = self._point_ajoute_de(marqueur)
         if entree is None:
             return
@@ -9515,11 +9515,11 @@ class AjoutScreen(Screen):
             self._rafraichir_trace()
 
     def _sur_fin_deplacement_point(self, marqueur):
-        """Fin du glisser d'un point ajoutÃ© : le sommet est dÃ©jÃ  Ã  jour
-        dans la trace (mis Ã  jour frame par frame) ; on redessine la
-        trace une derniÃ¨re fois en garanti, et on RÃ-HORODATE le point
+        """Fin du glisser d'un point ajouté : le sommet est déjà à jour
+        dans la trace (mis à jour frame par frame) ; on redessine la
+        trace une dernière fois en garanti, et on RÉ-HORODATE le point
         par rapport aux deux points de trace VOISINS (index-1 et
-        index+1 : ses nouveaux encadrants dans la trace dÃ©formÃ©e)."""
+        index+1 : ses nouveaux encadrants dans la trace déformée)."""
         entree = self._point_ajoute_de(marqueur)
         if entree is None:
             return
@@ -9529,13 +9529,13 @@ class AjoutScreen(Screen):
         self.points_courants[idx]['lat'] = marqueur.lat
         self.points_courants[idx]['lon'] = marqueur.lon
         self._rafraichir_trace()
-        # RÃ©-horodatage (et rÃ©-altitude) entre les nouveaux voisins
-        # de la trace dÃ©formÃ©e.
+        # Ré-horodatage (et ré-altitude) entre les nouveaux voisins
+        # de la trace déformée.
         if 0 < idx < len(self.points_courants) - 1:
             p_avant = self.points_courants[idx - 1]
             p_apres = self.points_courants[idx + 1]
             if p_avant['time'] is not None and p_apres['time'] is not None:
-                # Ratio 0,5 : le point ajoutÃ© reste Ã  mi-chemin
+                # Ratio 0,5 : le point ajouté reste à mi-chemin
                 # temporellement entre ses deux nouveaux voisins.
                 self.points_courants[idx]['time'] = \
                     p_avant['time'] + (p_apres['time'] - p_avant['time']) * 0.5
@@ -9544,37 +9544,37 @@ class AjoutScreen(Screen):
                 self.points_courants[idx]['ele'] = \
                     p_avant['ele'] + (p_apres['ele'] - p_avant['ele']) * 0.5
         elif idx > 0 and self.points_courants[idx - 1]['time'] is not None:
-            # Point en bout de trace : mÃªme horodatage que son voisin.
+            # Point en bout de trace : même horodatage que son voisin.
             self.points_courants[idx]['time'] = self.points_courants[idx - 1]['time']
             if self.points_courants[idx - 1]['ele'] is not None:
                 self.points_courants[idx]['ele'] = self.points_courants[idx - 1]['ele']
-        # RafraÃ®chit le label permanent avec les nouvelles infos du
-        # point dÃ©placÃ© et de ses voisins.
+        # Rafraîchit le label permanent avec les nouvelles infos du
+        # point déplacé et de ses voisins.
         self._maj_infos_point(idx)
 
     def _infos_autour_du_point(self, idx):
-        """CLIC GAUCHE sur un point (ajoutÃ© OU point de trace) :
-        affiche dans le SEUL BLOC CENTRAL (intitulÃ© changÃ©) les
-        coordonnÃ©es GPS, l'horodatage EXIF et l'altitude du POINT
-        SÃLECTIONNÃ uniquement â pas ce qu'il y a autour. Les deux
-        autres blocs sont effacÃ©s."""
+        """CLIC GAUCHE sur un point (ajouté OU point de trace) :
+        affiche dans le SEUL BLOC CENTRAL (intitulé changé) les
+        coordonnées GPS, l'horodatage EXIF et l'altitude du POINT
+        SÉLECTIONNÉ uniquement — pas ce qu'il y a autour. Les deux
+        autres blocs sont effacés."""
         if not (0 <= idx < len(self.points_courants)):
             return
         p = self.points_courants[idx]
         self.info_avant_text = ""
         self.info_apres_text = ""
         self.info_ajout_text = (
-            "Point sÃ©lectionnÃ©\n"
-            f"(nÂ°{idx + 1}/{len(self.points_courants)})\n"
+            "Point sélectionné\n"
+            f"(n°{idx + 1}/{len(self.points_courants)})\n"
             + self._texte_point(p))
 
     # ------------------------------------------------------------------
     # CLIC GAUCHE / CLIC DROIT sur les points de trace (disques rouges).
     # ------------------------------------------------------------------
     def _index_du_point(self, point_dict):
-        """Index (par IDENTITÃ, pas par valeur : deux points peuvent
-        avoir des coordonnÃ©es identiques) du dict de point dans la
-        trace, ou None s'il n'en fait plus partie (dÃ©jÃ  supprimÃ©)."""
+        """Index (par IDENTITÉ, pas par valeur : deux points peuvent
+        avoir des coordonnées identiques) du dict de point dans la
+        trace, ou None s'il n'en fait plus partie (déjà supprimé)."""
         for i, p in enumerate(self.points_courants):
             if p is point_dict:
                 return i
@@ -9589,13 +9589,13 @@ class AjoutScreen(Screen):
 
     def _retirer_marqueur_sans_fantome(self, marqueur):
         """Retire un marqueur de la carte en garantissant qu'il ne
-        reste AUCUN rÃ©sidu visuel : le retrait standard, PLUS une
+        reste AUCUN résidu visuel : le retrait standard, PLUS une
         purge de la liste interne du calque de marqueurs (c'est elle
-        qui repose Ã  l'Ã©cran les marqueurs Â« disparus Â» quand elle
-        n'est pas vidÃ©e), PLUS l'effacement du canvas du marqueur â
-        mÃªme si une structure interne de mapview rÃ©sistait au retrait,
-        il ne resterait alors plus rien Ã  dessiner. DÃ©fensif : ne
-        lÃ¨ve jamais."""
+        qui repose à l'écran les marqueurs « disparus » quand elle
+        n'est pas vidée), PLUS l'effacement du canvas du marqueur —
+        même si une structure interne de mapview résistait au retrait,
+        il ne resterait alors plus rien à dessiner. Défensif : ne
+        lève jamais."""
         if marqueur is None or self.map_view is None:
             return
         # 1. Retrait standard.
@@ -9620,21 +9620,21 @@ class AjoutScreen(Screen):
             marqueur._layer = None
         except Exception:
             pass
-        # 3. Plus rien Ã  dessiner, quoi qu'il arrive.
+        # 3. Plus rien à dessiner, quoi qu'il arrive.
         try:
             marqueur.canvas.clear()
         except Exception:
             pass
 
     def _supprimer_point_trace(self, marqueur):
-        """CLIC DROIT sur un disque rouge : supprime entiÃ¨rement ce
+        """CLIC DROIT sur un disque rouge : supprime entièrement ce
         point de la trace, retire son disque et redessine la
-        polyligne. Les infos affichÃ©es sont effacÃ©es."""
+        polyligne. Les infos affichées sont effacées."""
         point_dict = marqueur._point
         idx = self._index_du_point(point_dict)
         if idx is None:
             return
-        # MÃ©morise la suppression pour le bouton Â« Annuler Â».
+        # Mémorise la suppression pour le bouton « Annuler ».
         self._suppressions_annulables.append(
             {'index': idx, 'point': point_dict, 'type': 'trace'})
         self.suppression_annulable = True
@@ -9644,34 +9644,34 @@ class AjoutScreen(Screen):
         self._retirer_marqueur_sans_fantome(marqueur)
         if marqueur in self.marqueurs_points:
             self.marqueurs_points.remove(marqueur)
-        # ...les index des points AJOUTÃS situÃ©s aprÃ¨s sont dÃ©calÃ©s.
+        # ...les index des points AJOUTÉS situés après sont décalés.
         for point in self.points_ajoutes:
             if point['index'] > idx:
                 point['index'] -= 1
-        # Redessine la trace sans le point supprimÃ©.
+        # Redessine la trace sans le point supprimé.
         self._rafraichir_trace()
         self.info_avant_text = ""
         self.info_ajout_text = ""
         self.info_apres_text = ""
 
     def _supprimer_point_ajoute(self, marqueur):
-        """CLIC DROIT sur un point AJOUTÃ (disque orange) : le retire
-        totalement â de la trace, de la carte et de la liste des
-        points ajoutÃ©s â puis redessine la polyligne et efface les
-        infos affichÃ©es."""
+        """CLIC DROIT sur un point AJOUTÉ (disque orange) : le retire
+        totalement — de la trace, de la carte et de la liste des
+        points ajoutés — puis redessine la polyligne et efface les
+        infos affichées."""
         entree = self._point_ajoute_de(marqueur)
         if entree is None:
             return
         idx = entree['index']
-        # MÃ©morise la suppression pour le bouton Â« Annuler Â» (le point
-        # dict est conservÃ© : le marqueur sera recrÃ©Ã© Ã  l'annulation).
+        # Mémorise la suppression pour le bouton « Annuler » (le point
+        # dict est conservé : le marqueur sera recréé à l'annulation).
         if 0 <= idx < len(self.points_courants):
             self._suppressions_annulables.append(
                 {'index': idx, 'point': self.points_courants[idx], 'type': 'ajoute'})
             self.suppression_annulable = True
         if 0 <= idx < len(self.points_courants):
             self.points_courants.pop(idx)
-        # DÃ©cale les index des autres points ajoutÃ©s situÃ©s aprÃ¨s.
+        # Décale les index des autres points ajoutés situés après.
         for point in self.points_ajoutes:
             if point['index'] > idx:
                 point['index'] -= 1
@@ -9683,12 +9683,12 @@ class AjoutScreen(Screen):
         self.info_apres_text = ""
 
     def annuler_derniere_suppression(self):
-        """Bouton Â« Annuler la suppression Â» : restaure la DERNIÃRE
-        suppression UNE Ã UNE (pas toutes d'un coup) : le point est
-        rÃ©insÃ©rÃ© Ã  son index d'origine dans la trace, les index des
-        autres points ajoutÃ©s sont recalÃ©s, et s'il s'agissait d'un
-        point AJOUTÃ (orange), son marqueur est recrÃ©Ã©. La trace est
-        redessinÃ©e et le point restaurÃ© est affichÃ© dans le bloc
+        """Bouton « Annuler la suppression » : restaure la DERNIÈRE
+        suppression UNE À UNE (pas toutes d'un coup) : le point est
+        réinséré à son index d'origine dans la trace, les index des
+        autres points ajoutés sont recalés, et s'il s'agissait d'un
+        point AJOUTÉ (orange), son marqueur est recréé. La trace est
+        redessinée et le point restauré est affiché dans le bloc
         central. Vide la pile pile vide : ne fait rien."""
         if not self._suppressions_annulables:
             self.suppression_annulable = False
@@ -9698,14 +9698,14 @@ class AjoutScreen(Screen):
 
         point_dict = suppression['point']
         idx = min(suppression['index'], len(self.points_courants))
-        # RÃ©insÃ¨re le point Ã  sa place d'origine.
+        # Réinsère le point à sa place d'origine.
         self.points_courants.insert(idx, point_dict)
-        # Recale les index des points AJOUTÃS situÃ©s aprÃ¨s.
+        # Recale les index des points AJOUTÉS situés après.
         for point in self.points_ajoutes:
             if point['index'] >= idx:
                 point['index'] += 1
-        # S'il s'agissait d'un point AJOUTÃ : recrÃ©e son marqueur
-        # orange draggable et sa entrÃ©e dans points_ajoutes.
+        # S'il s'agissait d'un point AJOUTÉ : recrée son marqueur
+        # orange draggable et sa entrée dans points_ajoutes.
         if suppression['type'] == 'ajoute' and self.map_view is not None:
             marqueur = MarqueurPointAjout(
                 map_view=self.map_view,
@@ -9720,18 +9720,18 @@ class AjoutScreen(Screen):
             )
             self.map_view.add_marker(marqueur)
             self.points_ajoutes.append({'index': idx, 'marqueur': marqueur})
-        # Redessine la trace avec le point restaurÃ© et repose les
-        # disques rouges (le point restaurÃ© en rÃ©cupÃ¨re un).
+        # Redessine la trace avec le point restauré et repose les
+        # disques rouges (le point restauré en récupère un).
         self._rafraichir_trace()
         if self.map_view is not None:
             self._maj_disques_points()
-        # Affiche le point restaurÃ© dans le bloc central.
+        # Affiche le point restauré dans le bloc central.
         self._infos_autour_du_point(idx)
 
     @staticmethod
     def _texte_point(p, numero=None):
         """Ligne d'info d'un point : GPS, horodatage EXIF, altitude.
-        UtilisÃ© par le popup des points ajoutÃ©s (point lui-mÃªme et
+        Utilisé par le popup des points ajoutés (point lui-même et
         points voisins de la trace) et par les blocs de l'onglet."""
         prefixe = f"Point {numero}\n" if numero is not None else ""
         heure = (p['time'].strftime("%d/%m/%Y %H:%M:%S")
@@ -9743,23 +9743,23 @@ class AjoutScreen(Screen):
                 f"Altitude : {alt}")
 
     def _maj_infos_point(self, idx):
-        """Remplit les TROIS BLOCS cÃ´te Ã  cÃ´te de l'onglet, dans
-        l'ordre : point PRÃCÃDENT (colonne de gauche), POINT AJOUTÃ
+        """Remplit les TROIS BLOCS côte à côte de l'onglet, dans
+        l'ordre : point PRÉCÉDENT (colonne de gauche), POINT AJOUTÉ
         (colonne centrale, en gras), point SUIVANT (colonne de
-        droite). Chaque bloc donne les coordonnÃ©es GPS, l'horodatage
-        EXIF et l'altitude. AppelÃ© Ã  la crÃ©ation du point, Ã  la fin
-        de son dÃ©placement, et au tap dessus (en plus du popup)."""
+        droite). Chaque bloc donne les coordonnées GPS, l'horodatage
+        EXIF et l'altitude. Appelé à la création du point, à la fin
+        de son déplacement, et au tap dessus (en plus du popup)."""
         if not (0 <= idx < len(self.points_courants)):
             return
         p = self.points_courants[idx]
-        # Bloc central : le point ajoutÃ©.
+        # Bloc central : le point ajouté.
         self.info_ajout_text = self._texte_point(
-            p, numero=f"ajoutÃ©\n(nÂ°{idx + 1}/{len(self.points_courants)})")
-        # Bloc gauche : le point prÃ©cÃ©dent (vide si premier point).
+            p, numero=f"ajouté\n(n°{idx + 1}/{len(self.points_courants)})")
+        # Bloc gauche : le point précédent (vide si premier point).
         self.info_avant_text = (
-            "Point prÃ©cÃ©dent\n" +
+            "Point précédent\n" +
             self._texte_point(self.points_courants[idx - 1], numero=idx)
-            if idx > 0 else "Point prÃ©cÃ©dent\n(aucun : dÃ©but de trace)")
+            if idx > 0 else "Point précédent\n(aucun : début de trace)")
         # Bloc droit : le point suivant (vide si dernier point).
         self.info_apres_text = (
             "Point suivant\n" +
@@ -9768,26 +9768,26 @@ class AjoutScreen(Screen):
             else "Point suivant\n(aucun : fin de trace)")
 
     def _clic_point_ajoute(self, marqueur):
-        """Simple tap sur un point AJOUTÃ (disque orange) : PAS de
-        popup â les popups restent rÃ©servÃ©s aux vraies annotations
+        """Simple tap sur un point AJOUTÉ (disque orange) : PAS de
+        popup — les popups restent réservés aux vraies annotations
         (waypoints avec photos). Comme pour un clic sur un disque
         rouge de la trace, seule la zone d'infos de l'onglet est mise
-        Ã  jour avec ce point (bloc central, autres blocs effacÃ©s)."""
+        à jour avec ce point (bloc central, autres blocs effacés)."""
         entree = self._point_ajoute_de(marqueur)
         if entree is None:
             return
         self._infos_autour_du_point(entree['index'])
 
     # ------------------------------------------------------------------
-    # ENREGISTREMENT DE LA TRACE MODIFIÃE (GPX).
+    # ENREGISTREMENT DE LA TRACE MODIFIÉE (GPX).
     # ------------------------------------------------------------------
     def enregistrer_trace_modifiee(self):
-        """Bouton Â« Enregistrer la trace modifiÃ©e Â» : Ã©crit la trace
+        """Bouton « Enregistrer la trace modifiée » : écrit la trace
         actuelle de l'onglet (points du fichier source + points
-        ajoutÃ©s/dÃ©placÃ©s par l'utilisateur, avec leurs horodatages et
-        altitudes interpolÃ©es) dans un fichier GPX
-        Â« <nom>_modifie.gpx Â» du dossier de sortie, SANS toucher au
-        fichier source. L'Ã©criture se fait dans un thread pour ne pas
+        ajoutés/déplacés par l'utilisateur, avec leurs horodatages et
+        altitudes interpolées) dans un fichier GPX
+        « <nom>_modifie.gpx » du dossier de sortie, SANS toucher au
+        fichier source. L'écriture se fait dans un thread pour ne pas
         figer l'interface sur les longues traces."""
         if not self.trace_chargee or not self.points_courants:
             return
@@ -9800,13 +9800,13 @@ class AjoutScreen(Screen):
                 else os.path.dirname(self.fichier_source)
             chemin = os.path.join(dossier, f"{base}_modifie.gpx")
             compteur = 1
-            while os.path.exists(chemin):  # ne jamais Ã©craser un fichier existant
+            while os.path.exists(chemin):  # ne jamais écraser un fichier existant
                 chemin = os.path.join(dossier, f"{base}_modifie_{compteur}.gpx")
                 compteur += 1
 
             gpx = ET.Element("gpx", {
                 "version": "1.1",
-                "creator": "Bubu GPS â onglet Ajout",
+                "creator": "Bubu GPS — onglet Ajout",
                 "xmlns": "http://www.topografix.com/GPX/1/1",
                 "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
                 "xsi:schemaLocation":
@@ -9814,7 +9814,7 @@ class AjoutScreen(Screen):
                     "http://www.topografix.com/GPX/1/1/gpx.xsd",
             })
             trk = ET.SubElement(gpx, "trk")
-            ET.SubElement(trk, "name").text = base + " (modifiÃ©e)"
+            ET.SubElement(trk, "name").text = base + " (modifiée)"
             seg = ET.SubElement(trk, "trkseg")
             for p in self.points_courants:
                 attrs = {"lat": f"{p['lat']:.7f}", "lon": f"{p['lon']:.7f}"}
@@ -9822,11 +9822,11 @@ class AjoutScreen(Screen):
                 if p.get('ele') is not None:
                     ET.SubElement(trkpt, "ele").text = f"{p['ele']:.1f}"
                 if p.get('time') is not None:
-                    # Horodatage GPX standard (ISO 8601, UTC Â« Z Â»
+                    # Horodatage GPX standard (ISO 8601, UTC « Z »
                     # comme dans les fichiers GPSLogger).
                     heure = p['time']
                     if heure.tzinfo is not None:
-                        # RamÃ¨ne l'horodatage en UTC avant l'Ã©criture.
+                        # Ramène l'horodatage en UTC avant l'écriture.
                         from datetime import timezone as _tz
                         heure = heure.astimezone(_tz.utc)
                     ET.SubElement(trkpt, "time").text = \
@@ -9835,9 +9835,9 @@ class AjoutScreen(Screen):
             ET.indent(gpx, space="  ")  # Python 3.9+ : fichier lisible
             ET.ElementTree(gpx).write(chemin, encoding="utf-8",
                                       xml_declaration=True)
-            message = f"Trace enregistrÃ©e :\n{chemin}"
+            message = f"Trace enregistrée :\n{chemin}"
         except Exception as e:
-            message = f"Ãchec de l'enregistrement : {e}"
+            message = f"Échec de l'enregistrement : {e}"
 
         def _afficher(dt):
             contenu = BoxLayout(orientation="vertical", padding=dp(12), spacing=dp(10))
