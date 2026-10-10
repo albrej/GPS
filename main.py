@@ -4069,6 +4069,36 @@ KV = """
 """
 
 
+def _ouvrir_popup_selection(ecran, titre, contenu, taille=(0.95, 0.95)):
+    """Crée et ouvre le popup de sélection de fichier d'un écran, AVEC
+    DEBOUNCE : sur certains téléphones Android (ROM MIUI/HyperOS en
+    particulier), un tap sur un bouton peut dispatcher on_release DEUX
+    FOIS (double événement tactile — même cause que le bug du menu
+    déroulant). Sans garde, chaque appel créait un NOUVEAU popup par-
+    dessus le précédent : le choix refermait le dernier (la référence
+    self._popup pointait dessus), mais le PREMIER restait ouvert,
+    dessiné par-dessus l'écran — il fallait le bouton « retour »
+    d'Android pour s'en débarrasser. Débounce : toute nouvelle demande
+    d'ouverture moins de 0,5 s après la précédente est IGNORÉE ; au
+    passage, si un popup de sélection traîne encore, il est refermé.
+    La référence est rangée dans ecran._popup comme avant (les
+    _fichier_choisi des écrans continuent de la dismiss())."""
+    maintenant = Clock.get_time()
+    if maintenant - getattr(ecran, "_t_dernier_popup_selection", -10.0) < 0.5:
+        return  # double dispatch du même tap : le premier popup reste
+    ecran._t_dernier_popup_selection = maintenant
+    # Garde-fou : referme un éventuel popup de sélection encore ouvert
+    # (changement d'écran pendant la sélection, par exemple).
+    ancien = getattr(ecran, "_popup", None)
+    if ancien is not None and ancien.parent is not None:
+        try:
+            ancien.dismiss()
+        except Exception:
+            pass
+    ecran._popup = Popup(title=titre, content=contenu, size_hint=taille)
+    ecran._popup.open()
+
+
 class ConversionScreen(Screen):
     fichier_source = StringProperty("")
     info_fichier = StringProperty("Aucune trace chargée.")
@@ -4081,8 +4111,7 @@ class ConversionScreen(Screen):
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
         if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+            _ouvrir_popup_selection(self, "Choisir un fichier", contenu)
 
     def _fichier_choisi(self, chemin):
         if hasattr(self, '_popup'):
@@ -4174,8 +4203,7 @@ class NumerotationScreen(Screen):
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
         if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+            _ouvrir_popup_selection(self, "Choisir un fichier", contenu)
 
     def _fichier_choisi(self, chemin):
         if hasattr(self, '_popup'):
@@ -4742,8 +4770,7 @@ class FusionScreen(Screen):
     def ajouter_fichiers(self):
         contenu = _construire_selecteur_fichiers_multiples(self._fichiers_choisis)
         if contenu is not None:
-            self._popup = Popup(title="Choisir les traces à fusionner", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+            _ouvrir_popup_selection(self, "Choisir les traces à fusionner", contenu)
 
     def _fichiers_choisis(self, chemins):
         if hasattr(self, '_popup'):
@@ -5039,8 +5066,7 @@ class LiveScreen(Screen):
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
         if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+            _ouvrir_popup_selection(self, "Choisir un fichier", contenu)
 
     def _fichier_choisi(self, chemin):
         if hasattr(self, '_popup'):
@@ -7367,8 +7393,7 @@ class CarteScreen(Screen):
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
         if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+            _ouvrir_popup_selection(self, "Choisir un fichier", contenu)
 
     def _fichier_choisi(self, chemin):
         if hasattr(self, '_popup'):
@@ -7809,8 +7834,7 @@ class AjoutScreen(Screen):
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
         if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+            _ouvrir_popup_selection(self, "Choisir un fichier", contenu)
 
     def _fichier_choisi(self, chemin):
         if hasattr(self, '_popup'):
@@ -8797,8 +8821,7 @@ class NettoyageScreen(Screen):
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
         if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+            _ouvrir_popup_selection(self, "Choisir un fichier", contenu)
 
     def _fichier_choisi(self, chemin):
         if hasattr(self, '_popup'):
@@ -9345,8 +9368,7 @@ class NettoyageScreen(Screen):
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
         if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+            _ouvrir_popup_selection(self, "Choisir un fichier", contenu)
 
     def _fichier_choisi(self, chemin):
         if hasattr(self, '_popup'):
@@ -9934,8 +9956,7 @@ class StatistiquesScreen(Screen):
     def ouvrir_selecteur_fichier(self):
         contenu = _construire_selecteur_fichier(self._fichier_choisi)
         if contenu is not None:
-            self._popup = Popup(title="Choisir un fichier", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+            _ouvrir_popup_selection(self, "Choisir un fichier", contenu)
 
     def _fichier_choisi(self, chemin):
         if hasattr(self, '_popup'):
@@ -10475,8 +10496,7 @@ class PhotosScreen(Screen):
     def ouvrir_selecteur_trace(self):
         contenu = _construire_selecteur_fichier(self._trace_choisie)
         if contenu is not None:
-            self._popup = Popup(title="Choisir une trace", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+            _ouvrir_popup_selection(self, "Choisir une trace", contenu)
 
     def _trace_choisie(self, chemin):
         if hasattr(self, '_popup'):
@@ -10513,8 +10533,7 @@ class PhotosScreen(Screen):
     def ouvrir_selecteur_photo(self):
         contenu = _construire_selecteur_fichier_photo(self._photo_choisie)
         if contenu is not None:
-            self._popup = Popup(title="Choisir une photo", content=contenu, size_hint=(0.95, 0.95))
-            self._popup.open()
+            _ouvrir_popup_selection(self, "Choisir une photo", contenu)
 
     def _photo_choisie(self, chemin):
         if hasattr(self, '_popup'):
