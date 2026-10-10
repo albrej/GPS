@@ -569,11 +569,27 @@ if CARTE_DISPONIBLE:
                 touch.ud["pan_differe_actif"] = True
                 touch.ud["pan_differe_debut"] = Clock.get_time()
                 scatter = getattr(self, "_scatter", None)
+                # Un enfant (calque de marqueurs) consomme-t-il
+                # l'appui ? NB : on NE PEUT PAS tester grab_current
+                # ici — Kivy ne remplit grab_current qu'AU MOMENT du
+                # dispatch des mouvements grabbés, pas au moment du
+                # touch.grab(). Seul le retour du dispatch dit si un
+                # marqueur (point orange à déplacer, disque rouge
+                # cliquable) a attrapé l'appui.
+                consomme = False
                 for enfant in self.children:
                     if enfant is scatter:
                         continue
                     if enfant.dispatch("on_touch_down", touch):
+                        consomme = True
                         break
+                # EXEMPTION DES MARQUEURS : si un point a été attrapé
+                # au down, le pan différé est désarmé NET — le délai
+                # de ½ s ne s'appliquera PAS à ce geste : le point
+                # suit le doigt immédiatement (même après un appui
+                # long), la carte ne bouge pas.
+                if consomme:
+                    touch.ud["pan_differe_actif"] = False
                 return True
 
             return super().on_touch_down(touch)
@@ -587,7 +603,15 @@ if CARTE_DISPONIBLE:
             # ci-dessous lui transmettra ce mouvement et les suivants).
             if (touch.ud.get("pan_differe_actif")
                     and self.delai_avant_pan > 0
+                    # Double verrou : grab_current n'est rempli par
+                    # Kivy qu'au premier dispatch du mouvement grabbé
+                    # (le premier move peut donc encore le voir à
+                    # None alors qu'un marqueur a le toucher) — d'où
+                    # le second test sur point_existant_touche, posé
+                    # par les marqueurs au moment du grab, AVANT tout
+                    # mouvement.
                     and touch.grab_current is None
+                    and not touch.ud.get("point_existant_touche")
                     and (Clock.get_time()
                          - touch.ud.get("pan_differe_debut", 0.0)
                          >= self.delai_avant_pan)):
@@ -1189,6 +1213,12 @@ if CARTE_DISPONIBLE:
                 # Marque le toucher : il ne doit PAS dÃ©clencher l'ajout
                 # d'un nouveau point (le tap est sur un point existant).
                 touch.ud["point_existant_touche"] = True
+                # PAN DIFFÉRÉ (onglet Ajout) : le point est attrapé, la
+                # carte ne doit PLUS pouvoir prendre le relais, même si
+                # l'appui se prolonge au-delà du délai de pan (verrou
+                # posé au grab, où grab_current n'est pas encore rempli
+                # par Kivy — voir MapViewMolette.on_touch_down).
+                touch.ud["pan_differe_actif"] = False
                 return True
             return super().on_touch_down(touch)
 
@@ -1256,6 +1286,22 @@ if CARTE_DISPONIBLE:
 
         def on_touch_down(self, touch):
             if self._toucher_sur_marqueur(touch):
+                # PRIORITÉ AUX POINTS AJOUTÉS (orange, DÉPLAÇABLES) :
+                # si le toucher est aussi dans la zone d'attrape d'un
+                # marqueur de point ajouté (les disques orange et
+                # rouges se côtoient le long de la trace, et leurs
+                # zones d'attrape de demi-taille + 12 dp se
+                # recouvrent facilement), on NE CONSOMME PAS le
+                # toucher : le disque orange doit l'attraper pour se
+                # laisser déplacer. Ce code ne concerne que l'onglet
+                # Ajout (seul endroit où coexistent MarqueurPointAjout
+                # et MarqueurPointTrace).
+                parent = self.parent
+                if parent is not None:
+                    for enfant in parent.children:
+                        if (isinstance(enfant, MarqueurPointAjout)
+                                and enfant._toucher_sur_marqueur(touch)):
+                            return False
                 # CLIC DROIT (souris, PC) : suppression immÃ©diate.
                 if getattr(touch, "button", "") == "right" and self.on_suppression is not None:
                     # Marque AUSSI le toucher comme Â« sur un point
@@ -1274,6 +1320,10 @@ if CARTE_DISPONIBLE:
                 # Marque le toucher : il ne doit PAS dÃ©clencher l'ajout
                 # d'un nouveau point (le tap est sur un point existant).
                 touch.ud["point_existant_touche"] = True
+                # PAN DIFFÉRÉ (onglet Ajout) : le point est attrapé, la
+                # carte ne doit PLUS pouvoir prendre le relais, même si
+                # l'appui se prolonge au-delà du délai de pan.
+                touch.ud["pan_differe_actif"] = False
                 return True
             return super().on_touch_down(touch)
 
@@ -3445,10 +3495,16 @@ KV = """
             # de pente par classes de couleurs.
             # Centrées horizontalement comme le bloc « Statistiques
             # générales » (AnchorLayout + contenu à taille minimum).
+            # INVISIBLES tant qu'aucune trace n'est chargée (rien à
+            # montrer) : elles apparaissent en même temps que la trace
+            # (même gabarit que les autres blocs conditionnels :
+            # hauteur repliée à 0 + opacité 0, qui libère la place).
             AnchorLayout:
                 anchor_x: "center"
                 size_hint_y: None
-                height: dp(48)
+                height: (dp(48) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
+                disabled: not root.trace_chargee
 
                 BoxLayout:
                     size_hint: None, None
@@ -9141,7 +9197,16 @@ class AjoutScreen(Screen):
         if not CARTE_DISPONIBLE or self.map_view is None or not self.points_courants:
             return
         self._retirer_disques_points()
+        # Les points AJOUTÉS (disques orange déplaçables) ne reçoivent
+        # JAMAIS de disque rouge : ils sont déjà dans points_courants
+        # (insérés à la création), et sans cette exclusion la repose
+        # posait un MarqueurPointTrace rouge NON DÉPLAÇABLE par-dessus
+        # le marqueur orange — le point paraissait « devenir rouge » et
+        # refusait d'être déplacé (l'appui attrapait le disque rouge).
+        indices_ajoutes = {p['index'] for p in self.points_ajoutes}
         for i in self._indices_points_affiches():
+            if i in indices_ajoutes:
+                continue
             p = self.points_courants[i]
             # Disque rouge INTERACTIF (MarqueurPointTrace) : clic
             # gauche = infos des points entourant, clic droit (PC) =
