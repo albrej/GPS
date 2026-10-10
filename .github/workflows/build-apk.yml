@@ -1,0 +1,50 @@
+name: Build APK Android
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Récupérer le code du dépôt
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances système
+        run: |
+          sudo apt update
+          sudo apt install -y git zip unzip openjdk-17-jdk autoconf libtool pkg-config \
+            zlib1g-dev libncurses-dev libncursesw5-dev cmake libffi-dev \
+            libssl-dev automake build-essential
+          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> "$GITHUB_ENV"
+
+      - name: Préparer l'environnement Python et installer Buildozer
+        run: |
+          python -m pip install --upgrade "pip<24.1" setuptools wheel
+          pip install "Cython<3.0" virtualenv buildozer
+
+      - name: Vérifier la syntaxe Python
+        run: |
+          python -m py_compile main.py tracker_service.py
+
+      - name: Compiler l'APK
+        run: yes | buildozer -v android debug
+
+      - name: Vérifier manifest APK
+        run: |
+          unzip -o bin/*.apk AndroidManifest.xml -d /tmp/apk_check
+          strings /tmp/apk_check/AndroidManifest.xml | grep -i foregroundServiceType \
+            || echo "ATTENTION: foregroundServiceType ABSENT du manifest !"
+
+      - name: Mettre l'APK à disposition en téléchargement
+        uses: actions/upload-artifact@v4
+        with:
+          name: outilstraces-apk
+          path: bin/*.apk
