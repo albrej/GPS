@@ -688,10 +688,14 @@ if CARTE_DISPONIBLE:
         traces sur la même carte (ex. rouge pour la trace live de
         l'onglet Live, à côté d'une trace chargée cyan)."""
 
-        def __init__(self, couleur=(0, 1, 1, 1), **kwargs):
+        def __init__(self, couleur=(0, 1, 1, 1), epaisseur=2, **kwargs):
             super().__init__(**kwargs)
             self.points = []
             self.couleur = couleur
+            # Épaisseur du trait (dp) : 2 par défaut (comportement
+            # inchangé partout) ; l'onglet Dossier passe une épaisseur
+            # plus grande pour la trace sélectionnée.
+            self.epaisseur = epaisseur
 
         def set_points(self, points_lat_lon):
             self.points = points_lat_lon
@@ -718,7 +722,7 @@ if CARTE_DISPONIBLE:
                 coords.extend([x, y])
             with self.canvas:
                 Color(*self.couleur)
-                KivyLine(points=coords, width=2)
+                KivyLine(points=coords, width=self.epaisseur)
 
     class MarqueurTexte(MapMarker):
         """Marqueur avec une lettre affichée dessus (D, A, ou D/A),
@@ -1262,6 +1266,28 @@ if CARTE_DISPONIBLE:
                         pass
                 return True
             return super().on_touch_up(touch)
+
+    class CurseurRoseDossier(MarqueurDisqueRouge):
+        """Disque rose du curseur de sélection, propre à l'onglet
+        Dossier. MarqueurDisqueRouge hérite de MapMarker, donc de
+        ButtonBehavior : dès qu'un toucher (down) tombe sur le
+        disque, ButtonBehavior GRABBE le toucher — et comme le
+        disque est centré sur la carte après un clic graphique, TOUT
+        pan démarré depuis la zone centrale était avalé : le scatter
+        interne de MapView ne recevait jamais le on_touch_down et
+        jamais le glissement. Ce marqueur est purement décoratif :
+        il ne consomme aucun toucher (down/move/up renvoient False),
+        le pan fonctionne même en démarrant le glisser dessus."""
+
+        def on_touch_down(self, touch):
+            return False
+
+        def on_touch_move(self, touch):
+            return False
+
+        def on_touch_up(self, touch):
+            return False
+
 
     class MarqueurPointTrace(MarqueurDisqueRouge):
         """Disque rouge d'un POINT DE TRACE de l'onglet Ajout,
@@ -2812,9 +2838,14 @@ KV = """
                 # Bouton visible uniquement une fois la trace chargée
                 # (même règle que le graphique et les blocs de
                 # l'onglet Nettoyage).
-                height: (dp(56) if root.trace_chargee else 0)
-                opacity: (1 if root.trace_chargee else 0)
+                text: "Découper ici"
+                # Affiché (hauteur > 0) UNIQUEMENT quand un point de coupe a été
+                # sélectionné sur le graphique : aucune ligne grisée tant
+                # que rien n'est choisi — le bouton n'existe tout
+                # simplement pas (hauteur 0, opacité 0).
+                height: (dp(56) if root.trace_chargee and root.point_coupure_text else 0)
                 disabled: not root.trace_chargee or root.en_cours
+                opacity: (1 if root.trace_chargee and root.point_coupure_text else 0)
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer_decoupe()
 
@@ -3069,6 +3100,202 @@ KV = """
                 disabled: not root.trace_nettoyee
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.enregistrer_trace_nettoyee()
+
+<DossierScreen>:
+    # Onglet « Dossier » : gabarit identique à Nettoyage (ScrollView,
+    # bouton de chargement + Layer, infos, carte 220 dp avec +/-), PLUS
+    # le graphique de profil altimétrique de l'onglet Découpe : il
+    # affiche le profil de la trace CLIQUÉE sur la carte.
+    ScrollView:
+        do_scroll_x: False
+        BoxLayout:
+            orientation: "vertical"
+            size_hint_y: None
+            height: self.minimum_height
+            padding: dp(16)
+            spacing: dp(8)
+
+            Label:
+                text: "Dossier"
+                font_size: "20sp"
+                bold: True
+                size_hint_y: None
+                height: dp(36)
+                color: 0, 0, 0, 1
+
+            BoxLayout:
+                size_hint_y: None
+                height: dp(48)
+                spacing: dp(6)
+                Button:
+                    text: "Charger un dossier"
+                    background_color: 0.2, 0.6, 0.86, 1
+                    on_release: root.ouvrir_selecteur_dossier()
+                Button:
+                    id: btn_layer
+                    size_hint_x: None
+                    width: dp(48)
+                    padding: 0, 0
+                    on_release: root.ouvrir_menu_fonds(self)
+                    Image:
+                        source: app.CHEMIN_ICONE_LAYER
+                        size_hint: None, None
+                        size: dp(48), dp(48)
+                        center_x: self.parent.center_x
+                        center_y: self.parent.center_y
+                        allow_stretch: True
+                        keep_ratio: True
+
+            Label:
+                text: root.info_fichier
+                size_hint_y: None
+                height: max(dp(30), self.texture_size[1] + dp(8))
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                color: 0.2, 0.5, 0.2, 1
+                italic: True
+
+            RelativeLayout:
+                size_hint_y: None
+                height: dp(440)
+
+                BoxLayout:
+                    id: map_container
+                    pos_hint: {"x": 0, "y": 0}
+                    size_hint: 1, 1
+
+                Button:
+                    text: "-"
+                    font_size: "24sp"
+                    bold: True
+                    color: 0, 0, 0, 1
+                    size_hint: None, None
+                    size: dp(36), dp(36)
+                    pos_hint: {"x": 0.03, "top": 0.95}
+                    background_normal: ""
+                    background_color: 0, 0, 0, 0
+                    on_release: root.dezoomer_carte()
+
+                    canvas.before:
+                        Color:
+                            rgba: 1, 1, 1, 1
+                        Ellipse:
+                            pos: self.pos
+                            size: self.size
+
+                Button:
+                    text: "+"
+                    font_size: "24sp"
+                    bold: True
+                    color: 0, 0, 0, 1
+                    size_hint: None, None
+                    size: dp(36), dp(36)
+                    pos_hint: {"right": 0.97, "top": 0.95}
+                    background_normal: ""
+                    background_color: 0, 0, 0, 0
+                    on_release: root.zoomer_carte()
+
+                    canvas.before:
+                        Color:
+                            rgba: 1, 1, 1, 0.9
+                        Ellipse:
+                            pos: self.pos
+                            size: self.size
+
+            # Bloc « Informations sur le point sélectionné » : même
+            # gabarit que l'onglet Statistiques (titre + texte + deux
+            # colonnes Point/Distance/Heure et GPS/Altitude/Vitesse).
+            # N'apparaît qu'une fois une trace CLIQUÉE.
+            Label:
+                text: "Informations sur le point sélectionné"
+                font_size: "15sp"
+                bold: True
+                size_hint_y: None
+                height: (dp(26) if root.trace_selectionnee_flag else 0)
+                opacity: (1 if root.trace_selectionnee_flag else 0)
+                color: 0, 0, 0, 1
+
+            Label:
+                text: root.info_point_text
+                size_hint_y: None
+                height: (max(dp(20), self.texture_size[1] + dp(4)) if root.info_point_text else 0)
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                font_size: "12sp"
+                color: 0, 0, 0, 1
+
+            AnchorLayout:
+                anchor_x: "center"
+                size_hint_y: None
+                height: (ligne_info_point_dossier.height if root.trace_selectionnee_flag else 0)
+                opacity: (1 if root.trace_selectionnee_flag else 0)
+
+                BoxLayout:
+                    id: ligne_info_point_dossier
+                    orientation: "horizontal"
+                    size_hint: None, None
+                    size: self.minimum_size
+                    spacing: dp(16)
+
+                    BoxLayout:
+                        orientation: "vertical"
+                        size_hint: None, None
+                        size: self.minimum_size
+                        spacing: dp(2)
+
+                        Label:
+                            text: root.info_point_num
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+                        Label:
+                            text: root.info_point_dist
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+                        Label:
+                            text: root.info_point_heure
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+
+                    BoxLayout:
+                        orientation: "vertical"
+                        size_hint: None, None
+                        size: self.minimum_size
+                        spacing: dp(2)
+
+                        Label:
+                            text: root.info_point_gps
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+                        Label:
+                            text: root.info_point_alt
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+                        Label:
+                            text: root.info_point_vit
+                            size_hint: None, None
+                            size: self.texture_size
+                            font_size: "12sp"
+                            color: 0, 0, 0, 1
+
+            # Profil altimétrique de la trace cliquée (même graphique
+            # que l'onglet Découpe ; vide tant qu'aucune trace n'est
+            # sélectionnée).
+            BoxLayout:
+                id: zone_graphique
+                size_hint_y: None
+                height: dp(175)
 
 <AjoutScreen>:
     # Onglet "Ajout" : VOLONTAIREMENT hors ScrollView (contrairement
@@ -4421,6 +4648,87 @@ def _construire_selecteur_fichier(callback, filtre_extensions=(".gpx", ".kmz", "
         filtre_extensions=filtre_extensions,
         multiple=False,
     )
+
+
+def _construire_selecteur_dossier(callback):
+    """Explorateur de DOSSIERS (onglet « Dossier ») : dialogue natif du
+    système sur PC (tkinter askdirectory), explorateur maison sur
+    Android — seuls les SOUS-DOSSIERS y sont listés (pas de fichiers),
+    avec un bouton « Choisir ce dossier » et un bouton « Annuler ».
+    Point de départ par défaut : DOSSIER_CHARGEMENT
+    (/storage/emulated/0/GPX_Files/ sous Android)."""
+    if platform != "android":
+        import tkinter as tk
+        from tkinter import filedialog
+        racine = tk.Tk()
+        racine.withdraw()
+        racine.attributes("-topmost", True)
+        try:
+            resultat = filedialog.askdirectory(
+                initialdir=DOSSIER_CHARGEMENT if os.path.isdir(DOSSIER_CHARGEMENT) else "/")
+            callback(resultat if resultat else None)
+        finally:
+            racine.destroy()
+        return None
+
+    dossier_actuel = [DOSSIER_CHARGEMENT
+                      if os.path.isdir(DOSSIER_CHARGEMENT)
+                      else "/storage/emulated/0/"]
+
+    layout = BoxLayout(orientation="vertical", spacing=dp(8), padding=dp(10))
+
+    lbl_chemin = Label(
+        text=dossier_actuel[0],
+        size_hint_y=None, height=dp(36), bold=True,
+        color=(0.1, 0.1, 0.1, 1), halign="left", valign="middle")
+    lbl_chemin.bind(size=lambda inst, val: setattr(
+        inst, "text_size", (max(1, val[0]), val[1])))
+    layout.add_widget(lbl_chemin)
+
+    btn_haut = _bouton_plat(_texte_avec_icone(ICONE_DOSSIER, ".. (Dossier parent)"), dp(44))
+    layout.add_widget(btn_haut)
+
+    scroll = ScrollView(size_hint=(1, 1))
+    _fond_uni(scroll, COULEUR_BLANC)
+    box_contenu = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(1))
+    _fond_uni(box_contenu, COULEUR_SEPARATEUR)
+    box_contenu.bind(minimum_height=box_contenu.setter("height"))
+    scroll.add_widget(box_contenu)
+    layout.add_widget(scroll)
+
+    def rafraichir():
+        lbl_chemin.text = dossier_actuel[0]
+        box_contenu.clear_widgets()
+        try:
+            sous_dossiers = sorted(
+                d for d in os.listdir(dossier_actuel[0])
+                if not d.startswith(".")
+                and os.path.isdir(os.path.join(dossier_actuel[0], d)))
+        except Exception:
+            sous_dossiers = []
+        for d in sous_dossiers:
+            chemin = os.path.join(dossier_actuel[0], d)
+            btn = _bouton_plat(_texte_avec_icone(ICONE_DOSSIER, d), dp(44))
+            btn.bind(on_release=lambda inst, c=chemin: (
+                dossier_actuel.__setitem__(0, c), rafraichir()))
+            box_contenu.add_widget(btn)
+
+    btn_haut.bind(on_release=lambda inst: (
+        dossier_actuel.__setitem__(
+            0, os.path.dirname(dossier_actuel[0].rstrip("/")) or "/storage/emulated/0/"),
+        rafraichir()))
+
+    barre_bas = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(8))
+    btn_valider = Button(text="Choisir ce dossier", background_color=(0.15, 0.68, 0.38, 1))
+    btn_valider.bind(on_release=lambda inst: callback(dossier_actuel[0]))
+    btn_annuler = Button(text="Annuler")
+    btn_annuler.bind(on_release=lambda inst: callback(None))
+    barre_bas.add_widget(btn_valider)
+    barre_bas.add_widget(btn_annuler)
+    layout.add_widget(barre_bas)
+
+    rafraichir()
+    return layout
 
 
 # ----------------------------------------------------------------------
@@ -9854,6 +10162,581 @@ class AjoutScreen(Screen):
         Clock.schedule_once(_afficher, 0)
 
 
+
+class DossierScreen(Screen):
+    """Onglet « Dossier » : écran TOTALEMENT INDÉPENDANT des autres
+    onglets (aucune référence croisée, aucun état partagé) :
+      - bouton « Charger un dossier » (explorateur de dossiers, pointant
+        par défaut vers /storage/emulated/0/GPX_Files/) ;
+      - bouton carré Layer (icône images/Layer.png) ouvrant le menu des
+        4 vues (satellite, plan, topo, topo+) ;
+      - la carte est IDENTIQUE à celle de l'onglet Nettoyage (même
+        gabarit, mêmes gestes) ;
+      - toutes les traces (.gpx/.kmz/.kml, non récursif) du dossier
+        choisi s'affichent en BLEU ;
+      - un clic sur une trace la fait passer en ROUGE (sans changer son
+        épaisseur) et affiche son profil altimétrique dans le graphique
+        (même GrapheProfil que l'onglet Découpe) ;
+      - le libellé d'information affiche « Aucun dossier chargé. »
+        puis « Dossier : <nom> » ; la ligne du dessous affiche le
+        nombre de traces, remplacé par « Trace : <nom> » de la trace
+        cliquée."""
+
+    info_fichier = StringProperty("Aucun dossier chargé.")
+    dossier_charge = BooleanProperty(False)
+    # Vrai dès qu'une trace est CLIQUÉE : pilote l'affichage du bloc
+    # « Informations sur le point sélectionné » (même gabarit que
+    # l'onglet Statistiques : le bloc n'apparaît qu'avec une trace).
+    trace_selectionnee_flag = BooleanProperty(False)
+    # Bloc « Informations sur le point sélectionné » (mêmes champs
+    # que l'onglet Statistiques : Point/GPS, Distance/Altitude,
+    # Heure/Vitesse).
+    info_point_text = StringProperty("")
+    info_point_num = StringProperty("")
+    info_point_gps = StringProperty("")
+    info_point_dist = StringProperty("")
+    info_point_alt = StringProperty("")
+    info_point_heure = StringProperty("")
+    info_point_vit = StringProperty("")
+
+    # Couleurs/épaisseurs des traces sur la carte : bleu fin par défaut,
+    # rouge (même épaisseur) pour la trace sélectionnée.
+    COULEUR_TRACE = (0.0, 0.35, 0.9, 1)
+    COULEUR_TRACE_SELECTION = (0.9, 0.1, 0.1, 1)
+    EPAISSEUR_TRACE = 2
+    # La trace sélectionnée garde la MÊME ÉPAISSEUR (seule la couleur
+    # passe au rouge).
+    EPAISSEUR_TRACE_SELECTION = 2
+    # Distance d'attrape (dp) d'un clic sur une trace.
+    SEUIL_CLIC_TRACE_DP = 35
+    # Durée (s) de l'appui maintenu avant que le glisser ne déplace la
+    # carte (même geste « clic maintenu + glisser » que les autres
+    # onglets, mais implémenté LOCALEMENT : voir _mouvement_touch_carte).
+    DELAI_PAN_DOSSIER = 0.4
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._vue_carte_actuelle = "satellite"
+        self.traces = []            # {'nom', 'chemin', 'points', 'layer'}
+        self.trace_selectionnee = None
+        self.map_view = None
+        self.graphe = None
+        # Profil de la trace sélectionnée (rempli à la sélection) et
+        # curseur rose sur la carte (même mécanique que Statistiques).
+        self.profil = ([], [], [], [])
+        self.marqueur_curseur = None
+
+        if CARTE_DISPONIBLE:
+            self.map_view = MapViewMolette(
+                zoom=6, lat=46.603354, lon=1.888334, map_source=SOURCE_SATELLITE)
+            self.ids.map_container.add_widget(self.map_view)
+            # ZOOM PAR GESTE DÉSACTIVÉ sur CETTE carte uniquement :
+            # le Scatter interne de mapview zoome au pincement (et au
+            # double-tap), ce qui dé/zoomait parfois pendant le clic
+            # maintenu + glisser. Le zoom reste possible par les
+            # boutons + / − (et la molette = déplacement). Les autres
+            # onglets ne sont pas touchés (leur Scatter garde ses
+            # réglages d'origine).
+            scatter = getattr(self.map_view, "_scatter", None)
+            if scatter is not None:
+                scatter.do_scale = False
+                # Le Scatter interne ne doit PLUS du tout grabber les
+                # touchers sur CETTE carte : le pan de l'onglet Dossier
+                # est implémenté localement au niveau Window (voir
+                # _mouvement_touch_carte), indépendamment de la chaîne
+                # ScrollView -> simulate_touch_down -> Scatter, dont le
+                # comportement s'est avéré inexplicablement muet ici
+                # (alors qu'il fonctionne à l'identique sur Nettoyage).
+                # do_translation à False + do_scale à False : le Scatter
+                # ne consomme plus RIEN (garde du on_touch_down de Kivy),
+                # il ne reste qu'un pur calque d'affichage.
+                scatter.do_translation_x = False
+                scatter.do_translation_y = False
+            # Graphique de profil altimétrique (même gabarit que
+            # l'onglet Découpe) : rempli au clic sur une trace.
+            self.graphe = GrapheProfil()
+            self.ids.zone_graphique.add_widget(self.graphe)
+            # Tap sur le graphique : sélectionne le point correspondant
+            # (bloc d'infos + disque rose sur la carte), même mécanique
+            # que l'onglet Statistiques.
+            self.graphe.callback_clic = self._sur_clic_graphique
+            # CLIC SUR UNE TRACE + PAN DE LA CARTE : détection au niveau
+            # de la Window (même principe que le tap d'ajout de l'onglet
+            # Ajout). on_touch_move pilote le pan « clic maintenu puis
+            # glisser » (DELAI_PAN_DOSSIER).
+            Window.bind(on_touch_down=self._debut_touch_carte,
+                        on_touch_move=self._mouvement_touch_carte,
+                        on_touch_up=self._sur_touch_carte)
+        else:
+            self.ids.map_container.add_widget(Label(
+                text=(
+                    "Carte indisponible : le module kivy_garden.mapview\n"
+                    "n'est pas installe.\n\nInstalle-le avec :\n"
+                    "pip install kivy_garden.mapview"
+                ),
+                color=(0.6, 0.1, 0.1, 1),
+                halign="center",
+            ))
+
+    # ------------------------------------------------------------------
+    # Sélecteur de dossier.
+    # ------------------------------------------------------------------
+    def ouvrir_selecteur_dossier(self):
+        contenu = _construire_selecteur_dossier(self._dossier_choisi)
+        if contenu is not None:
+            _ouvrir_popup_selection(self, "Choisir un dossier", contenu)
+
+    def _dossier_choisi(self, chemin):
+        if hasattr(self, "_popup"):
+            self._popup.dismiss()
+        if not chemin or not os.path.isdir(chemin):
+            return
+        # Retire les traces du dossier précédent (calques de la carte).
+        self._retirer_traces_carte()
+        self._retirer_curseur()
+        self.traces = []
+        self.trace_selectionnee = None
+        self.trace_selectionnee_flag = False
+        if self.graphe is not None:
+            self.graphe.set_donnees([], [], [], [])
+        try:
+            fichiers = sorted(
+                f for f in os.listdir(chemin)
+                if f.lower().endswith((".gpx", ".kmz", ".kml")))
+        except Exception as e:
+            self.info_fichier = f"Erreur de lecture du dossier : {e}"
+            return
+        for f in fichiers:
+            chemin_f = os.path.join(chemin, f)
+            try:
+                points = gps_logic.lire_fichier_pour_conversion(chemin_f)
+            except Exception:
+                points = []
+            if points:
+                self.traces.append({
+                    "nom": os.path.splitext(f)[0],
+                    "chemin": chemin_f,
+                    "points": points,
+                    "layer": None,
+                })
+        self.dossier_charge = True
+        self.info_fichier = (
+            f"Dossier : {os.path.basename(os.path.normpath(chemin))}\n"
+            f"{len(self.traces)} trace(s).")
+        self._afficher_traces_carte()
+
+    # ------------------------------------------------------------------
+    # Carte : pose des traces, sélection, clic.
+    # ------------------------------------------------------------------
+    def _retirer_traces_carte(self):
+        """Retire les calques (bleus et rouge) de toutes les traces de
+        la carte. Ne touche PAS à trace_selectionnee : la sélection
+        doit survivre au re-dessin (calques retirés puis reposés)."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        for entree in self.traces:
+            for cle in ("layer", "layer_rouge"):
+                if entree.get(cle) is not None:
+                    try:
+                        self.map_view.remove_layer(entree[cle])
+                    except Exception:
+                        pass
+                    entree[cle] = None
+
+    def _afficher_traces_carte(self, centrer=True):
+        """Pose TOUTES les traces sur la carte : chaque trace en BLEU
+        (fin), et par-dessus la trace sélectionnée en ROUGE (même épaisseur).
+        Centre et zoome la carte sur l'emprise de l'ensemble (comme
+        _afficher_trace_sur_carte des autres onglets), sauf si centrer
+        est False (re-dessin après un simple clic)."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        sel = self.trace_selectionnee
+        self._retirer_traces_carte()
+        for entree in self.traces:
+            layer = TraceLayer(
+                couleur=self.COULEUR_TRACE, epaisseur=self.EPAISSEUR_TRACE)
+            layer.set_points([(p["lat"], p["lon"]) for p in entree["points"]])
+            self.map_view.add_layer(layer)
+            entree["layer"] = layer
+        # La trace sélectionnée est redessinée PAR-DESSUS, en rouge.
+        if sel is not None:
+            layer_rouge = TraceLayer(
+                couleur=self.COULEUR_TRACE_SELECTION,
+                epaisseur=self.EPAISSEUR_TRACE_SELECTION)
+            layer_rouge.set_points([(p["lat"], p["lon"]) for p in sel["points"]])
+            self.map_view.add_layer(layer_rouge)
+            sel["layer_rouge"] = layer_rouge
+        # Remonte le calque des marqueurs AU-DESSUS des traces : le
+        # disque rose du point sélectionné reste visible par-dessus
+        # les traces bleues/rouges (même mécanique que Nettoyage).
+        self._remonte_calque_marqueurs()
+        if not centrer or not self.traces:
+            return
+        # Centre/zoom sur l'emprise COMBINÉE de toutes les traces
+        # (même formule que _afficher_trace_sur_carte des autres onglets).
+        lats, lons = [], []
+        for entree in self.traces:
+            lats.extend(p["lat"] for p in entree["points"])
+            lons.extend(p["lon"] for p in entree["points"])
+        if not lats:
+            return
+        min_lat, max_lat = min(lats), max(lats)
+        min_lon, max_lon = min(lons), max(lons)
+        self.map_view.center_on((min_lat + max_lat) / 2,
+                                (min_lon + max_lon) / 2)
+        max_delta = max(max_lat - min_lat, max_lon - min_lon)
+        if max_delta > 0:
+            zoom = int(12 - math.log2(max_delta * 10))
+            self.map_view.zoom = max(2, min(zoom, 18))
+        self.map_view.trigger_update(True)
+
+    def _selectionner_trace(self, entree):
+        """Trace cliquée : passe en rouge, affiche son profil
+        altimétrique (même graphique que l'onglet Découpe), son nom sur
+        la ligne « Trace : », et réinitialise le point sélectionné
+        (bloc d'infos + disque rose) comme le fait le chargement d'une
+        trace dans l'onglet Statistiques."""
+        self.trace_selectionnee = entree
+        dossier = getattr(self, "info_fichier", "").split("\n")[0]
+        self.info_fichier = f"{dossier}\nTrace : {entree['nom']}"
+        self.profil = gps_logic.calculer_profil(entree["points"])
+        self.graphe.set_donnees(*self.profil)
+        self.trace_selectionnee_flag = True
+        # Retire l'éventuel disque rose de la sélection précédente et
+        # remet le bloc d'infos à l'état « tape pour voir un point ».
+        self._retirer_curseur()
+        self.info_point_text = ("Tape sur la carte ou le graphique "
+                                "pour voir le détail d'un point.")
+        self.info_point_num = ""
+        self.info_point_gps = ""
+        self.info_point_dist = ""
+        self.info_point_alt = ""
+        self.info_point_heure = ""
+        self.info_point_vit = ""
+        self._afficher_traces_carte(centrer=False)
+        # Zoome/cadre la carte sur la trace QUI VIENT d'être cliquée
+        # (et non plus sur l'emprise combinée du dossier).
+        self._zoomer_sur_trace(entree)
+
+    def _zoomer_sur_trace(self, entree):
+        """Cadre la carte sur l'emprise de la trace sélectionnée : cherche
+        le zoom le plus élevé qui fait tenir TOUTE la trace dans la
+        carte (avec une marge de 10 %), puis centre dessus. Les
+        emprises en pixels sont calculées par la source de tuiles
+        elle-même (MapSource.get_x/get_y), indépendamment de la
+        projection de l'écran."""
+        pts = entree["points"]
+        if (not CARTE_DISPONIBLE or self.map_view is None
+                or not pts):
+            return
+        lats = [p["lat"] for p in pts]
+        lons = [p["lon"] for p in pts]
+        min_lat, max_lat = min(lats), max(lats)
+        min_lon, max_lon = min(lons), max(lons)
+        # NB : MapView expose la source de tuiles via la propriété
+        # PUBLIQUE map_source (pas d'attribut _map_source : un getattr
+        # sur ce nom retournait None et annulait silencieusement le
+        # cadrage — d'où l'absence de zoom malgré le code en place).
+        ms = getattr(self.map_view, "map_source", None)
+        if ms is None or not hasattr(ms, "get_x"):
+            return
+        zoom_min = int(getattr(ms, "min_zoom", 0) or 0)
+        zoom_max = int(getattr(ms, "max_zoom", 19) or 19)
+        marge = 0.9
+        zoom_choisi = zoom_min
+        for z in range(zoom_max, zoom_min - 1, -1):
+            try:
+                dx = abs(ms.get_x(z, max_lon) - ms.get_x(z, min_lon))
+                dy = abs(ms.get_y(z, min_lat) - ms.get_y(z, max_lat))
+            except Exception:
+                continue
+            if dx <= self.map_view.width * marge and \
+                    dy <= self.map_view.height * marge:
+                zoom_choisi = z
+                break
+        self.map_view.center_on((min_lat + max_lat) / 2,
+                                (min_lon + max_lon) / 2)
+        self.map_view.zoom = zoom_choisi
+        self.map_view.trigger_update(True)
+
+    def _retirer_curseur(self):
+        """Retire le disque rose du point sélectionné (s'il existe)."""
+        if (self.map_view is not None
+                and getattr(self, "marqueur_curseur", None) is not None):
+            try:
+                self.map_view.remove_marker(self.marqueur_curseur)
+            except Exception:
+                pass
+            self.marqueur_curseur = None
+
+    def _remonte_calque_marqueurs(self):
+        """Remonte le calque des marqueurs AU-DESSUS du calque de trace
+        (même mécanique que les onglets Nettoyage et Statistiques) :
+        retirer puis re-poser le calque de marqueurs via l'API PUBLIQUE
+        de MapView (remove_layer/add_layer) le renvoie en fin de pile,
+        au-dessus de tout. À appeler après TOUTE pose de marqueurs ou de
+        couches, pour que le disque rose reste visible par-dessus les
+        traces bleues/rouges."""
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        couche = getattr(self.map_view, "_marker_layer", None)
+        if couche is None:
+            for l in getattr(self.map_view, "_layers", []) or []:
+                if isinstance(l, MarkerMapLayer):
+                    couche = l
+                    break
+        if couche is None:
+            return
+        try:
+            self.map_view.remove_layer(couche)
+            self.map_view.add_layer(couche)
+        except Exception:
+            pass
+
+    def _sur_clic_graphique(self, distance_km):
+        """Tap sur le graphique : sélectionne le point de la trace
+        sélectionnée dont la distance cumulée est la plus proche de la
+        distance tapée — même mécanique que Statistiques
+        (_sur_clic_graphique), avec recentrage de la carte."""
+        distances_km = self.profil[0]
+        if not distances_km or self.trace_selectionnee is None:
+            return
+        idx = min(range(len(distances_km)),
+                  key=lambda i: abs(distances_km[i] - distance_km))
+        self._selectionner_point(idx, recentrer_carte=True)
+
+    def _selectionner_point(self, idx, recentrer_carte):
+        """Met à jour, en un seul endroit, tout ce qui doit refléter le
+        point sélectionné (même mécanique que Statistiques) : disque
+        ROSE sur la carte, bloc d'infos, et curseur du graphique."""
+        entree = self.trace_selectionnee
+        if entree is None or not (0 <= idx < len(entree["points"])):
+            return
+        p = entree["points"][idx]
+        if CARTE_DISPONIBLE and self.map_view is not None:
+            self._retirer_curseur()
+            # Curseur de sélection : disque ROSE exactement comme
+            # l'onglet Statistiques, mais via CurseurRoseDossier qui
+            # ne consomme JAMAIS les touchers (MapMarker hérite de
+            # ButtonBehavior et grabbe tout clic tombant sur lui :
+            # placé au centre de la carte, il tuait le pan).
+            self.marqueur_curseur = CurseurRoseDossier(
+                zoom=self.map_view.zoom,
+                couleur=COULEUR_ROSE_CURSEUR,
+                lat=p["lat"], lon=p["lon"],
+            )
+            self.map_view.add_marker(self.marqueur_curseur)
+            self._remonte_calque_marqueurs()
+            if recentrer_carte:
+                self.map_view.center_on(p["lat"], p["lon"])
+        distances_km, _, _, vitesses_kmh = self.profil
+        dist = distances_km[idx] if idx < len(distances_km) else 0.0
+        vit = vitesses_kmh[idx] if idx < len(vitesses_kmh) else 0.0
+        heure = p["time"].strftime("%H:%M:%S") if p.get("time") else "-"
+        ele_txt = f"{p['ele']} m" if p.get("ele") is not None else "-"
+        self.info_point_text = ""
+        self.info_point_num = f"Point {idx + 1}/{len(entree['points'])}"
+        self.info_point_gps = f"GPS: {p['lat']:.5f}, {p['lon']:.5f}"
+        self.info_point_dist = f"Distance: {dist:.2f} km"
+        self.info_point_alt = f"Altitude: {ele_txt}"
+        self.info_point_heure = f"Heure: {heure}"
+        self.info_point_vit = f"Vitesse: {vit} km/h"
+        self.graphe.set_selection(dist)
+
+    def _touch_vers_carte(self, touch):
+        """Coordonnées FENÊTRE -> LOCAL de la carte (le handler Window
+        reçoit des coordonnées fenêtre ; la carte vit dans un ScrollView,
+        l'origine locale n'est pas celle de la fenêtre)."""
+        if self.map_view is None:
+            return (touch.x, touch.y)
+        dx, dy = self.map_view.to_window(0, 0)
+        return (touch.x - dx, touch.y - dy)
+
+    def _debut_touch_carte(self, window, touch):
+        """Mémorise l'appui s'il démarre sur la carte, SANS consommer
+        l'événement — même principe que les autres onglets."""
+        if (self.manager is not None and self.manager.current == self.name
+                and self.map_view is not None
+                and self.map_view.collide_point(*self._touch_vers_carte(touch))):
+            touch.ud["dossier_pos_depart"] = (touch.x, touch.y)
+            # Pan local : armé à l'appui, activé par _mouvement_touch_carte
+            # après DELAI_PAN_DOSSIER sans mouvement notable.
+            touch.ud["dossier_temps_depart"] = Clock.get_time()
+            touch.ud["dossier_derniere_pos"] = (touch.x, touch.y)
+            touch.ud["pan_dossier_actif"] = False
+            touch.ud["pan_dossier_annule"] = False
+        return False
+
+    def _mouvement_touch_carte(self, window, touch):
+        """Glisser de la carte : ne démarre QUE si l'appui est resté
+        posé au moins DELAI_PAN_DOSSIER (0,4 s) sans bouger — le même
+        geste « clic maintenu + glisser » que les autres onglets, mais
+        implémenté LOCALEMENT au niveau Window (la chaîne Kivy
+        ScrollView -> Scatter interne s'est avérée muette sur cette
+        carte précise). Un mouvement avant la fin du délai ANNULE le pan
+        pour ce geste : le ScrollView garde alors la main (défilement
+        de la page), et le relâchement reste un tap de sélection de
+        trace. Le déplacement convertit les pixels écran en degrés via
+        la projection Mercator au zoom courant (même formule que le pan
+        molette de MapViewMolette), puis recentre la carte."""
+        if (self.manager is None or self.manager.current != self.name
+                or not CARTE_DISPONIBLE or self.map_view is None):
+            return False
+        depart = touch.ud.get("dossier_pos_depart")
+        if depart is None or getattr(touch, "button", "") in (
+                "scrollup", "scrolldown", "scrollleft", "scrollright"):
+            return False
+        if touch.ud.get("pan_dossier_annule"):
+            return False
+        dx0 = touch.x - depart[0]
+        dy0 = touch.y - depart[1]
+        if not touch.ud.get("pan_dossier_actif"):
+            # Bouger avant la fin de l'appui maintenu : ce geste-là
+            # n'est pas un pan (défilement de la page ou tap décalé).
+            if abs(dx0) > dp(10) or abs(dy0) > dp(10):
+                touch.ud["pan_dossier_annule"] = True
+                return False
+            if (Clock.get_time()
+                    - touch.ud.get("dossier_temps_depart", 0.0)
+                    < self.DELAI_PAN_DOSSIER):
+                return False
+            # Délai écoulé, doigt posé, ça glisse : pan activé, et le
+            # clic long de gel/dégel éventuel est annulé.
+            touch.ud["pan_dossier_actif"] = True
+            touch.ud["appui_long_annule"] = True
+            touch.ud["dossier_derniere_pos"] = (touch.x, touch.y)
+            timer = touch.ud.get("timer_clic_long_freeze")
+            if timer is not None:
+                timer.cancel()
+                touch.ud["timer_clic_long_freeze"] = None
+        # Décale le centre de la carte de la variation du doigt :
+        # glisser à droite (dx > 0) => la carte suit le doigt, le centre
+        # part vers l'ouest (mercator x diminue) ; glisser vers le haut
+        # (dy > 0) => le centre part vers le sud (mercator y augmente).
+        derniere = touch.ud.get("dossier_derniere_pos")
+        if derniere is None:
+            touch.ud["dossier_derniere_pos"] = (touch.x, touch.y)
+            return False
+        dx = touch.x - derniere[0]
+        dy = touch.y - derniere[1]
+        if dx == 0 and dy == 0:
+            return False
+        touch.ud["dossier_derniere_pos"] = (touch.x, touch.y)
+        mv = self.map_view
+        cx, cy = gps_logic.projeter_mercator(mv.lat, mv.lon, mv.zoom)
+        lat, lon = gps_logic.deprojeter_mercator(cx - dx, cy + dy, mv.zoom)
+        mv.center_on(lat, lon)
+        mv.trigger_update(True)
+        return False
+
+    def _sur_touch_carte(self, window, touch):
+        """Fin du toucher : si c'est un TAP COURT tombant à moins de
+        35 dp d'une trace, SÉLECTIONNE la trace la plus proche (rouge
+        épaisse + profil altimétrique + nom)."""
+        if self.manager is None or self.manager.current != self.name:
+            return False
+        depart = touch.ud.get("dossier_pos_depart")
+        if (not CARTE_DISPONIBLE or self.map_view is None
+                or not self.traces or depart is None):
+            return False
+        if getattr(touch, "button", "") == "right":
+            return False
+        if (abs(touch.x - depart[0]) > dp(8)
+                or abs(touch.y - depart[1]) > dp(8)):
+            return False  # c'était un glisser (pan), pas un tap
+        tap_x, tap_y = self._touch_vers_carte(touch)
+        mv = self.map_view
+        zoom = mv.zoom
+        cx, cy = gps_logic.projeter_mercator(mv.lat, mv.lon, zoom)
+
+        def _ecran(p):
+            gx, gy = gps_logic.projeter_mercator(p["lat"], p["lon"], zoom)
+            return (mv.center_x + gx - cx, mv.center_y - (gy - cy))
+
+        meilleur = None  # (distance_dp, entree)
+        for entree in self.traces:
+            points = entree["points"]
+            for i in range(len(points) - 1):
+                x1, y1 = _ecran(points[i])
+                x2, y2 = _ecran(points[i + 1])
+                d, _ = self._distance_tap_segment(tap_x, tap_y, x1, y1, x2, y2)
+                if meilleur is None or d < meilleur[0]:
+                    meilleur = (d, entree)
+        if meilleur is None or meilleur[0] > dp(self.SEUIL_CLIC_TRACE_DP):
+            return False  # tap hors de toute trace
+        entree = meilleur[1]
+        if entree is self.trace_selectionnee:
+            # Le tap porte sur la trace DÉJÀ SÉLECTIONNÉE : on choisit
+            # le POINT le plus proche du tap (disque rose + bloc
+            # d'infos + curseur du graphique), sans recentrer — même
+            # comportement qu'un tap sur la carte dans Statistiques.
+            px = cx + (tap_x - mv.center_x)
+            py = cy - (tap_y - mv.center_y)
+            lat_tap, lon_tap = gps_logic.deprojeter_mercator(px, py, zoom)
+            points = entree["points"]
+            meilleur_idx = None
+            meilleure_dist = None
+            for i, p in enumerate(points):
+                d = gps_logic.calculer_distance_haversine(
+                    lat_tap, lon_tap, p["lat"], p["lon"])
+                if meilleure_dist is None or d < meilleure_dist:
+                    meilleure_dist = d
+                    meilleur_idx = i
+            if meilleur_idx is not None:
+                self._selectionner_point(meilleur_idx, recentrer_carte=False)
+            return True
+        self._selectionner_trace(entree)
+        return True
+
+    @staticmethod
+    def _distance_tap_segment(x, y, x1, y1, x2, y2):
+        """Distance du point (x, y) au segment [P1, P2] (copie locale de
+        la méthode de l'onglet Ajout : les onglets sont indépendants).
+        Retourne (distance, ratio du projeté)."""
+        dx, dy = x2 - x1, y2 - y1
+        long2 = dx * dx + dy * dy
+        if long2 <= 1e-9:
+            return math.hypot(x - x1, y - y1), 0.0
+        t = ((x - x1) * dx + (y - y1) * dy) / long2
+        t = max(0.0, min(1.0, t))
+        proj_x, proj_y = x1 + t * dx, y1 + t * dy
+        return math.hypot(x - proj_x, y - proj_y), t
+
+    # ------------------------------------------------------------------
+    # Zoom et fonds de carte (mêmes méthodes que Nettoyage).
+    # ------------------------------------------------------------------
+    def dezoomer_carte(self):
+        mapview = getattr(self, "map_view", None)
+        if mapview and hasattr(mapview, "zoom"):
+            min_z = getattr(getattr(mapview, "map_source", None), "min_zoom", 0)
+            if mapview.zoom > min_z:
+                mapview.zoom -= 1
+                mapview.center_on(mapview.lat, mapview.lon)
+                mapview.trigger_update(True)
+
+    def zoomer_carte(self):
+        mapview = getattr(self, "map_view", None)
+        if mapview and hasattr(mapview, "zoom"):
+            max_z = getattr(getattr(mapview, "map_source", None), "max_zoom", 19)
+            if mapview.zoom < max_z:
+                mapview.zoom += 1
+                mapview.center_on(mapview.lat, mapview.lon)
+                mapview.trigger_update(True)
+
+    def changer_vue_carte(self, valeur):
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        self.map_view.map_source = SOURCES_FONDS_CARTES[valeur]
+        self.map_view.trigger_update(True)
+
+    def ouvrir_menu_fonds(self, bouton):
+        if not CARTE_DISPONIBLE or self.map_view is None:
+            return
+        menu = _construire_menu_fonds_carte(self)
+        menu.open(bouton)
+
+
 class StatistiquesScreen(Screen):
     """Onglet Statistiques : copie de travail de l'onglet Découpe,
     SANS le bloc de découpe de trace (zone de saisie + bouton
@@ -10870,6 +11753,7 @@ class OutilsTracesApp(App):
         self.sm.add_widget(FusionScreen(name="fusion"))
         self.sm.add_widget(CarteScreen(name="carte"))
         self.sm.add_widget(NettoyageScreen(name="nettoyage"))
+        self.sm.add_widget(DossierScreen(name="dossier"))
         # Onglet « Ajout » : VISIBLE UNIQUEMENT SUR PC (clic droit,
         # molette...). Sous Android, il n'est NI ajouté au
         # ScreenManager NI proposé dans le menu : totalement invisible.
@@ -10882,12 +11766,12 @@ class OutilsTracesApp(App):
         barre = BoxLayout(size_hint_y=None, height=dp(60), padding=(8, 4), spacing=dp(8))
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
-        self._ecrans_menu = [("statistiques", "Statistiques"), ("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Découpe"), ("nettoyage", "Nettoyage"), ("photos", "Photos"), ("Live", "Live")]
+        self._ecrans_menu = [("statistiques", "Statistiques"), ("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("carte", "Découpe"), ("nettoyage", "Nettoyage"), ("dossier", "Dossier"), ("photos", "Photos"), ("Live", "Live")]
         # Entrée « Ajout » du menu : PC uniquement (l'écran n'existe
         # même pas sous Android, voir ci-dessus).
         if platform != "android":
             # insérée avant Photos, comme sur PC
-            self._ecrans_menu.insert(6, ("ajout", "Ajout"))
+            self._ecrans_menu.insert(7, ("ajout", "Ajout"))
         self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
         self._boutons_menu = {}
         for nom_ecran, libelle in self._ecrans_menu:
