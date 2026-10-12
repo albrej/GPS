@@ -720,9 +720,31 @@ if CARTE_DISPONIBLE:
             for lat, lon in self.points:
                 x, y = mapview.get_window_xy_from(lat, lon, zoom)
                 coords.extend([x, y])
+            # CORRECTIF « TRACE FANTÔME » : au-delà d'un certain nombre
+            # de sommets, UNE SEULE instruction Line(...4944 points...)
+            # produit un artefact de rendu — un segment droit parasite
+            # reliant deux sommets éloignés (observé sur PC ET Android
+            # avec fusion.txt : 4944 points ; disparu après découpe en
+            # fichiers plus courts). On découpe donc le dessin en
+            # SOUS-LIGNES enchaînées de TRACE_POINTS_PAR_LIGNE points
+            # maximum : chaque sous-ligne RÉPÈTE le dernier point de la
+            # précédente (chevauchement d'un point) pour que la trace
+            # reste continue, sans couture visible. Les traces courtes
+            # (< TRACE_POINTS_PAR_LIGNE points) sont dessinées d'un
+            # seul tenant, exactement comme avant.
+            TRACE_POINTS_PAR_LIGNE = 500
             with self.canvas:
                 Color(*self.couleur)
-                KivyLine(points=coords, width=self.epaisseur)
+                if len(coords) // 2 <= TRACE_POINTS_PAR_LIGNE:
+                    KivyLine(points=coords, width=self.epaisseur)
+                else:
+                    nb_points = len(coords) // 2
+                    debut = 0
+                    while debut < nb_points - 1:
+                        fin = min(debut + TRACE_POINTS_PAR_LIGNE, nb_points)
+                        morceau = coords[debut * 2:fin * 2]
+                        KivyLine(points=morceau, width=self.epaisseur)
+                        debut = fin - 1  # chevauche le dernier point
 
     class MarqueurTexte(MapMarker):
         """Marqueur avec une lettre affichée dessus (D, A, ou D/A),
@@ -2308,9 +2330,12 @@ KV = """
                 valign: "middle"
 
         Button:
+            # ABSENT tant qu'aucun fichier n'est chargé (même règle
+            # que « Découper ici ») ; présent et actif dès le chargement.
             text: "Convertir et enregistrer"
             size_hint_y: None
-            height: dp(56)
+            height: (dp(56) if root.fichier_source else 0)
+            opacity: (1 if root.fichier_source else 0)
             disabled: not root.fichier_source
             background_color: 0.15, 0.68, 0.38, 1
             on_release: root.lancer_conversion()
@@ -2533,17 +2558,25 @@ KV = """
                 color: root.status_color
 
             Button:
+                # ABSENT tant qu'aucun fichier n'est chargé (même règle
+                # que « Découper ici ») ; présent dès le chargement,
+                # GRISÉ tant qu'aucune option n'est choisie
+                # (btn_executer_actif), actif dès qu'une option l'est.
                 text: root.btn_executer_text
                 size_hint_y: None
-                height: dp(56)
+                height: (dp(56) if root.fichier_source else 0)
+                opacity: (1 if root.fichier_source else 0)
                 disabled: not root.btn_executer_actif
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer()
 
             Label:
+                # Bloc « Résumé des changements » : ABSENT lui aussi
+                # tant qu'aucun fichier n'est chargé.
                 text: "Résumé des changements (avant exécution)"
                 size_hint_y: None
-                height: dp(30)
+                height: (dp(30) if root.fichier_source else 0)
+                opacity: (1 if root.fichier_source else 0)
                 bold: True
                 color: 0, 0, 0, 1
 
@@ -2551,7 +2584,8 @@ KV = """
                 markup: True
                 text: root.legende_text
                 size_hint_y: None
-                height: self.texture_size[1] + dp(20)
+                height: ((self.texture_size[1] + dp(20)) if root.fichier_source else 0)
+                opacity: (1 if root.fichier_source else 0)
                 text_size: self.width, None
                 halign: "left"
                 valign: "top"
@@ -2639,9 +2673,13 @@ KV = """
                 valign: "top"
 
             Button:
+                # ABSENT tant que MOINS DE DEUX traces sont chargées :
+                # il n'apparaît qu'à partir de 2 traces, directement
+                # ACTIF (la fusion est alors possible).
                 text: "Fusionner et enregistrer"
                 size_hint_y: None
-                height: dp(56)
+                height: (dp(56) if root.peut_fusionner else 0)
+                opacity: (1 if root.peut_fusionner else 0)
                 disabled: not root.peut_fusionner or root.en_cours
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer()
@@ -2835,17 +2873,17 @@ KV = """
                 valign: "top"
 
             Button:
-                # Bouton visible uniquement une fois la trace chargée
-                # (même règle que le graphique et les blocs de
-                # l'onglet Nettoyage).
+                # ABSENT tant qu'aucune trace n'est chargée, comme le
+                # bouton « Enregistrer la trace nettoyée » de l'onglet
+                # Nettoyage (hauteur 0 + opacité 0). Dès le chargement :
+                # toujours présent, INACTIF tant qu'aucun point de
+                # coupe n'a été tapé sur le graphique, actif dès qu'un
+                # point est sélectionné (rendu du bouton Convertir).
                 text: "Découper ici"
-                # Affiché (hauteur > 0) UNIQUEMENT quand un point de coupe a été
-                # sélectionné sur le graphique : aucune ligne grisée tant
-                # que rien n'est choisi — le bouton n'existe tout
-                # simplement pas (hauteur 0, opacité 0).
-                height: (dp(56) if root.trace_chargee and root.point_coupure_text else 0)
-                disabled: not root.trace_chargee or root.en_cours
-                opacity: (1 if root.trace_chargee and root.point_coupure_text else 0)
+                size_hint_y: None
+                height: (dp(56) if root.trace_chargee else 0)
+                opacity: (1 if root.trace_chargee else 0)
+                disabled: not root.trace_chargee or root.en_cours or not root.point_coupure_text
                 background_color: 0.15, 0.68, 0.38, 1
                 on_release: root.executer_decoupe()
 
@@ -5059,6 +5097,10 @@ class FusionScreen(Screen):
     status_text = StringProperty("Aucune trace chargée.")
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     peut_fusionner = BooleanProperty(False)
+    # Vrai dès qu'AU MOINS UNE trace est chargée : pilote la présence
+    # du bouton « Fusionner et enregistrer » (absent sans aucune trace,
+    # grisé avec une seule trace, actif à partir de deux).
+    fichiers_charges = BooleanProperty(False)
     en_cours = BooleanProperty(False)
     index_selectionne = ObjectProperty(None, allownone=True)
 
@@ -5110,6 +5152,7 @@ class FusionScreen(Screen):
             box.add_widget(btn)
 
         nb = len(self.fichiers_fusion)
+        self.fichiers_charges = nb > 0
         if nb >= 2:
             self.status_text = f"{nb} fichiers prêts à être fusionnés."
             self.status_color = [0.15, 0.5, 0.15, 1]
