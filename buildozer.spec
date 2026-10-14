@@ -36,7 +36,7 @@ android.permissions = READ_MEDIA_IMAGES,READ_EXTERNAL_STORAGE,WRITE_EXTERNAL_STO
 # Associe l'appli aux fichiers .gpx/.kml/.kmz ("Ouvrir avec" -> Bubu GPS).
 # Voir intent_filters.xml et OutilsTracesApp._sur_nouvel_intent dans main.py.
 android.manifest_intent_filters = intent_filters.xml
-android.add_manifest = <queries><package android:name="com.whatsapp"/></queries>
+android.extra_manifest_xml = queries.xml
 
 # Redmi Note 15 Pro (2026) : Android récent -> viser une API cible actuelle.
 # android.ndk : le NDK auto-téléchargé le plus récent (r28c) embarque un
