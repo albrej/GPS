@@ -6070,24 +6070,34 @@ class LiveScreen(Screen):
                 PythonActivity = autoclass(
                     "org.kivy.android.PythonActivity")
                 activite = PythonActivity.mActivity
+                Intent = autoclass("android.content.Intent")
                 # Ouvre l'écran principal de WhatsApp via son
                 # launch intent (aucun message, aucun lien).
+                # Android 11+ restreint la "visibilité des paquets" :
+                # sans déclaration <queries> dans le manifest,
+                # getLaunchIntentForPackage renvoie null alors que
+                # WhatsApp EST installé. D'où le repli explicite
+                # ci-dessous + la ligne android.add_manifest à
+                # ajouter dans buildozer.spec.
                 pkg = "com.whatsapp"
                 pm = activite.getPackageManager()
                 intent = pm.getLaunchIntentForPackage(pkg)
                 if intent is None:
-                    self._maj_statut_live(
-                        "WhatsApp ne semble pas installé.",
-                        (0.8, 0.2, 0.2, 1))
-                    return
-                intent.addFlags(
-                    autoclass("android.content.Intent")
-                    .FLAG_ACTIVITY_NEW_TASK)
+                    # Repli : intent ACTION_MAIN/LAUNCHER limité au
+                    # paquet WhatsApp (démarre son écran principal).
+                    intent = Intent()
+                    intent.setAction(Intent.ACTION_MAIN)
+                    intent.addCategory(Intent.CATEGORY_LAUNCHER)
+                    intent.setPackage(pkg)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 activite.startActivity(intent)
                 self._maj_statut_live(guide)
             except Exception as e:
                 self._maj_statut_live(
-                    f"Ouverture de WhatsApp impossible : {e}",
+                    "WhatsApp introuvable : ajoute dans buildozer.spec"
+                    " la ligne android.add_manifest = <queries><package"
+                    " android:name=\"com.whatsapp\"/></queries> puis"
+                    f" reconstruis l'APK. ({e})",
                     (0.8, 0.2, 0.2, 1))
         else:
             # PC : pas d'appli WhatsApp — popup avec la procédure
