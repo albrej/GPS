@@ -23,7 +23,7 @@ import gpxpy
 import xml.etree.ElementTree as ET
 import zipfile
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # SUR PC UNIQUEMENT : désactive le SIMULATEUR MULTITOUCH de Kivy, qui
@@ -5876,6 +5876,7 @@ class LiveScreen(Screen):
         # b. Les listes internes de la trace live (points, marqueurs) sont vidées.
         self.points_trace_live = []
         self.a_une_position_live = False
+        self._popup_expiration_whatsapp_affiche = False
         self.fichier_gpx_actif_live = None
         self.profil_live = ([], [], [], [])
         self.graphe.effacer_donnees_secondaires()
@@ -6046,19 +6047,12 @@ class LiveScreen(Screen):
         self.statut_live_color = list(couleur)
 
     def partager_ma_position(self):
-        """Bouton « Partager ma position » : OUVRIR GOOGLE MAPS pour
-        lancer le « Partage de position » (suivi EN DIRECT par un
-        proche — ses coordonnées évoluent sur sa carte, contrairement
-        à un lien instantané figé).
-
-        Contrainte Android : il n'existe AUCUN intent public pour
-        atterrir directement dans l'écran « Partage de position » de
-        Google Maps (écran fermé, non documenté). Le bouton ouvre donc
-        Google Maps AUTANT QUE POSSIBLE VERS LA POSITION ACTUELLE
-        (intent geo: sur Android, carte web sur PC), et le statut /
-        le popup guide les 2 taps restants : photo de profil →
-        « Partage de position ». Un appui sur « Partager ma position »
-        suit donc ce chemin à chaque fois."""
+        """Bouton « Partager ma position » : OUVRIR WHATSAPP (rien à
+        envoyer), puis indiquer dans le statut / un popup la
+        procédure officielle de WhatsApp pour « Partager localisation
+        en direct ». WhatsApp n'expose AUCUN intent public pour
+        atterrir directement dans cet écran : on ouvre donc l'appli
+        et on guide l'utilisateur pas à pas."""
         p = (self.points_trace_live[-1]
              if self.points_trace_live else None)
         if p is None:
@@ -6066,52 +6060,58 @@ class LiveScreen(Screen):
                 "Aucune position : démarre d'abord un live.",
                 (0.8, 0.2, 0.2, 1))
             return
-        guide = ("Dans Google Maps : appuie sur ta photo de profil "
-                 "→ « Partage de position » → choisis le contact et "
-                 "la durée. La personne verra ensuite ta position "
-                 "AVANCER en direct sur sa carte.")
+        guide = ("WhatsApp -> choix contact -> trombone -> "
+                 "Localisation -> Partager localisation en direct "
+                 "-> 8h")
 
         if platform == "android":
             try:
                 from jnius import autoclass
-                Intent = autoclass("android.content.Intent")
-                Uri = autoclass("android.net.Uri")
                 PythonActivity = autoclass(
                     "org.kivy.android.PythonActivity")
                 activite = PythonActivity.mActivity
-                # Intent geo: -> ouvre Google Maps centré sur la
-                # position live actuelle (l'utilisateur n'a plus qu'à
-                # taper profil -> Partage de position).
-                uri = Uri.parse(
-                    f"geo:{p['lat']:.5f},{p['lon']:.5f}?q={p['lat']:.5f},"
-                    f"{p['lon']:.5f}(Ma position)")
-                intent = Intent(Intent.ACTION_VIEW, uri)
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                # Ouvre l'écran principal de WhatsApp via son
+                # launch intent (aucun message, aucun lien).
+                pkg = "com.whatsapp"
+                pm = activite.getPackageManager()
+                intent = pm.getLaunchIntentForPackage(pkg)
+                if intent is None:
+                    self._maj_statut_live(
+                        "WhatsApp ne semble pas installé.",
+                        (0.8, 0.2, 0.2, 1))
+                    return
+                intent.addFlags(
+                    autoclass("android.content.Intent")
+                    .FLAG_ACTIVITY_NEW_TASK)
                 activite.startActivity(intent)
                 self._maj_statut_live(guide)
             except Exception as e:
                 self._maj_statut_live(
-                    f"Ouverture de Google Maps impossible : {e}",
+                    f"Ouverture de WhatsApp impossible : {e}",
                     (0.8, 0.2, 0.2, 1))
         else:
-            # PC : pas d'appli Maps — popup avec le guide et le lien
-            # de la carte Google Maps à la position actuelle.
+            # PC : pas d'appli WhatsApp — popup avec la procédure
+            # (pratique pour la lire sur un autre écran pendant qu'on
+            # la suit sur le téléphone).
             contenu = BoxLayout(orientation="vertical",
                                 padding=dp(12), spacing=dp(10))
             contenu.add_widget(Label(
-                text=guide, size_hint_y=None, height=dp(90),
+                text=guide, size_hint_y=None, height=dp(110),
                 halign="left", valign="top", font_size="13sp",
                 color=(0.1, 0.1, 0.1, 1)))
-            lbl_lien = Label(
-                text=(f"https://www.google.com/maps/@"
-                      f"?api=1&center={p['lat']:.5f},{p['lon']:.5f}"),
-                size_hint_y=None, height=dp(34), font_size="12sp",
-                color=(0.15, 0.45, 0.8, 1))
-            contenu.add_widget(lbl_lien)
             btn_fermer = Button(text="Fermer", size_hint_y=None,
                                 height=dp(44))
             contenu.add_widget(btn_fermer)
-            popup = Popup(title="Partage de position Google Maps",
+            popup = Popup(title="Partager localisation en direct "
+                                "(WhatsApp)",
+                          content=contenu, size_hint=(0.85, 0.45))
+            btn_fermer.bind(on_release=popup.dismiss)
+            popup.open()
+
+            btn_fermer = Button(text="Fermer", size_hint_y=None,
+                                height=dp(44))
+            contenu.add_widget(btn_fermer)
+            popup = Popup(title="Partage de position (WhatsApp)",
                           content=contenu, size_hint=(0.85, 0.5))
             btn_fermer.bind(on_release=popup.dismiss)
             popup.open()
@@ -6808,6 +6808,45 @@ class LiveScreen(Screen):
         self.points_trace_live.append(point)
 
         self.a_une_position_live = True
+
+        # Rappel expiration du partage WhatsApp (8 h max, l'option la
+        # plus longue de WhatsApp) : au bout de 7 h de live, popup
+        # UNE SEULE FOIS indiquant que le partage va bientôt expirer,
+        # avec l'heure de fin = début du live + 8 h (le partage
+        # WhatsApp ayant été lancé au début du live).
+        if not getattr(self, '_popup_expiration_whatsapp_affiche',
+                       False):
+            heure_debut = None
+            for pt in self.points_trace_live:
+                if isinstance(pt.get('time'), datetime):
+                    heure_debut = pt['time']
+                    break
+            if (isinstance(point.get('time'), datetime)
+                    and heure_debut is not None
+                    and (point['time'] - heure_debut)
+                    >= timedelta(hours=7)):
+                self._popup_expiration_whatsapp_affiche = True
+                heure_fin = heure_debut + timedelta(hours=8)
+                contenu = BoxLayout(orientation="vertical",
+                                    padding=dp(12), spacing=dp(10))
+                contenu.add_widget(Label(
+                    text=("Le partage de position WhatsApp "
+                          "(8 h max) expire bientôt.\n"
+                          f"Fin prévue vers {heure_fin:%H:%M}.\n"
+                          "Pense à le relancer dans WhatsApp si "
+                          "ton live continue."),
+                    size_hint_y=None, height=dp(90),
+                    halign="left", valign="top", font_size="13sp",
+                    color=(0.1, 0.1, 0.1, 1)))
+                btn_fermer = Button(text="Fermer",
+                                    size_hint_y=None, height=dp(44))
+                contenu.add_widget(btn_fermer)
+                popup = Popup(
+                    title="Partage WhatsApp : expiration proche",
+                    content=contenu, size_hint=(0.85, 0.45))
+                btn_fermer.bind(on_release=popup.dismiss)
+                popup.open()
+
         # Comptage silencieux par source de géolocalisation (gps/network/
         # fused...), aucun affichage — voir demarrer_serveur_live et
         # _arreter_gpslogger pour l'écriture du log correspondant.
