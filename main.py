@@ -5737,7 +5737,7 @@ class LiveScreen(Screen):
         # intérieur) — le statut standard, lui, se met à jour à
         # chaque point reçu.
         Clock.schedule_once(
-            lambda dt: self._maj_statut_live(self._texte_statut_live(), (0.180, 0.490, 0.196, 1)),
+            lambda dt: self._maj_statut_live_flux(self._texte_statut_live(), (0.180, 0.490, 0.196, 1)),
             2.5,
         )
 
@@ -6046,6 +6046,54 @@ class LiveScreen(Screen):
         self.statut_live_text = texte
         self.statut_live_color = list(couleur)
 
+    def _guide_whatsapp_actif(self):
+        """Vrai pendant la minute qui suit l'appui sur « Partager ma
+        position » : le guide WhatsApp reste alors affiché dans la
+        ligne de statut, sans être écrasé par le rafraîchissement
+        standard du statut live (un nouveau point GPS arrive toutes
+        les quelques secondes et remplacerait le guide aussitôt)."""
+        jusqua = getattr(self, "_guide_whatsapp_jusqua", None)
+        return (jusqua is not None
+                and datetime.now() < jusqua
+                and bool(self.points_trace_live))
+
+    def _afficher_guide_whatsapp(self, guide):
+        """Affiche le guide WhatsApp dans la ligne de statut et le garde
+        UNE MINUTE : un timer restaure ensuite le statut live normal
+        (« Live en cours... (N points) »). Un nouvel appui sur le bouton
+        pendant la minute re-programme le timer (le guide repart pour
+        une minute complète)."""
+        self._guide_whatsapp_jusqua = datetime.now() + timedelta(seconds=60)
+        self._maj_statut_live(guide)
+        if getattr(self, "_timer_guide_whatsapp", None) is not None:
+            try:
+                self._timer_guide_whatsapp.cancel()
+            except Exception:
+                pass
+        self._timer_guide_whatsapp = Clock.schedule_once(
+            self._retablir_statut_apres_guide, 60.0)
+
+    def _retablir_statut_apres_guide(self, dt=None):
+        """Fin de la minute du guide WhatsApp : remet le statut live
+        normal (vert) si le live est toujours en cours."""
+        self._guide_whatsapp_jusqua = None
+        self._timer_guide_whatsapp = None
+        if self.points_trace_live:
+            self._maj_statut_live(
+                self._texte_statut_live(), (0.180, 0.490, 0.196, 1))
+
+    def _maj_statut_live_flux(self, texte, couleur):
+        """Rafraîchissement PÉRIODIQUE du statut live (un nouveau point
+        GPS, le battement de resynchronisation...) : écrasé sans
+        condition, SAUF pendant la minute du guide WhatsApp (le guide
+        doit rester lisible le temps que l'utilisateur suive la
+        procédure dans WhatsApp). Les messages ponctuels (fin de live,
+        photos, erreurs) passent par _maj_statut_live et restent
+        priorititaires."""
+        if self._guide_whatsapp_actif():
+            return
+        self._maj_statut_live(texte, couleur)
+
     def partager_ma_position(self):
         """Bouton « Partager ma position » : OUVRIR WHATSAPP (rien à
         envoyer), puis indiquer dans le statut / un popup la
@@ -6091,7 +6139,7 @@ class LiveScreen(Screen):
                     intent.setPackage(pkg)
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 activite.startActivity(intent)
-                self._maj_statut_live(guide)
+                self._afficher_guide_whatsapp(guide)
             except Exception as e:
                 self._maj_statut_live(
                     "WhatsApp introuvable : ajoute dans buildozer.spec"
@@ -6507,7 +6555,7 @@ class LiveScreen(Screen):
                     couleur_battement = (0.086, 0.396, 0.753, 1)  # bleu
                 else:
                     couleur_battement = (0.180, 0.490, 0.196, 1)  # vert
-                self._maj_statut_live(self._texte_statut_live(), couleur_battement)
+                self._maj_statut_live_flux(self._texte_statut_live(), couleur_battement)
 
     # -------------------------------------------------------------
     # Service de premier plan (foreground service "Tracker") : garde
@@ -6880,7 +6928,7 @@ class LiveScreen(Screen):
         else:
             couleur_statut = (0.180, 0.490, 0.196, 1)  # #2E7D32 (vert)
 
-        self._maj_statut_live(
+        self._maj_statut_live_flux(
             self._texte_statut_live(),
             couleur_statut
         )
@@ -7548,7 +7596,7 @@ class LiveScreen(Screen):
         # Retour au statut live standard apres 2,5 s : il affiche des
         # lors le nombre de waypoints ("(n points, x waypoints)").
         Clock.schedule_once(
-            lambda dt: self._maj_statut_live(self._texte_statut_live(), (0.180, 0.490, 0.196, 1)),
+            lambda dt: self._maj_statut_live_flux(self._texte_statut_live(), (0.180, 0.490, 0.196, 1)),
             2.5,
         )
 
