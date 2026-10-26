@@ -717,16 +717,10 @@ if CARTE_DISPONIBLE:
             # calcul semblait correct ; sur Android, un léger bruit tactile
             # multi-doigts pendant le glisser peut faire dériver ce facteur,
             # et une trace qui l'ignorait se désynchronisait de la carte.
-            coords = []
-            for lat, lon in self.points:
-                x, y = mapview.get_window_xy_from(lat, lon, zoom)
-                coords.extend([x, y])
             # CORRECTIF « TRACE FANTÔME » : au-delà d'un certain nombre
-            # de sommets, UNE SEULE instruction Line(...4944 points...)
-            # produit un artefact de rendu — un segment droit parasite
-            # reliant deux sommets éloignés (observé sur PC ET Android
-            # avec fusion.txt : 4944 points ; disparu après découpe en
-            # fichiers plus courts). On découpe donc le dessin en
+            # de sommets, UNE SEULE instruction Line(...) produit un
+            # artefact de rendu — un segment droit parasite reliant
+            # deux sommets éloignés. On découpe donc le dessin en
             # SOUS-LIGNES enchaînées de TRACE_POINTS_PAR_LIGNE points
             # maximum : chaque sous-ligne RÉPÈTE le dernier point de la
             # précédente (chevauchement d'un point) pour que la trace
@@ -734,6 +728,10 @@ if CARTE_DISPONIBLE:
             # (< TRACE_POINTS_PAR_LIGNE points) sont dessinées d'un
             # seul tenant, exactement comme avant.
             TRACE_POINTS_PAR_LIGNE = 500
+            coords = []
+            for lat, lon in self.points:
+                x, y = mapview.get_window_xy_from(lat, lon, zoom)
+                coords.extend([x, y])
             with self.canvas:
                 Color(*self.couleur)
                 if len(coords) // 2 <= TRACE_POINTS_PAR_LIGNE:
@@ -1465,6 +1463,28 @@ class GrapheProfil(Widget):
         self.couleur_curseur = (0.85, 0.1, 0.1, 0.9)
         self.bind(pos=self._redessiner, size=self._redessiner)
 
+    def _ligne_par_morceaux(self, points, epaisseur):
+        """Trace une courbe en DECOUPANT l'instruction Line en
+        sous-lignes de 500 sommets maximum (chevauchement d'un point :
+        la courbe reste continue, sans couture). Une SEULE instruction
+        Line sur une très longue trace (10000 points) est tronquée
+        silencieusement par Kivy : segment parasite (« ligne fantôme »)
+        et FIN DE COURBE MANQUANTE — c'est ce que l'on voyait sur les
+        longues traces. Même correctif que TraceLayer sur la carte."""
+        NB = 500  # sommets par sous-ligne
+        nb_points = len(points) // 2
+        if nb_points < 2:
+            return
+        if nb_points <= NB:
+            KivyLine(points=points, width=epaisseur)
+        else:
+            debut = 0
+            while debut < nb_points - 1:
+                fin = min(debut + NB, nb_points)
+                morceau = points[debut * 2:fin * 2]
+                KivyLine(points=morceau, width=epaisseur)
+                debut = fin - 1  # chevauche le dernier point
+
     def set_donnees(self, distances_km, distances_ele, altitudes, vitesses_kmh):
         self.distances_km = distances_km
         self.distances_ele = distances_ele
@@ -1720,7 +1740,7 @@ class GrapheProfil(Widget):
                 for d, a in zip(self.distances_ele, self.altitudes):
                     points_ligne.extend([x_ecran(d), y_alt(a)])
                 Color(*BLEU)
-                KivyLine(points=points_ligne, width=1.6)
+                self._ligne_par_morceaux(points_ligne, 1.6)
 
             if a_ele_sec:
                 # Tracé de la seconde courbe d'altitude (trace live,
@@ -1730,7 +1750,7 @@ class GrapheProfil(Widget):
                 for d, a in zip(self.distances_ele_secondaire, self.altitudes_secondaire):
                     points_ligne_sec.extend([x_ecran(d), y_alt(a)])
                 Color(*ROUGE)
-                KivyLine(points=points_ligne_sec, width=1.8)
+                self._ligne_par_morceaux(points_ligne_sec, 1.8)
 
             # --- Marqueurs de points aberrants (onglet Nettoyage) :
             # petits ronds posés sur la courbe d'altitude aux distances
@@ -1766,7 +1786,7 @@ class GrapheProfil(Widget):
                         for d, v in zip(self.distances_km, self.vitesses_kmh):
                             points_vit.extend([x_ecran(d), y_vit(v)])
                         Color(*VERT)
-                        KivyLine(points=points_vit, width=1.6)
+                        self._ligne_par_morceaux(points_vit, 1.6)
 
             if self.afficher_curseur and self.distance_selection is not None:
                 cx = x_ecran(self.distance_selection)
@@ -2187,7 +2207,19 @@ class GraphePentes(Widget):
                 pts_courbe.append(x_km(min(dernier[0] + 0.5, dist_fin)))
                 pts_courbe.append(y_alt(dernier[3]))
             Color(*self.BLEU)
-            Line(points=pts_courbe, width=1.6)
+            # Découpé en sous-lignes de 500 sommets : une seule
+            # instruction Line sur une trace longue est tronquée
+            # (segment parasite + fin manquante).
+            if len(pts_courbe) // 2 <= 500:
+                Line(points=pts_courbe, width=1.6)
+            else:
+                nb_pc = len(pts_courbe) // 2
+                debut_pc = 0
+                while debut_pc < nb_pc - 1:
+                    fin_pc = min(debut_pc + 500, nb_pc)
+                    Line(points=pts_courbe[debut_pc * 2:fin_pc * 2],
+                         width=1.6)
+                    debut_pc = fin_pc - 1
 
             # Curseur de sélection interconnecté : ligne verticale
             # pointillée rouge, même graphisme que GrapheProfil.
@@ -3378,7 +3410,7 @@ KV = """
         spacing: dp(10)
 
         Label:
-            text: "Ajout"
+            text: "Ajout (PC)"
             font_size: "20sp"
             bold: True
             size_hint_y: None
@@ -3586,6 +3618,40 @@ KV = """
                 valign: "top"
                 color: 0.2, 0.5, 0.2, 1
                 italic: True
+
+            # Recalcul des altitudes à partir du terrain (MNT), comme
+            # l'option « Recalculer les altitudes » de Visorando :
+            # remplace les altitudes GPS par celles du modèle numérique
+            # de terrain (plus fiables pour les stats/dénivelés).
+            # « Annuler » restaure les altitudes d'origine.
+            BoxLayout:
+                size_hint_y: None
+                height: dp(42)
+                spacing: dp(6)
+                Button:
+                    text: "Recalculer les altitudes"
+                    background_color: 0.2, 0.6, 0.3, 1
+                    font_size: "13sp"
+                    disabled: not root.trace_chargee
+                    on_release: root.recalculer_altitudes()
+                Button:
+                    text: "Enregistrer"
+                    background_color: 0.2, 0.6, 0.86, 1
+                    font_size: "13sp"
+                    disabled: not root.altitudes_recalculees
+                    on_release: root.enregistrer_trace_mnt()
+
+            Label:
+                id: label_statut_stats
+                text: root.status_text
+                size_hint_y: None
+                height: max(dp(24), self.texture_size[1] + dp(6))
+                text_size: self.width, None
+                halign: "left"
+                valign: "top"
+                font_size: "13sp"
+                italic: True
+                color: root.status_color
 
             # Statistiques de la trace (calculs de
             # gps_logic.calculer_statistiques), mise en forme du bloc
@@ -4206,6 +4272,29 @@ KV = """
                 disabled: root.freeze_actif or not root.a_une_position_live
                 on_release: root.partager_ma_position()
                 background_color: 0.55, 0.35, 0.75, 1
+
+            # RECALCUL DES ALTITUDES (MNT Open-Meteo) sur les points
+            # DÉJÀ ENREGISTRÉS de la trace live : ne touche en rien
+            # au GPS ni au service d'enregistrement. « Annuler »
+            # restaure les altitudes GPS d'origine.
+            BoxLayout:
+                size_hint_y: None
+                height: dp(42)
+                spacing: dp(6)
+                Button:
+                    text: "Recalculer les altitudes"
+                    background_color: 0.2, 0.6, 0.3, 1
+                    size_hint_x: 0.62
+                    font_size: "13sp"
+                    disabled: root.freeze_actif or not root.a_une_position_live
+                    on_release: root.recalculer_altitudes_live()
+                Button:
+                    text: "Enregistrer"
+                    background_color: 0.2, 0.6, 0.86, 1
+                    size_hint_x: 0.38
+                    font_size: "13sp"
+                    disabled: not root.altitudes_recalculees
+                    on_release: root.enregistrer_altitudes_live()
 
             Label:
                 text: root.statut_live_text
@@ -5137,6 +5226,65 @@ def _construire_confirmation_oui_non_annuler(message, callback):
     btn_annuler.bind(on_release=lambda inst: callback(None))
     return layout
 
+def fusionner_traces_avec_horodatages(fichiers_fusion, dossier_sortie,
+                                      nom_sortie="fusion.gpx"):
+    """Fusionne les traces en CONSERVANT LES HORODATAGES (l'ancienne
+    fusion gps_logic.traiter_fusion les jetait : tuples lat/lon/ele
+    sans <time>, et pt.time = None à l'écriture — les traces fusionnées
+    perdaient leurs heures, donc vitesse, heures de passage et stats
+    temporelles devenaient fausses). Même comportement général que
+    traiter_fusion (ordre des fichiers, option « inverser », nom de
+    sortie incrémenté si déjà pris) mais les points gardent leur
+    horodatage et l'export passe par exporter_vers_gpx avec
+    garder_temps=True. Les fichiers KML/KMZ sans horodatage sont
+    acceptés (points sans heure)."""
+    if len(fichiers_fusion) < 2:
+        raise ValueError("Ajoute au moins 2 fichiers pour fusionner.")
+    points_fusion = []
+    signatures_vues = set()
+    for item in fichiers_fusion:
+        chemin = item["path"]
+        # Lecture tolérante (GPX y compris en cours d'écriture, KML,
+        # KMZ) : les points sont des dicts lat/lon/ele/time.
+        points = gps_logic.lire_gpx_tolerant(chemin)
+        if not points:
+            points = gps_logic.lire_fichier_pour_conversion(chemin)
+        if not points:
+            continue
+        if item.get("inverser"):
+            points = list(reversed(points))
+        # Doublon de FICHIER : ignore un fichier identique (même
+        # signature de positions arrondies) à un déjà fusionné —
+        # équivalent de supprimer_doublons_segments de l'ancienne
+        # fusion.
+        signature = tuple((round(p['lat'], 6), round(p['lon'], 6))
+                          for p in points)
+        if signature in signatures_vues:
+            continue
+        signatures_vues.add(signature)
+        # Doublons CONSÉCUTIFS dans le fichier (même position à 1e-6
+        # près) : supprimés comme par nettoyer_points_fusion.
+        precedent = None
+        for p in points:
+            if (precedent is not None
+                    and abs(precedent['lat'] - p['lat']) < 1e-6
+                    and abs(precedent['lon'] - p['lon']) < 1e-6):
+                continue
+            points_fusion.append(p)
+            precedent = p
+    if not points_fusion:
+        raise ValueError("Aucun point trouvé dans les fichiers choisis.")
+    os.makedirs(dossier_sortie, exist_ok=True)
+    sortie = os.path.join(dossier_sortie, nom_sortie)
+    base, ext = os.path.splitext(sortie)
+    compteur = 1
+    while os.path.exists(sortie):  # ne jamais écraser un fichier
+        sortie = f"{base}_{compteur}{ext}"
+        compteur += 1
+    gps_logic.exporter_vers_gpx(points_fusion, sortie, garder_temps=True)
+    return sortie
+
+
 class FusionScreen(Screen):
     inverser_selection = BooleanProperty(False)
     status_text = StringProperty("Aucune trace chargée.")
@@ -5253,7 +5401,8 @@ class FusionScreen(Screen):
 
     def _fusion_thread(self):
         try:
-            chemin_sortie = gps_logic.traiter_fusion(list(self.fichiers_fusion), DOSSIER_SORTIE)
+            chemin_sortie = fusionner_traces_avec_horodatages(
+                list(self.fichiers_fusion), DOSSIER_SORTIE)
             message = f"Action réussie !\nFichier généré : {os.path.basename(chemin_sortie)}"
             couleur = [0.15, 0.5, 0.15, 1]
         except Exception as e:
@@ -5296,6 +5445,8 @@ class LiveScreen(Screen):
     # gelée avec des points) : active le bouton « Partager ma
     # position » (sans position, il n'y a rien à partager).
     a_une_position_live = BooleanProperty(False)
+    # Altitudes recalculées via MNT (pilote le bouton « Annuler »).
+    altitudes_recalculees = BooleanProperty(False)
     # Message persistant sur le fichier temporaire des annotations photo
     # (nom + emplacement) ; vide tant qu'aucune photo n'a été prise.
     temp_live_text = StringProperty("")
@@ -6174,6 +6325,117 @@ class LiveScreen(Screen):
             btn_fermer.bind(on_release=popup.dismiss)
             popup.open()
 
+    def recalculer_altitudes_live(self):
+        """Bouton « Recalculer les altitudes » de l'onglet Live :
+        recalcule les altitudes DES POINTS DÉJÀ ENREGISTRÉS via le MNT
+        (Open-Meteo). N'INTERAGIT EN RIEN avec le pipeline du live (GPS
+        natif, service Tracker, file de points, ajout de nouveaux
+        points) : seul le champ 'ele' des points déjà reçus est
+        remplacé, après coup. Les points reçus APRÈS le recalcul
+        gardent l'altitude GPS du téléphone (le recalcul peut être
+        relancé autant de fois que nécessaire ; « Annuler » restaure
+        les altitudes d'origine mémorisées au premier recalcul)."""
+        if (not self.points_trace_live
+                or getattr(self, "_recalc_alt_en_cours", False)):
+            return
+        self._recalc_alt_en_cours = True
+        self._maj_statut_live(
+            "Recalcul des altitudes en cours (MNT Open-Meteo)...",
+            (0.937, 0.424, 0.0, 1))  # #EF6C00
+        if getattr(self, "_altitudes_avant_recalcul_live", None) is None:
+            self._altitudes_avant_recalcul_live = [
+                p.get("ele") for p in self.points_trace_live]
+
+        def _progression_live(fait, total, info=""):
+            if not getattr(self, "_recalc_alt_en_cours", False):
+                return
+            texte = (f"Recalcul des altitudes en cours : {fait}/{total} "
+                     f"points ({100 * fait // max(total, 1)} %)...")
+            if info:
+                texte = (f"Recalcul des altitudes : {fait}/{total} points "
+                         f"— {info}")
+            self._maj_statut_live(texte, (0.937, 0.424, 0.0, 1))  # #EF6C00
+
+        recalculer_altitudes_dem(
+            list(self.points_trace_live),
+            self._apres_recalcul_altitudes_live,
+            self._erreur_recalcul_altitudes_live,
+            callback_progresse=_progression_live)
+
+    def _rafraichir_altitudes_live(self):
+        """Recalcule le profil live et met à jour le graphique après un
+        recalcul (ou une annulation) des altitudes. Aucun autre
+        affichage ne dépend des altitudes ici."""
+        self.profil_live = gps_logic.calculer_profil(self.points_trace_live)
+        distances_km, distances_ele, altitudes, vitesses_kmh = self.profil_live
+        self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
+
+    def _apres_recalcul_altitudes_live(self):
+        self._recalc_alt_en_cours = False
+        self.altitudes_recalculees = True
+        self._rafraichir_altitudes_live()
+        self._maj_statut_live(
+            "Altitudes recalculées (MNT). « Annuler » restaure les "
+            "valeurs GPS d'origine.",
+            (0.180, 0.490, 0.196, 1))  # #2E7D32
+
+    def _erreur_recalcul_altitudes_live(self, message):
+        self._recalc_alt_en_cours = False
+        self._maj_statut_live(
+            f"Recalcul des altitudes impossible : {message}",
+            (0.8, 0.2, 0.2, 1))
+
+    def enregistrer_altitudes_live(self):
+        """Bouton « Enregistrer » (Live) : exporte une PHOTO de la trace
+        live actuelle (avec les altitudes MNT recalculées) dans un
+        fichier GPX « <nom>_MNT.gpx » du dossier de sortie, SANS arrêter
+        le suivi ni toucher au GPS, au service Tracker ou à l'enregistrement
+        en cours. Le « Terminer » de la trace live reste le seul
+        enregistrement « officiel » ; ce bouton sert à conserver tout de
+        suite une version à altitudes terrain."""
+        if (not self.points_trace_live
+                or not self.altitudes_recalculees
+                or getattr(self, "_recalc_alt_en_cours", False)):
+            return
+        self._maj_statut_live(
+            "Enregistrement de la trace live MNT en cours...",
+            (0.937, 0.424, 0.0, 1))  # #EF6C00
+        threading.Thread(target=self._enregistrement_mnt_live_thread,
+                         daemon=True).start()
+
+    def _enregistrement_mnt_live_thread(self):
+        try:
+            base = (os.path.splitext(
+                        os.path.basename(self.fichier_gpx_actif_live))[0]
+                    if self.fichier_gpx_actif_live
+                    else f"trace_live_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+            dossier_cible = (DOSSIER_SORTIE if os.path.exists(DOSSIER_SORTIE)
+                             else DOSSIER_RACINE)
+            os.makedirs(dossier_cible, exist_ok=True)
+            chemin = os.path.join(dossier_cible, f"{base}_MNT.gpx")
+            compteur = 1
+            while os.path.exists(chemin):  # ne jamais écraser un fichier
+                chemin = os.path.join(dossier_cible,
+                                      f"{base}_MNT_{compteur}.gpx")
+                compteur += 1
+            gps_logic.exporter_vers_gpx(
+                list(self.points_trace_live), chemin, garder_temps=True,
+                waypoints=self._construire_waypoints_pour_export())
+            nom = os.path.basename(chemin)
+            self._maj_statut_live_thread(
+                f"Trace live enregistrée (altitudes MNT) : {nom}",
+                (0.180, 0.490, 0.196, 1))  # #2E7D32
+        except Exception as e:
+            self._maj_statut_live_thread(
+                f"Enregistrement impossible : {e}",
+                (0.8, 0.2, 0.2, 1))
+
+    def _maj_statut_live_thread(self, message, couleur):
+        """Rapporte un message de statut depuis un thread (passage par
+        Clock.schedule_once, jamais d'UI directe depuis un thread)."""
+        Clock.schedule_once(
+            lambda dt: self._maj_statut_live(message, couleur))
+
     def _maj_info_point_live(self, point, idx, distances_km, vitesses_kmh):
         """Remplit le bloc "Informations du point sélectionné" (grille
         3 lignes x 2 colonnes : Point/GPS, Distance/Altitude,
@@ -6508,11 +6770,25 @@ class LiveScreen(Screen):
         except queue.Empty:
             pass
 
-        for point in nouveaux_points:
-            try:
-                self._ajouter_point_live(point)
-            except Exception as e:
-                print(f"[Live GPSLogger] Erreur lors de l'ajout d'un point live (point ignoré) : {e}")
+        # RATTRAPAGE EN MASSE (réveil d'écran / retour au premier plan) :
+        # traiter les points UN PAR UN avec le pipeline complet
+        # (redessin complet de la carte + recalcul du profil à CHAQUE
+        # point) donnait un écran noir de plusieurs dizaines de secondes
+        # sur les rattrapages de centaines de points (O(n²)). Pour les
+        # salves, on affiche d'abord un message rassurant (rendu AVANT
+        # le traitement grâce au schedule_once), puis on ajoute les
+        # points en silence et on ne rafraîchit carte/profil/statut
+        # qu'UNE SEULE FOIS à la fin.
+        if len(nouveaux_points) >= 3:
+            self._maj_statut_live(
+                f"Récupération de {len(nouveaux_points)} points "
+                "enregistrés pendant l'écran éteint, un instant...",
+                (0.086, 0.396, 0.753, 1))  # bleu
+            Clock.schedule_once(
+                lambda dt, pts=list(nouveaux_points):
+                    self._traiter_points_live_lot(pts))
+        else:
+            self._traiter_points_live_lot(nouveaux_points)
 
         # --- Diagnostic GPS natif : tant que le suivi est actif mais
         # qu'aucun point n'est arrivé, affiche chaque seconde l'état
@@ -6800,6 +7076,53 @@ class LiveScreen(Screen):
         except Exception:
             pass
 
+    def _traiter_points_live_lot(self, points):
+        """Applique une salve de points live (rattrapage après réveil
+        d'écran, ou flux normal de 1-2 points). Si la salve est
+        importante, les ajouts se font en SILENCE (pas de redessin
+        carte/profil par point — voir _rafraichissement_differe_live)
+        puis UN SEUL rafraîchissement final a lieu. Un point en erreur
+        est ignoré sans interrompre les suivants."""
+        if not points:
+            return
+        differe = len(points) >= 3
+        if differe:
+            self._rafraichissement_differe_live = True
+        try:
+            for point in points:
+                try:
+                    self._ajouter_point_live(point)
+                except Exception as e:
+                    print(f"[Live GPSLogger] Erreur lors de l'ajout d'un "
+                          f"point live (point ignoré) : {e}")
+        finally:
+            if differe:
+                self._rafraichissement_differe_live = False
+                try:
+                    self._fin_rattrapage_live()
+                except Exception as e:
+                    print(f"[Live] Erreur au rafraîchissement de fin de "
+                          f"rattrapage : {e}")
+
+    def _fin_rattrapage_live(self):
+        """Rafraîchissement UNIQUE de fin de rattrapage en masse :
+        carte, profil altimétrique, bloc d'infos du dernier point et
+        statut — au lieu d'un rafraîchissement par point (écran noir)."""
+        if self.points_trace_live:
+            self._afficher_trace_live_sur_carte()
+        self.profil_live = gps_logic.calculer_profil(self.points_trace_live)
+        distances_km, distances_ele, altitudes, vitesses_kmh = self.profil_live
+        self.graphe.set_donnees_secondaires(distances_km, distances_ele, altitudes)
+        if self.points_trace_live:
+            idx = len(self.points_trace_live) - 1
+            self._maj_info_point_live(self.points_trace_live[-1], idx,
+                                      distances_km, vitesses_kmh)
+        if self._rattrapage_actif():
+            couleur_statut = (0.086, 0.396, 0.753, 1)  # #1665C0 (bleu)
+        else:
+            couleur_statut = (0.180, 0.490, 0.196, 1)  # #2E7D32 (vert)
+        self._maj_statut_live_flux(self._texte_statut_live(), couleur_statut)
+
     def _ajouter_point_live(self, point):
         """Ajoute un nouveau point reçu en direct à la trace de cet
         onglet : étend le tracé sur la carte (rouge) et sa courbe
@@ -6910,6 +7233,14 @@ class LiveScreen(Screen):
         # _arreter_gpslogger pour l'écriture du log correspondant.
         source_point = point.get('source', 'inconnue')
         self.compteur_sources_live[source_point] = self.compteur_sources_live.get(source_point, 0) + 1
+
+        # RATTRAPAGE EN MASSE : pendant une salve (réveil d'écran), le
+        # rafraîchissement carte + profil est DIFFÉRÉ à la fin de la
+        # salve (_fin_rattrapage_live) : ajouter les points en silence
+        # évite un redessin complet PAR point (écran noir de plusieurs
+        # dizaines de secondes sur les longs rattrapages).
+        if getattr(self, "_rafraichissement_differe_live", False):
+            return
 
         self._afficher_trace_live_sur_carte()
 
@@ -11296,6 +11627,230 @@ class DossierScreen(Screen):
         menu.open(bouton)
 
 
+# ---------------------------------------------------------------------------
+# RECALCUL DES ALTITUDES PAR MNT (option « Recalculer les altitudes » de
+# Visorando) : interroge l'API gratuite Open-Meteo Elevation (modèle
+# numérique de terrain, précision ~10-30 m) avec les lat/lon des points
+# et remplace l'altitude enregistrée par celle du terrain. Gratuit, sans
+# clé, requêtes par paquets de 100 points, 3 tentatives par paquet.
+# ---------------------------------------------------------------------------
+def recalculer_altitudes_dem(points, callback_fin, callback_erreur,
+                             callback_progresse=None):
+    """Recalcule en place les 'ele' des points via un MNT (modèle
+    numérique de terrain), avec une CHAÎNE DE SOURCES et repli
+    automatique : OpenTopodata EU-DEM 25 m (Europe, proche de Visorando)
+    puis ASTER 30 m (monde), puis Open-Meteo Elevation en dernier
+    recours.
+
+    QUASI INSTANTANÉ sur les longues traces : le MNT a une résolution
+    de ~25 m, il est inutile d'interroger l'API pour chaque point
+    (6666 points = 67 requêtes = quota vite épuisé + 429). On
+    n'interroge donc que les points espacés d'au moins
+    SEUIL_SIMPLIFICATION m (toujours le premier et le dernier), puis
+    on INTERPOLE linéairement les altitudes des points intermédiaires
+    le long de la trace — résultat quasi identique pour le profil et
+    les dénivelés (l'interpolation sur 50 m ne change rien à l'œil ni
+    aux statistiques), mais 10 à 20 fois moins de requêtes : une trace
+    de 6666 points devient quelques paquets, recalcul en quelques
+    secondes.
+
+    Tourne dans un THREAD (daemon) pour ne pas figer l'UI ; les
+    callbacks sont rappelés dans le thread principal Kivy via
+    Clock.schedule_once (jamais de manipulation d'UI depuis le thread).
+    callback_fin() sans argument au succès, callback_erreur(msg) sinon.
+    callback_progresse(fait, total, info) (optionnel) informe de
+    l'avancement paquet par paquet ; « info » (texte libre, souvent
+    vide) précise une attente en cours (ex. quota API atteint)."""
+    SEUIL_SIMPLIFICATION = 50.0  # mètres entre points interrogés
+
+    def _travail():
+        try:
+            import urllib.request
+            import urllib.error
+            import json as _json
+            import time
+            n = len(points)
+            # --- SIMPLIFICATION : indices des points à interroger ---
+            # Premier et dernier points toujours interrogés ; ensuite
+            # un point dès qu'il est à >= SEUIL_SIMPLIFICATION m du
+            # précédent interrogé (distance orthodromique).
+            indices = [0]
+            for i in range(1, n):
+                d = gps_logic.calculer_distance_haversine(
+                    points[indices[-1]]['lat'], points[indices[-1]]['lon'],
+                    points[i]['lat'], points[i]['lon'])
+                if d >= SEUIL_SIMPLIFICATION:
+                    indices.append(i)
+            if indices[-1] != n - 1:
+                indices.append(n - 1)
+            nb_simples = len(indices)
+
+            # --- CHAÎNE DE FOURNISSEURS MNT (repli automatique) ---
+            # 1. OpenTopodata EU-DEM 25 m : le MNT européen de haute
+            #    qualité (proche de ce qu'utilise Visorando), GRATUIT
+            #    sans clé, quota indépendant d'Open-Meteo (100 points
+            #    par requête, 1 requête/s, 1000 requêtes/jour).
+            # 2. OpenTopodata ASTER 30 m : repli mondial (traces hors
+            #    d'Europe, EU-DEM renvoie alors des valeurs nulles).
+            # 3. Open-Meteo Elevation : dernier recours (quota vite
+            #    saturé sur les traces longues).
+            # Un fournisseur indisponible (quota 429 épuisé, hors zone,
+            # réseau) cède automatiquement la place au suivant.
+            def _fetch_opentopodata(morceau, dataset):
+                locs = "|".join(f"{p['lat']:.6f},{p['lon']:.6f}"
+                                for p in morceau)
+                url = (f"https://api.opentopodata.org/v1/{dataset}"
+                       f"?locations={locs}")
+                with urllib.request.urlopen(url, timeout=20) as rep:
+                    donnees = _json.loads(rep.read().decode("utf-8"))
+                if donnees.get("status") != "OK" or "results" not in donnees:
+                    raise RuntimeError(f"statut {donnees.get('status')}")
+                return [r.get("elevation") for r in donnees["results"]]
+
+            def _fetch_openmeteo(morceau):
+                lats = ",".join(f"{p['lat']:.6f}" for p in morceau)
+                lons = ",".join(f"{p['lon']:.6f}" for p in morceau)
+                url = ("https://api.open-meteo.com/v1/elevation"
+                       f"?latitude={lats}&longitude={lons}")
+                with urllib.request.urlopen(url, timeout=20) as rep:
+                    return _json.loads(rep.read().decode("utf-8")) \
+                        .get("elevation")
+
+            fournisseurs = [
+                ("OpenTopodata EU-DEM 25 m (Europe)",
+                 lambda morceau: _fetch_opentopodata(morceau, "eudem25m"),
+                 1.1, False),
+                ("OpenTopodata ASTER 30 m (monde)",
+                 lambda morceau: _fetch_opentopodata(morceau, "aster30m"),
+                 1.1, False),
+                ("Open-Meteo Elevation",
+                 _fetch_openmeteo, 3.0, True),
+            ]
+
+            erreur_globale = None
+            succes = False
+            for nom_f, fetch, pause_paquets, patient_429 in fournisseurs:
+                try:
+                    for debut in range(0, nb_simples, 100):
+                        morceau = [points[i]
+                                   for i in indices[debut:debut + 100]]
+                        altitudes = None
+                        derniere_erreur = None
+                        # 4 tentatives par paquet (6 avec attentes
+                        # patientes pour Open-Meteo, dernier recours :
+                        # 60 s puis 120, 180...).
+                        nb_tentatives = 6 if patient_429 else 4
+                        for tentative in range(nb_tentatives):
+                            try:
+                                altitudes = fetch(morceau)
+                                break
+                            except urllib.error.HTTPError as err_http:
+                                if err_http.code == 429:
+                                    if patient_429:
+                                        attente = 60 * (tentative + 1)
+                                        derniere_erreur = err_http
+                                        if callback_progresse:
+                                            Clock.schedule_once(
+                                                lambda dt, f=debut,
+                                                t=nb_simples,
+                                                _s=int(attente):
+                                                    callback_progresse(
+                                                        f, t,
+                                                        f"quota Open-Meteo "
+                                                        f"atteint, reprise "
+                                                        f"dans {_s} s..."))
+                                        time.sleep(attente)
+                                        continue
+                                    # Fournisseur gratuit à quota
+                                    # journalier : ne pas attendre,
+                                    # passer au suivant.
+                                    raise
+                                derniere_erreur = err_http
+                                time.sleep(2)
+                            except Exception as e:
+                                derniere_erreur = e
+                                time.sleep(2)
+                        if (not isinstance(altitudes, list)
+                                or len(altitudes) != len(morceau)):
+                            raise RuntimeError(
+                                f"réponse invalide ({derniere_erreur})")
+                        # EU-DEM renvoie des altitudes NULLES hors
+                        # d'Europe : si TOUTES le sont, le fournisseur
+                        # n'est pas adapté à cette trace → suivant.
+                        if all(a is None for a in altitudes):
+                            raise RuntimeError(
+                                "zone non couverte par ce modèle de "
+                                "terrain")
+                        for p, alt in zip(morceau, altitudes):
+                            if alt is not None:
+                                p["ele"] = round(float(alt), 1)
+                        # Avancement (paquet par paquet) affiché dans
+                        # le statut, avec la source utilisée.
+                        if callback_progresse:
+                            fait = min(debut + len(morceau), nb_simples)
+                            Clock.schedule_once(
+                                lambda dt, f=fait, t=nb_simples,
+                                _n=nom_f:
+                                    callback_progresse(f, t,
+                                                       f"source : {_n}"))
+                        # Espacement entre paquets pour respecter la
+                        # limite de débit du fournisseur (sauf après le
+                        # dernier paquet).
+                        if debut + 100 < nb_simples:
+                            time.sleep(pause_paquets)
+                    succes = True
+                    break
+                except Exception as e:
+                    erreur_globale = e
+                    if callback_progresse:
+                        Clock.schedule_once(
+                            lambda dt, f=0, t=nb_simples, _n=nom_f,
+                            _e=str(e):
+                                callback_progresse(
+                                    f, t,
+                                    f"{_n} indisponible ({_e}), essai de "
+                                    f"la source suivante..."))
+            if not succes:
+                raise RuntimeError(
+                    f"aucune source d'altitude disponible "
+                    f"({erreur_globale})")
+
+            # --- INTERPOLATION des points non interrogés ---
+            # Altitude linéaire entre deux points interrogés
+            # consécutifs, proportionnellement à la distance PARCOURUE
+            # le long de la trace (pas à l'indice, pour rester juste
+            # même quand les points ne sont pas espacés régulièrement).
+            try:
+                # Distances cumulées le long de la trace (en mètres).
+                dist_cumul = [0.0]
+                for i in range(1, n):
+                    dist_cumul.append(
+                        dist_cumul[-1] + gps_logic.calculer_distance_haversine(
+                            points[i - 1]['lat'], points[i - 1]['lon'],
+                            points[i]['lat'], points[i]['lon']))
+                for j in range(len(indices) - 1):
+                    i1, i2 = indices[j], indices[j + 1]
+                    a1, a2 = points[i1].get('ele'), points[i2].get('ele')
+                    if (a1 is None or a2 is None or i2 <= i1 + 1
+                            or dist_cumul[i2] <= dist_cumul[i1]):
+                        continue
+                    span = dist_cumul[i2] - dist_cumul[i1]
+                    for i in range(i1 + 1, i2):
+                        t = (dist_cumul[i] - dist_cumul[i1]) / span
+                        points[i]['ele'] = round(a1 + t * (a2 - a1), 1)
+            except Exception:
+                # L'interpolation est une pure amélioration : si elle
+                # échoue, les points interrogés restent corrects.
+                pass
+            Clock.schedule_once(lambda dt: callback_fin())
+        except Exception as e:
+            # « e » est supprimé à la fin du bloc except : il faut capturer
+            # le message AVANT la lambda sinon NameError (free variable).
+            msg = str(e)
+            Clock.schedule_once(lambda dt, _m=msg: callback_erreur(_m))
+    threading.Thread(target=_travail, daemon=True).start()
+
+
 class StatistiquesScreen(Screen):
     """Onglet Statistiques : copie de travail de l'onglet Découpe,
     SANS le bloc de découpe de trace (zone de saisie + bouton
@@ -11308,6 +11863,8 @@ class StatistiquesScreen(Screen):
     status_text = StringProperty("")
     status_color = ListProperty([0.33, 0.33, 0.33, 1])
     en_cours = BooleanProperty(False)
+    # Altitudes recalculées via MNT (pilote le bouton « Annuler »).
+    altitudes_recalculees = BooleanProperty(False)
     info_point_text = StringProperty("")
     # Bloc "Informations du point sélectionné" (grille 2 colonnes :
     # Point, Distance, Heure et Pente à gauche ; GPS, Altitude,
@@ -11510,6 +12067,11 @@ class StatistiquesScreen(Screen):
         self.info_point_heure = ""
         self.info_point_vit = ""
         self.info_point_pente = ""
+        # Waypoints gardés pour le recalcul des altitudes (les stats
+        # « Waypoints : » et le rafraîchissement en ont besoin).
+        self.waypoints_courants = waypoints
+        self._altitudes_avant_recalcul = None
+        self.altitudes_recalculees = False
         # Statistiques de la trace (calculs de gps_logic
         # gps_logic.calculer_statistiques), tableau 2 colonnes x 5
         # lignes au-dessus de la carte.
@@ -11518,6 +12080,114 @@ class StatistiquesScreen(Screen):
         self.graphe.set_donnees(*self.profil)
         self._afficher_trace_sur_carte(points, waypoints=vrais_wpts)
         self._afficher_pentes(points)
+
+    def recalculer_altitudes(self):
+        """Bouton « Recalculer les altitudes » : remplace les altitudes
+        GPS de la trace chargée par celles du MNT (Open-Meteo), comme
+        l'option « Recalculer les altitudes » de Visorando. Les
+        altitudes d'origine sont mémorisées au PREMIER recalcul pour
+        « Annuler le recalcul ». Sans effet si aucune trace n'est
+        chargée ou si un recalcul est déjà en cours."""
+        if (not self.trace_chargee or not self.points_courants
+                or getattr(self, "_recalc_alt_en_cours", False)):
+            return
+        self._recalc_alt_en_cours = True
+        self._recalc_alt_total = len(self.points_courants)
+        self._maj_statut_recalcul(0, self._recalc_alt_total)
+        if getattr(self, "_altitudes_avant_recalcul", None) is None:
+            self._altitudes_avant_recalcul = [p.get("ele")
+                                              for p in self.points_courants]
+        recalculer_altitudes_dem(
+            self.points_courants,
+            self._apres_recalcul_altitudes,
+            self._erreur_recalcul_altitudes,
+            callback_progresse=self._maj_statut_recalcul)
+
+    def _maj_statut_recalcul(self, fait, total, info=""):
+        """Avancement du recalcul MNT : affiché dans le label de statut.
+        « info » précise une attente éventuelle (ex. quota API)."""
+        if not getattr(self, "_recalc_alt_en_cours", False):
+            return
+        if info:
+            self.status_text = (f"Recalcul des altitudes : {fait}/{total} "
+                                f"points — {info}")
+        elif fait <= 0:
+            self.status_text = ("Recalcul des altitudes en cours "
+                                "(MNT Open-Meteo)...")
+        else:
+            self.status_text = (f"Recalcul des altitudes en cours : "
+                                f"{fait}/{total} points "
+                                f"({100 * fait // max(total, 1)} %)...")
+        self.status_color = (0.937, 0.424, 0.0, 1)  # #EF6C00
+
+    def _rafraichir_apres_altitudes(self):
+        """Recalcule et réaffiche tout ce qui dépend des altitudes :
+        profil altimétrique, graphique, tableau de statistiques et
+        bandes de pentes. La carte n'est pas touchée (les altitudes
+        n'y figurent pas)."""
+        points = self.points_courants
+        waypoints = getattr(self, "waypoints_courants", None)
+        self.profil = gps_logic.calculer_profil(points)
+        self.graphe.set_donnees(*self.profil)
+        self._afficher_stats_trace(points, waypoints)
+        self._afficher_pentes(points)
+
+    def _apres_recalcul_altitudes(self):
+        self._recalc_alt_en_cours = False
+        self.altitudes_recalculees = True
+        self._rafraichir_apres_altitudes()
+        self.status_text = ("Altitudes recalculées à partir du terrain "
+                            "(MNT). « Annuler le recalcul » restaure "
+                            "les valeurs d'origine.")
+        self.status_color = (0.180, 0.490, 0.196, 1)  # #2E7D32
+
+    def _erreur_recalcul_altitudes(self, message):
+        self._recalc_alt_en_cours = False
+        self.status_text = f"Recalcul des altitudes impossible : {message}"
+        self.status_color = (0.8, 0.2, 0.2, 1)
+
+    def enregistrer_trace_mnt(self):
+        """Bouton « Enregistrer » (Statistiques) : écrit la trace avec
+        les altitudes MNT recalculées dans un fichier GPX
+        « <nom>_MNT.gpx » du dossier de sortie, SANS toucher au
+        fichier source (comme l'onglet Ajout). L'écriture se fait dans
+        un thread pour ne pas figer l'interface sur les longues traces."""
+        if (not self.trace_chargee or not self.points_courants
+                or not self.altitudes_recalculees
+                or getattr(self, "_recalc_alt_en_cours", False)):
+            return
+        self.status_text = "Enregistrement de la trace MNT en cours..."
+        self.status_color = (0.937, 0.424, 0.0, 1)  # #EF6C00
+        threading.Thread(target=self._enregistrement_mnt_thread,
+                         daemon=True).start()
+
+    def _enregistrement_mnt_thread(self):
+        try:
+            base = os.path.splitext(
+                os.path.basename(self.fichier_source))[0]
+            dossier = DOSSIER_SORTIE if os.path.isdir(DOSSIER_SORTIE) \
+                else os.path.dirname(self.fichier_source)
+            chemin = os.path.join(dossier, f"{base}_MNT.gpx")
+            compteur = 1
+            while os.path.exists(chemin):  # ne jamais écraser un fichier
+                chemin = os.path.join(dossier, f"{base}_MNT_{compteur}.gpx")
+                compteur += 1
+            wpts = getattr(self, "waypoints_courants", None)
+            gps_logic.exporter_vers_gpx(
+                self.points_courants, chemin, garder_temps=True,
+                waypoints=wpts)
+            nom = os.path.basename(chemin)
+            Clock.schedule_once(lambda dt, _n=nom: setattr(
+                self, "status_text",
+                f"Trace enregistrée avec altitudes MNT : {_n}"))
+            Clock.schedule_once(lambda dt: setattr(
+                self, "status_color", (0.180, 0.490, 0.196, 1)))
+        except Exception as e:
+            msg = str(e)
+            Clock.schedule_once(lambda dt, _m=msg: setattr(
+                self, "status_text", f"Enregistrement impossible : {_m}"))
+            Clock.schedule_once(lambda dt: setattr(
+                self, "status_color", (0.8, 0.2, 0.2, 1)))
 
     def _afficher_stats_trace(self, points, waypoints):
         """Remplit le tableau de statistiques : 2 colonnes de 5 lignes,
@@ -12328,11 +12998,9 @@ class OutilsTracesApp(App):
         self.sm.add_widget(DecoupeScreen(name="decoupe"))
         self.sm.add_widget(NettoyageScreen(name="nettoyage"))
         self.sm.add_widget(DossierScreen(name="dossier"))
-        # Onglet « Ajout » : VISIBLE UNIQUEMENT SUR PC (clic droit,
-        # molette...). Sous Android, il n'est NI ajouté au
-        # ScreenManager NI proposé dans le menu : totalement invisible.
-        if platform != "android":
-            self.sm.add_widget(AjoutScreen(name="ajout"))
+        # Onglet « Ajout (PC) » : disponible sur PC ET Android (le pan
+        # « clic maintenu puis glisser » fonctionne aussi au doigt).
+        self.sm.add_widget(AjoutScreen(name="ajout"))
         self.sm.add_widget(PhotosScreen(name="photos"))
         self.sm.add_widget(LiveScreen(name="Live"))
 
@@ -12341,11 +13009,9 @@ class OutilsTracesApp(App):
 
         self.dropdown = DropDown(auto_width=False, width=dp(220))
         self._ecrans_menu = [("statistiques", "Statistiques"), ("conversion", "Conversion"), ("numerotation", "Numérotation"), ("fusion", "Fusion"), ("decoupe", "Découpe"), ("nettoyage", "Nettoyage"), ("dossier", "Dossier"), ("photos", "Photos"), ("Live", "Live")]
-        # Entrée « Ajout » du menu : PC uniquement (l'écran n'existe
-        # même pas sous Android, voir ci-dessus).
-        if platform != "android":
-            # insérée avant Photos, comme sur PC
-            self._ecrans_menu.insert(7, ("ajout", "Ajout"))
+        # Entrée « Ajout (PC) » du menu : disponible partout, insérée
+        # avant Photos.
+        self._ecrans_menu.insert(7, ("ajout", "Ajout (PC)"))
         self._ecrans_menu += [(nom, nom) for nom in SCREENS_A_VENIR]
         self._boutons_menu = {}
         for nom_ecran, libelle in self._ecrans_menu:
